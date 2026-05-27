@@ -20,6 +20,40 @@ Entry format:
 
 ---
 
+## 2026-05-27 — Self-contained Postgres inside the compose stack
+
+**Decision:** Postgres runs as a service inside the project's own
+docker-compose stack on a private internal network. The app service joins
+both the internal network (to reach Postgres by service name) and the
+external `seedbox_default` network (so Caddy can reach the app by container
+name). No Postgres port is published to the host.
+
+**Context:** The original stack design assumed a shared host-level Postgres
+instance that both Fritterflix and Fritter Post would use (see 2026-05-26
+stack entry). A subsequent implementation attempt (see 2026-05-27
+host.docker.internal entry) tried to reach that host Postgres via
+`host.docker.internal`. Both were wrong: there is no shared host Postgres on
+fritter.lol. Fritterflix runs its own Postgres inside its own compose stack
+on a private internal network, and Caddy on the host proxies to the app
+container via the `seedbox_default` Docker network.
+
+**Rationale:** Mirroring the Fritterflix pattern is the right call for several
+reasons:
+- Each project owns its database: no cross-project coupling, no shared failure
+  modes, independent backup and upgrade paths.
+- The `seedbox_default` network is already established on the host for Caddy
+  routing. Joining it is the correct mechanism for host-side Caddy to reach
+  app containers without publishing ports.
+- `host.docker.internal` on Linux requires `extra_hosts: host-gateway`, works
+  differently across Docker versions, and becomes moot if there is no host
+  Postgres to reach.
+
+**Supersedes:** 2026-05-26 "Stack: TypeScript + Next.js, reuse Postgres" (the
+database portion only); 2026-05-27 "Docker → host Postgres via
+host.docker.internal".
+
+---
+
 ## 2026-05-27 — Lazy database pool initialization
 
 **Decision:** `src/db/index.ts` exports `getPool()` (lazy, cached) instead of

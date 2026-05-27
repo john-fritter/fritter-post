@@ -26,8 +26,9 @@ features in the direction of any of these. When in doubt, less is more.
 
 - **Language:** TypeScript
 - **Framework:** Next.js (App Router) — matches Fritterflix on the same box
-- **Database:** PostgreSQL — existing instance on fritter.lol, shared with
-  Fritterflix in a separate database/schema
+- **Database:** Self-contained PostgreSQL inside the project's
+  docker-compose stack, on a private internal network. The app container
+  also attaches to `seedbox_default` so Caddy on the host can reach it.
 - **LLM access:** OpenAI SDK pointed at OpenAI-compatible endpoints
   (Ollama Cloud, OpenRouter, etc.), wrapped in `src/llm/` for logging,
   typing, retries, and stage-level budgets
@@ -108,6 +109,23 @@ stage is the abstraction.
   preserves these foreign keys.
 - **Idempotent where possible.** Re-running a pipeline stage with the
   same inputs should produce a comparable output, not duplicate rows.
+
+### Postgres quirks
+
+Two operational quirks discovered during initial development — record them
+here so future agents don't rediscover them the hard way:
+
+- **Arrays and JSONB.** The `pg` library treats top-level JavaScript arrays
+  as PostgreSQL arrays, not JSON. For JSONB columns that hold an array at
+  the top level, use `JSON.stringify(value)` and an explicit `::jsonb` cast
+  in the query: `... = $1::jsonb`. Plain objects are fine — `pg` calls
+  `JSON.stringify` on them automatically.
+
+- **npm strips quotes from script args.** When calling CLI scripts via
+  `npm run`, quoted arguments with spaces (e.g., source names) can be
+  mangled by npm's argument passing. Prefer running tsx directly for
+  anything with quoted arguments:
+  `./node_modules/.bin/tsx scripts/collect.ts --source "AP Top News"`
 
 ### Code
 

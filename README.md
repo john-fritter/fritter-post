@@ -16,10 +16,8 @@ See `docs/concept.md` for the vision and pipeline architecture.
 # 1. Install dependencies
 npm install
 
-# 2. Set up environment
+# 2. Set up environment — uncomment and fill in DATABASE_URL for local dev
 cp .env.example .env
-# Edit .env: set DATABASE_URL to point at your Postgres instance.
-# The expected database name is fritter_post.
 
 # 3. Run migrations
 npm run migrate
@@ -37,31 +35,50 @@ npm run typecheck
 
 **Pipeline inspection** (requires a running database with data):
 ```bash
+# Outside Docker (needs DATABASE_URL in .env):
 npm run inspect -- count
 npm run inspect -- list --source "AP Top News" --limit 10
+
+# Inside the compose stack:
+docker compose exec app npm run inspect -- count
 ```
 
 ---
 
 ## Production setup
 
-Production runs in Docker behind Caddy on `fritter.lol`. Postgres runs on the
-host, not in the compose stack, shared with Fritterflix.
+The compose stack is self-contained: Postgres and the app run as services in
+the same stack. Postgres has no published port and is reachable only within
+the stack. The app container joins the external `seedbox_default` network so
+Caddy on the host can reach it by container name.
 
-### First-time setup
+### Architecture
+
+```
+[Caddy on host]
+    └── seedbox_default network
+            └── fritter-post-app-1:3000
+                    └── internal network
+                            └── postgres:5432 (no published port)
+```
+
+Caddy proxies `post.fritter.lol → fritter-post-app-1:3000` via the shared
+`seedbox_default` Docker network, which it also joins. This mirrors the
+Fritterflix pattern on the same host.
+
+### First-time deployment
 
 ```bash
-# On the host, create the database and user:
-psql -U postgres -c "CREATE DATABASE fritter_post;"
-psql -U postgres -c "CREATE USER fritter_post WITH PASSWORD 'your-password';"
-psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE fritter_post TO fritter_post;"
+# 1. Clone the repo and set up environment
+cp .env.example .env
+# Edit .env: set POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD.
+# Leave DATABASE_URL commented out — the compose stack builds it automatically.
 
-# Build and start the container:
+# 2. Bring up the stack
 docker compose up -d --build
 
-# Run migrations inside the container (or from the host with DATABASE_URL set):
-DATABASE_URL=postgresql://fritter_post:your-password@localhost:5432/fritter_post \
-  npm run migrate
+# 3. Run migrations inside the app container
+docker compose exec app npm run migrate
 ```
 
 ### Ongoing deployments
@@ -71,20 +88,23 @@ git pull
 docker compose up -d --build
 ```
 
-### How the container reaches Postgres
+### Running CLI scripts on the deployed stack
 
-The container uses `host.docker.internal` as the Postgres hostname, which
-resolves to the host machine via the `extra_hosts: host-gateway` entry in
-`docker-compose.yml`. This is Linux-specific Docker behaviour. On Mac/Windows
-Docker Desktop, `host.docker.internal` works without the extra configuration.
+Migrations, inspection, and the collector run inside the app container where
+DATABASE_URL is already set by the compose environment:
 
-See `docs/decisions.md` for the rationale behind this choice.
+```bash
+docker compose exec app npm run migrate
+docker compose exec app npm run collect
+docker compose exec app npm run inspect -- collector
+docker compose exec app npm run inspect -- list --source "AP Top News"
+```
 
 ### Caddy
 
-Caddy runs on the host and proxies `post.fritter.lol → localhost:3000`. The
-Caddy configuration lives outside this repo on the host at the standard Caddy
-config path.
+Caddy runs on the host and is connected to the `seedbox_default` Docker
+network. It proxies `post.fritter.lol → fritter-post-app-1:3000` by
+container name. The Caddy configuration lives outside this repo.
 
 ---
 
@@ -96,7 +116,7 @@ src/llm/        OpenAI SDK wrapper with logging and budgets
 src/db/         Postgres connection pool
 src/app/        Next.js App Router (the reading view)
 src/lib/        Shared utilities
-scripts/        CLI tools (migrate, inspect)
+scripts/        CLI tools (migrate, inspect, collect)
 migrations/     Numbered SQL migrations
 config/         sources.yaml, models.yaml
 docs/           concept.md, decisions.md, standing-memo.md, …
