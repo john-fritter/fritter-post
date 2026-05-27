@@ -18,9 +18,6 @@ RUN npm ci
 
 COPY . .
 
-# DATABASE_URL must be provided at runtime, not build time, but Next.js needs
-# something to satisfy env references during build. The value here is a dummy.
-ENV DATABASE_URL=postgresql://build:build@localhost:5432/fritter_post
 ENV NODE_ENV=production
 
 RUN npm run build

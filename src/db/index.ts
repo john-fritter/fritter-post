@@ -1,14 +1,21 @@
 import { Pool } from "pg";
 
-if (!process.env["DATABASE_URL"]) {
-  throw new Error("DATABASE_URL environment variable is required");
+let pool: Pool | null = null;
+
+export function getPool(): Pool {
+  if (pool) return pool;
+
+  const url = process.env["DATABASE_URL"];
+  if (!url) {
+    throw new Error("DATABASE_URL environment variable is required");
+  }
+
+  pool = new Pool({
+    connectionString: url,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+  });
+
+  return pool;
 }
-
-const pool = new Pool({
-  connectionString: process.env["DATABASE_URL"],
-  max: 10,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 5_000,
-});
-
-export default pool;
