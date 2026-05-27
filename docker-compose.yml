@@ -1,0 +1,21 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # DATABASE_URL points at the host's Postgres instance.
+      # On Linux, host.docker.internal resolves to the host via the extra_hosts
+      # entry below. On Mac/Windows Docker Desktop this works without extra_hosts.
+      - DATABASE_URL=postgresql://fritter_post:CHANGE_ME@host.docker.internal:5432/fritter_post
+      - NODE_ENV=production
+    extra_hosts:
+      # Makes host.docker.internal resolve to the host machine on Linux.
+      # This is how the container reaches the existing Postgres instance that
+      # runs on the host (shared with Fritterflix). See decisions.md for rationale.
+      - "host.docker.internal:host-gateway"
+
+# Postgres is NOT in this compose stack — it runs on the host alongside
+# Fritterflix. Caddy also runs on the host; it proxies post.fritter.lol
+# to localhost:3000. The Caddy config lives outside this repo.
