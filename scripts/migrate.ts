@@ -9,6 +9,7 @@
  * the database in a clean state.
  */
 
+import "dotenv/config";
 import { readdir, readFile } from "fs/promises";
 import path from "path";
 import { Pool } from "pg";
