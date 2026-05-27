@@ -20,6 +20,71 @@ Entry format:
 
 ---
 
+## 2026-05-27 — Docker → host Postgres via host.docker.internal
+
+**Decision:** The container reaches the host's Postgres instance via the
+hostname `host.docker.internal`, backed by `extra_hosts: host-gateway` in
+docker-compose.yml.
+
+**Context:** Postgres runs on the host alongside Fritterflix and is not part
+of the compose stack. The container needs a stable way to address the host.
+
+**Rationale:** Three options considered:
+1. `network_mode: host` — the container shares the host's network namespace.
+   Simple, but eliminates container network isolation and port-mapping control.
+2. Hardcoded host IP — fragile; breaks if the host's IP changes.
+3. `host.docker.internal` + `extra_hosts: host-gateway` — explicit, portable
+   across Docker versions on Linux, matches the Docker Desktop behavior on
+   Mac/Windows, and keeps the compose file self-documenting. Preferred.
+
+---
+
+## 2026-05-27 — Migration runner: custom tsx script, not a library
+
+**Decision:** Migrations are plain numbered .sql files in `migrations/`.
+A small `scripts/migrate.ts` runner discovers, applies, and records them.
+No third-party migration library (Flyway, node-pg-migrate, Umzug, etc.).
+
+**Context:** The project uses `pg` directly (no ORM), and the migration
+surface is expected to be small and infrequent.
+
+**Rationale:** A custom runner is ~70 lines and has zero hidden behaviour. It
+applies files in filename order (alphabetical = numeric order for the `NNN_`
+prefix scheme), wraps each in a transaction, and records completions in a
+`_migrations` table. That's the whole contract. A library would add a
+dependency for essentially the same logic.
+
+---
+
+## 2026-05-27 — raw_items table shape
+
+**Decision:** `raw_items` columns: `id`, `source_name`, `source_type`,
+`feed_url`, `item_guid`, `original_url`, `url` (nullable, set by
+preprocessor), `title`, `body` (nullable), `author` (nullable),
+`published_at` (nullable), `fetched_at`, `raw_entry` (JSONB).
+Unique constraint on `(source_name, item_guid)`.
+
+**Context:** The collector writes one row per item per feed fetch. The
+preprocessor reads these rows and adds canonical URLs. Later stages only
+read from preprocessed clusters, not directly from raw_items.
+
+**Rationale:**
+- `item_guid` is the feed's own identifier (RSS `<guid>`, Atom `<id>`).
+  When absent, the collector synthesizes one (e.g. hash of source + URL).
+  This is the idempotency key — re-running the collector ON CONFLICT DO NOTHING.
+- `original_url` is what came out of the feed; `url` is populated later by
+  the preprocessor after canonicalization (tracking params stripped, AMP
+  normalized). Keeping both preserves debugging lineage.
+- `body` and `author` are nullable because many feeds don't provide them.
+- `published_at` is nullable for the same reason (feed omissions are common).
+- `raw_entry` JSONB preserves the full feed entry so no information is lost;
+  extraction can be improved later without re-fetching.
+- Indexes on `source_name`, `fetched_at`, and `url` cover the expected query
+  patterns: source filtering, retention window management, and preprocessor
+  deduplication.
+
+---
+
 ## 2026-05-26 — Build pipeline before publisher
 
 **Decision:** Build the upstream stages (collector → preprocessor →
