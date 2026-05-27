@@ -1,21 +1,41 @@
 services:
-  web:
-    build: .
+  postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      # DATABASE_URL points at the host's Postgres instance.
-      # On Linux, host.docker.internal resolves to the host via the extra_hosts
-      # entry below. On Mac/Windows Docker Desktop this works without extra_hosts.
-      - DATABASE_URL=postgresql://fritter_post:CHANGE_ME@host.docker.internal:5432/fritter_post
-      - NODE_ENV=production
-    extra_hosts:
-      # Makes host.docker.internal resolve to the host machine on Linux.
-      # This is how the container reaches the existing Postgres instance that
-      # runs on the host (shared with Fritterflix). See decisions.md for rationale.
-      - "host.docker.internal:host-gateway"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    # No published ports — reachable only from within the stack.
 
-# Postgres is NOT in this compose stack — it runs on the host alongside
-# Fritterflix. Caddy also runs on the host; it proxies post.fritter.lol
-# to localhost:3000. The Caddy config lives outside this repo.
+  app:
+    build: .
+    container_name: fritter-post-app-1
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal       # reaches postgres by service name
+      - seedbox_default  # Caddy on the host network reaches this container by name
+    # No published ports — Caddy reaches fritter-post-app-1:3000 via seedbox_default.
+
+volumes:
+  postgres_data:
+
+networks:
+  internal:
+  seedbox_default:
+    external: true
