@@ -11,13 +11,19 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx scripts/migrate.ts",
-    "inspect": "tsx scripts/inspect.ts"
+    "inspect": "tsx scripts/inspect.ts",
+    "collect": "tsx scripts/collect.ts"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "next": "^15.0.0",
+    "p-limit": "^7.3.0",
+    "pg": "^8.13.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "pg": "^8.13.0"
+    "rss-parser": "^3.13.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
