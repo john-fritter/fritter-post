@@ -94,10 +94,30 @@ Migrations, inspection, and the collector run inside the app container where
 DATABASE_URL is already set by the compose environment:
 
 ```bash
-docker compose exec app npm run migrate
-docker compose exec app npm run collect
-docker compose exec app npm run inspect -- collector
-docker compose exec app npm run inspect -- list --source "AP Top News"
+docker compose exec -T app npm run migrate
+docker compose exec -T app npm run collect
+docker compose exec -T app npm run inspect -- collector
+docker compose exec -T app npm run inspect -- list --source "AP Top News"
+```
+
+The production image intentionally includes the project CLI runtime
+(`scripts/`, `migrations/`, `config/`, `src/`, and `node_modules`) in addition
+to the Next standalone server bundle. Do not remove those copies unless
+migrations and pipeline stages move to a separate worker image.
+
+After rebuilding/recreating `app`, verify that it is attached to both the
+internal project network and `seedbox_default`:
+
+```bash
+docker inspect fritter-post-app-1 \
+  -f '{{range $name,$net := .NetworkSettings.Networks}}{{println $name $net.IPAddress}}{{end}}'
+```
+
+If the app is missing from `seedbox_default`, reconnect it before testing the
+public Caddy route:
+
+```bash
+docker network connect seedbox_default fritter-post-app-1
 ```
 
 ### Caddy

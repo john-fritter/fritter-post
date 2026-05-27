@@ -29,8 +29,8 @@ services:
         condition: service_healthy
     networks:
       - internal       # reaches postgres by service name
-      - seedbox_default  # Caddy on the host network reaches this container by name
-    # No published ports — Caddy reaches fritter-post-app-1:3000 via seedbox_default.
+    # Runtime note: after compose creates the app container, connect it to
+    # seedbox_default manually so Caddy can reach fritter-post-app-1:3000.
 
 volumes:
   postgres_data:

@@ -32,10 +32,17 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs && \
     adduser  --system --uid  1001 nextjs
 
-# Standalone output bundles only what the server needs.
+# Standalone output bundles the web server; copy the project CLI pieces too so
+# migrations/collector can run inside the same production container.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static    ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public          ./public
+COPY --from=builder --chown=nextjs:nodejs /app/package.json /app/package-lock.json ./
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules     ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/scripts          ./scripts
+COPY --from=builder --chown=nextjs:nodejs /app/migrations       ./migrations
+COPY --from=builder --chown=nextjs:nodejs /app/config           ./config
+COPY --from=builder --chown=nextjs:nodejs /app/src              ./src
 
 USER nextjs
 
