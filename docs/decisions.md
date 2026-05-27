@@ -20,6 +20,58 @@ Entry format:
 
 ---
 
+## 2026-05-27 — Lazy database pool initialization
+
+**Decision:** `src/db/index.ts` exports `getPool()` (lazy, cached) instead of
+a module-level singleton that throws at import time.
+
+**Context:** The previous implementation threw immediately if DATABASE_URL was
+unset, which meant Next.js build would fail unless a dummy value was provided.
+The Dockerfile had a dummy value hard-coded for exactly this reason.
+
+**Rationale:** The pool is only needed when a database call is actually made.
+Deferring initialization to first use means importing `src/db/index.ts` is
+always safe, and the build no longer requires a dummy DATABASE_URL. The
+dummy was a maintenance hazard — if it were a valid connection string in a
+CI environment, it could cause unexpected database connections.
+
+---
+
+## 2026-05-27 — Collector RSS library: rss-parser
+
+**Decision:** Use `rss-parser` for RSS and Atom feed parsing.
+
+**Context:** Alternatives considered: `feedparser` (Node.js streams, less
+TypeScript-friendly), `@extractus/feed-extractor` (newer but smaller ecosystem),
+rolling our own XML parser with `xml2js` (unnecessary complexity).
+
+**Rationale:** `rss-parser` handles RSS 1.0, 2.0, and Atom in one package,
+has first-party TypeScript types with useful generic type parameters for custom
+fields, supports `timeout` and custom `headers` directly in the constructor,
+and is the most widely used feed-parsing library for Node.js. The custom field
+generics let us type `content:encoded` and `dc:creator` without resorting to
+`any`.
+
+---
+
+## 2026-05-27 — Synthesized guid: SHA-256 of source + url + title
+
+**Decision:** When a feed item lacks a guid, synthesize one as
+`"synth:" + SHA-256(source_name + "\0" + original_url + "\0" + title).slice(0, 40)`.
+
+**Context:** The `(source_name, item_guid)` unique constraint enforces
+idempotency. If two runs disagree on the synthesized guid for the same logical
+item, the constraint fails to deduplicate and you get duplicate rows.
+
+**Rationale:** The three fields (source, URL, title) together identify a news
+item with high confidence. NUL-byte separators prevent ambiguous concatenation.
+The `"synth:"` prefix visually distinguishes synthetic guids from feed-supplied
+ones in debugging contexts. SHA-256 is deterministic across platforms and
+truncated to 40 hex chars (160 bits) is more than sufficient for uniqueness at
+any realistic feed volume.
+
+---
+
 ## 2026-05-27 — Docker → host Postgres via host.docker.internal
 
 **Decision:** The container reaches the host's Postgres instance via the
