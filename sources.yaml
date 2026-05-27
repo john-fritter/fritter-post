@@ -1,0 +1,726 @@
+# The Fritter Post — Sources
+#
+# First working draft. Cast wide. Tune after a week of real pipeline runs.
+#
+# Schema:
+#   name  — display name
+#   url   — RSS/Atom feed URL (or fetch endpoint; collector handles both)
+#   type  — wire | journalism | advocacy | newsletter
+#           Functional distinction, not editorial judgment. The source policy
+#           reads each type differently in operational ways (wires high volume,
+#           advocacy has a policy position, newsletters often single-author).
+#   notes — free text. Anything the editor/researcher should know about the
+#           source, including institutional alignment where it's worth knowing.
+#
+# Tags, categories, prominence weighting, and tiers live at the story level,
+# assigned by the triage and editor stages.
+#
+# Entries marked [VERIFY] have RSS URLs that may need checking — endpoints move.
+
+# ─────────────────────────────────────────────
+# WIRES
+# Backbone of the collector. High volume, high signal.
+# Cross-source clustering should weight wire pickup heavily.
+# ─────────────────────────────────────────────
+
+- name: AP Top News
+  url: https://rsshub.app/apnews/topics/ap-top-news
+  type: wire
+  notes: >
+    AP via RSSHub proxy since AP removed direct RSS. Fallback fetch target:
+    https://apnews.com/apf-topnews
+
+- name: AP Politics
+  url: https://rsshub.app/apnews/topics/politics
+  type: wire
+
+- name: Reuters Top News
+  url: https://feeds.reuters.com/reuters/topNews
+  type: wire
+  notes: May require user-agent spoofing.
+
+- name: Reuters World News
+  url: https://feeds.reuters.com/reuters/worldNews
+  type: wire
+
+- name: Reuters Business
+  url: https://feeds.reuters.com/reuters/businessNews
+  type: wire
+
+# ─────────────────────────────────────────────
+# NATIONAL NEWS (US)
+# Mainstream coverage for breadth and prominence signal.
+# ─────────────────────────────────────────────
+
+- name: NPR News
+  url: https://feeds.npr.org/1001/rss.xml
+  type: journalism
+  notes: US public broadcaster. Generally straight reporting; tends toward
+    establishment framing on foreign policy.
+
+- name: PBS NewsHour
+  url: https://www.pbs.org/newshour/feeds/rss/headlines
+  type: journalism
+
+- name: New York Times Homepage
+  url: https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml
+  type: journalism
+  notes: >
+    Paywalled full text. RSS abstracts useful as triage prominence signal — what
+    the Times put on the homepage today is information the triage needs, even if
+    the framing requires editor pushback.
+
+- name: New York Times Politics
+  url: https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml
+  type: journalism
+
+- name: Washington Post National
+  url: https://feeds.washingtonpost.com/rss/national
+  type: journalism
+  notes: Paywalled. RSS abstracts useful as prominence signal.
+
+- name: The Guardian US
+  url: https://www.theguardian.com/us-news/rss
+  type: journalism
+  notes: UK-based, free full text. Often stronger on US stories than US-domiciled
+    outlets.
+
+- name: Los Angeles Times
+  url: https://www.latimes.com/rss2.0.xml
+  type: journalism
+  notes: West Coast coverage. [VERIFY]
+
+# ─────────────────────────────────────────────
+# ACCOUNTABILITY / INVESTIGATIVE
+# Core to this paper's editorial lineage.
+# ─────────────────────────────────────────────
+
+- name: ProPublica
+  url: https://www.propublica.org/feeds/propublica/main
+  type: journalism
+  notes: Every ProPublica story gets a real look.
+
+- name: The Markup
+  url: https://themarkup.org/feeds/rss.xml
+  type: journalism
+  notes: Tech accountability — algorithms, surveillance, corporate power over people.
+
+- name: The Intercept
+  url: https://theintercept.com/feed/?lang=en
+  type: journalism
+  notes: National security, civil liberties, corporate and government wrongdoing.
+    Sometimes gets ahead of the facts — researcher should verify before promoting.
+
+- name: The Lever
+  url: https://www.levernews.com/rss/
+  type: journalism
+  notes: David Sirota's outlet. Corporate/government accountability, dark-money
+    influence, regulatory capture.
+
+- name: InvestigateWest
+  url: https://www.invw.org/feed/
+  type: journalism
+  notes: PNW-specific investigative journalism. Portland-based, regional coverage.
+
+- name: Oregon Capital Chronicle
+  url: https://oregoncapitalchronicle.com/feed/
+  type: journalism
+  notes: Salem statehouse coverage. Nonprofit, good on Oregon policy.
+
+- name: The American Prospect
+  url: https://prospect.org/feed/
+  type: journalism
+  notes: Policy-focused. Strong on labor, economic policy, regulatory coverage.
+
+- name: Type Investigations
+  url: https://typeinvestigations.org/feed/
+  type: journalism
+  notes: Formerly The Investigative Fund. Publishes with partner outlets. [VERIFY]
+
+- name: KFF Health News
+  url: https://kffhealthnews.org/feed/
+  type: journalism
+  notes: Formerly Kaiser Health News. Best free wire on health policy, syndicated
+    widely.
+
+# ─────────────────────────────────────────────
+# ANALYSIS / INDEPENDENT
+# Opinion-heavier than wires but often best framing of structural stories.
+# Editor should distinguish news from analysis and size/label accordingly.
+# ─────────────────────────────────────────────
+
+- name: Jacobin
+  url: https://jacobin.com/feed/
+  type: journalism
+  notes: Editorial lineage the standing memo explicitly names. Analysis pieces,
+    not breaking news. Strong on labor, housing, healthcare, democratic politics.
+    Long pieces feed Longer Reads.
+
+- name: The Nation
+  url: https://www.thenation.com/feed/?post_type=article
+  type: journalism
+
+- name: Current Affairs
+  url: https://www.currentaffairs.org/feed
+  type: journalism
+  notes: Longform, often polemical. Better for Longer Reads than daily news.
+
+- name: Defector
+  url: https://defector.com/feed
+  type: journalism
+  notes: Mostly sports. Watch for the structural/political pieces — when they cut
+    through, they cut through.
+
+- name: Sightline Institute
+  url: https://www.sightline.org/feed/
+  type: advocacy
+  notes: PNW sustainability and policy think tank. Strong on housing, land use,
+    transit, energy in WA/OR/BC.
+
+- name: Naked Capitalism
+  url: https://www.nakedcapitalism.com/feed
+  type: journalism
+  notes: Heterodox economics, long-running. Counterweight to wire business framing.
+
+# ─────────────────────────────────────────────
+# LONGER READS / IDEAS / LITERARY
+# Primarily longform sources. The editor's Longer Reads section is curated from
+# these plus long pieces from other outlets (Jacobin features, ProPublica
+# investigations, etc.). Most of what these publish won't make a daily paper,
+# but the editor picks 1-3 pieces per week worth reading at length.
+# ─────────────────────────────────────────────
+
+- name: The Atlantic
+  url: https://www.theatlantic.com/feed/all/
+  type: journalism
+  notes: Centrist establishment, but consistently publishes pieces worth reading.
+    Better for Longer Reads than daily news rotation.
+
+- name: The New Yorker
+  url: https://www.newyorker.com/feed/everything
+  type: journalism
+  notes: Gold standard for longform journalism. Most pieces are Longer Reads
+    candidates.
+
+- name: Harper's Magazine
+  url: https://harpers.org/feed/
+  type: journalism
+  notes: Monthly essay magazine. Strong cultural and political longform.
+
+- name: The New York Review of Books
+  url: https://www.nybooks.com/feed/
+  type: journalism
+  notes: Book reviews that are usually essays on the books' subjects. The reviews
+    themselves are often the best writing on those topics.
+
+- name: London Review of Books
+  url: https://www.lrb.co.uk/feeds/rss
+  type: journalism
+  notes: UK counterpart to NYRB. Excellent on politics, foreign policy, ideas.
+
+- name: Reason
+  url: https://reason.com/latest/feed/
+  type: journalism
+  notes: Libertarian. Important for ideological breadth — best counter-perspective
+    on regulatory state, civil liberties, drug policy. Has been right when most
+    of the press has been wrong on specific stories.
+
+- name: Foreign Affairs
+  url: https://www.foreignaffairs.com/rss.xml
+  type: journalism
+  notes: Council on Foreign Relations house journal. Establishment foreign policy
+    perspective by design — useful as a baseline of what elite consensus is on
+    international issues. Paywalled abstracts.
+
+- name: The Marshall Project
+  url: https://www.themarshallproject.org/rss/recent
+  type: journalism
+  notes: Criminal justice longform. Nonprofit.
+
+- name: Aeon
+  url: https://aeon.co/feed.rss
+  type: journalism
+  notes: Ideas and philosophy. Less news-driven, more enduring essays.
+
+- name: Noema
+  url: https://www.noemamag.com/feed/
+  type: journalism
+  notes: Berggruen Institute. Technology, society, longform. High signal on AI
+    and political economy.
+
+- name: The Baffler
+  url: https://thebaffler.com/feed
+  type: journalism
+  notes: Cultural criticism, left politics, longform.
+
+- name: n+1
+  url: https://www.nplusonemag.com/feed/
+  type: journalism
+  notes: Literary and political. Quarterly print, more frequent online.
+
+# ─────────────────────────────────────────────
+# PACIFIC NORTHWEST / OREGON / BEND LOCAL
+# The paper knows where the reader lives.
+# Local should be a reliable daily presence, not occasional.
+# ─────────────────────────────────────────────
+
+- name: OPB (Oregon Public Broadcasting) News
+  url: https://www.opb.org/feed/rss/
+  type: journalism
+  notes: Best general Oregon news RSS. State politics, environment, Portland metro.
+
+- name: OPB Politics & Government
+  url: https://www.opb.org/feed/rss/politics-government/
+  type: journalism
+  notes: "[VERIFY]"
+
+- name: The Oregonian (OregonLive)
+  url: https://www.oregonlive.com/arc/outboundfeeds/rss/?outputType=xml
+  type: journalism
+  notes: High volume, variable quality. Good for breadth. Preprocessor clustering
+    will handle the internal duplication. [VERIFY]
+
+- name: Willamette Week
+  url: https://www.wweek.com/feed/
+  type: journalism
+  notes: Portland alt-weekly. Investigative, local politics, culture. Good on
+    things the Oregonian won't touch.
+
+- name: Portland Mercury
+  url: https://www.portlandmercury.com/rss.xml
+  type: journalism
+  notes: Portland alt-weekly. More overlap with Willamette Week than complement.
+
+- name: The Bend Bulletin
+  url: https://www.bendbulletin.com/arc/outboundfeeds/rss/
+  type: journalism
+  notes: Primary Bend-local paper. Reader lives here — elevated attention. [VERIFY]
+
+- name: The Source Weekly
+  url: https://www.bendsource.com/bend/Rss.xml
+  type: journalism
+  notes: Bend's alt-weekly. Local culture, politics, investigative. Pair with
+    Bulletin for full Bend coverage. [VERIFY]
+
+- name: KTVZ NewsChannel 21
+  url: https://ktvz.com/feed/
+  type: journalism
+  notes: Bend local TV. Lower editorial quality but catches local incidents.
+    Triage should weight down unless it's a genuine Bend story.
+
+- name: High Desert Advocate
+  url: https://highdesertadvocate.com/feed/
+  type: journalism
+  notes: Independent Bend journalism. [VERIFY active feed]
+
+- name: Eugene Weekly
+  url: https://eugeneweekly.com/feed/
+  type: journalism
+  notes: Southern Oregon coverage.
+
+- name: Street Roots (Portland)
+  url: https://www.streetroots.org/rss.xml
+  type: journalism
+  notes: Housing, homelessness, poverty in Portland. Perspectives rarely found
+    in the Oregonian.
+
+- name: Crosscut / Cascade PBS
+  url: https://crosscut.com/feed
+  type: journalism
+  notes: Seattle nonprofit news. Good on PNW regional — wildfire, water, tribal
+    nations, climate, housing.
+
+- name: Cascadia Daily News (Bellingham)
+  url: https://www.cascadiadaily.com/feed/
+  type: journalism
+  notes: Northwest WA, sometimes PNW regional. [VERIFY]
+
+# ─────────────────────────────────────────────
+# INTERNATIONAL — BROAD
+# ─────────────────────────────────────────────
+
+- name: BBC News World
+  url: https://feeds.bbci.co.uk/news/world/rss.xml
+  type: journalism
+  notes: UK public service broadcaster, constituted by Royal Charter. Operationally
+    independent on most stories; historically aligned with UK foreign policy
+    framing on certain geopolitical issues. Most reliable international RSS,
+    full text in feed.
+
+- name: BBC News UK
+  url: https://feeds.bbci.co.uk/news/uk/rss.xml
+  type: journalism
+
+- name: Al Jazeera English
+  url: https://www.aljazeera.com/xml/rss/all.xml
+  type: journalism
+  notes: Funded by the Qatari royal family. Editorially independent on most
+    stories — particularly strong on Middle East, South Asia, Africa coverage
+    underrepresented in US/UK wire services. More careful where Qatari/GCC
+    interests are directly at play.
+
+- name: The Guardian World
+  url: https://www.theguardian.com/world/rss
+  type: journalism
+
+- name: Der Spiegel International
+  url: https://www.spiegel.de/international/index.rss
+  type: journalism
+  notes: German perspective on Europe and international. Good quality, free.
+
+- name: Le Monde Diplomatique (English)
+  url: https://mondediplo.com/rss/feed1.php
+  type: journalism
+  notes: Monthly cadence — rarely contributes to a daily run, but excellent on
+    geopolitics and global economy. Long pieces feed Longer Reads.
+
+- name: Rest of World
+  url: https://restofworld.org/feed/latest/
+  type: journalism
+  notes: Tech and society in the Global South. Underreported angle on technology's
+    actual global effects.
+
+# ─────────────────────────────────────────────
+# INTERNATIONAL — REGIONAL / NON-WESTERN
+# Deliberate counterweight to the Western bias of mainstream wires.
+# ─────────────────────────────────────────────
+
+- name: Rappler
+  url: https://www.rappler.com/feed/
+  type: journalism
+  notes: Maria Ressa's outlet, Nobel Peace Prize 2021 for accountability journalism
+    under Duterte. Editorial DNA aligned with this paper. Top Philippine source.
+
+- name: Inquirer.net
+  url: https://www.inquirer.net/fullfeed
+  type: journalism
+  notes: Philippine Daily Inquirer. Mainstream complement to Rappler. [VERIFY]
+
+- name: Sinocism
+  url: https://sinocism.com/feed
+  type: newsletter
+  notes: Bill Bishop. Best English-language synthesis of what's happening in China.
+    Daily/near-daily. May be paywalled abstracts only — verify yield. [VERIFY]
+
+- name: South China Morning Post
+  url: https://www.scmp.com/rss/91/feed
+  type: journalism
+  notes: Hong Kong, English. Owned by Alibaba — coverage of stories directly
+    touching CCP interests is constrained. Best English daily coverage of China
+    and Asia generally on stories outside that constraint.
+
+- name: Caixin Global
+  url: https://www.caixinglobal.com/feed/
+  type: journalism
+  notes: One of the more independent in-China outlets. Strong on Chinese economy
+    and business. [VERIFY]
+
+- name: Xinhua English
+  url: http://www.xinhuanet.com/english/rss/chinarss.xml
+  type: journalism
+  notes: Chinese state news agency. Represents the Chinese government's official
+    positions and framing on domestic and international issues. Read as primary
+    source for what Beijing is officially saying, not as independent reporting.
+    Same kind of context a thoughtful reader applies to any outlet's institutional
+    position. [VERIFY]
+
+- name: The Diplomat
+  url: https://thediplomat.com/feed/
+  type: journalism
+  notes: Asia-Pacific geopolitics, English, independent. Complement to SCMP.
+
+- name: The Wire (India)
+  url: https://thewire.in/rss
+  type: journalism
+  notes: Indian independent journalism. Good on South Asia. [VERIFY]
+
+- name: "+972 Magazine"
+  url: https://www.972mag.com/feed/
+  type: journalism
+  notes: Israeli-founded, Israeli-Palestinian critical journalism.
+
+- name: Mail & Guardian
+  url: https://mg.co.za/feed/
+  type: journalism
+  notes: South African independent. Helps close the Africa gap.
+
+- name: The Continent
+  url: https://thecontinent.org/feed
+  type: journalism
+  notes: Pan-African weekly. Distributed via WhatsApp/PDF — RSS may be partial.
+    Worth keeping for Africa coverage breadth. [VERIFY]
+
+- name: Americas Quarterly
+  url: https://www.americasquarterly.org/feed/
+  type: journalism
+  notes: Latin America policy and politics, English.
+
+# ─────────────────────────────────────────────
+# TECHNOLOGY
+# Distinguish "product announcement" (mostly ignorable) from
+# "tech affecting people's lives" (the paper's actual beat).
+# ─────────────────────────────────────────────
+
+- name: Ars Technica
+  url: https://feeds.arstechnica.com/arstechnica/index
+  type: journalism
+  notes: Best general tech news. Serious, factual, covers policy and science
+    alongside products.
+
+- name: 404 Media
+  url: https://www.404media.co/rss/
+  type: journalism
+  notes: Former Vice Motherboard journalists. Excellent on surveillance, hacking,
+    data brokers, platform accountability.
+
+- name: The Verge
+  url: https://www.theverge.com/rss/index.xml
+  type: journalism
+  notes: Higher volume, more product coverage than this paper needs. Triage
+    should filter down to policy, labor, and society-level tech stories.
+
+- name: Wired
+  url: https://www.wired.com/feed/rss
+  type: journalism
+  notes: Inconsistent quality but occasionally excellent on security and
+    surveillance.
+
+- name: MIT Technology Review
+  url: https://www.technologyreview.com/stories.rss
+  type: journalism
+
+- name: TechCrunch
+  url: https://techcrunch.com/feed/
+  type: journalism
+  notes: High volume, mostly product/funding news. Low expected yield. Drop
+    after a few weeks if triage never promotes anything.
+
+- name: Hacker News (top)
+  url: https://news.ycombinator.com/rss
+  type: journalism
+  notes: Community filter, not editorial. The items that float are genuinely
+    noticed by technically literate people. Preprocessor should dedupe against
+    items from other sources.
+
+# ─────────────────────────────────────────────
+# AI
+# Both a beat (what's happening in AI) and a lens (how AI is being used on people).
+# ─────────────────────────────────────────────
+
+- name: Import AI (Jack Clark)
+  url: https://importai.substack.com/feed
+  type: newsletter
+  notes: Weekly. Best technical AI newsletter. Clark is former OpenAI/Anthropic —
+    framing is from inside the industry.
+
+- name: AI Snake Oil (Narayanan & Kapoor)
+  url: https://www.aisnakeoil.com/feed
+  type: newsletter
+  notes: Princeton researchers. AI skepticism and accountability. Counterweight
+    to Import AI.
+
+- name: Don't Worry About the Vase (Zvi Mowshowitz)
+  url: https://thezvi.substack.com/feed
+  type: newsletter
+  notes: Best comprehensive AI roundups. Prolific, opinionated, thorough.
+
+- name: The Batch (DeepLearning.ai)
+  url: https://www.deeplearning.ai/the-batch/rss/
+  type: newsletter
+  notes: Andrew Ng's weekly. What the industry considers worth covering.
+
+- name: Platformer (Casey Newton)
+  url: https://www.platformer.news/feed
+  type: newsletter
+  notes: Tech industry accountability, especially social media and AI.
+
+- name: Garbage Day (Ryan Broderick)
+  url: https://www.garbageday.email/feed
+  type: newsletter
+  notes: Internet culture and platform politics. [VERIFY]
+
+# ─────────────────────────────────────────────
+# CLIMATE / ENVIRONMENT
+# PNW has direct climate exposure — wildfire, drought, heat, water.
+# ─────────────────────────────────────────────
+
+- name: Inside Climate News
+  url: https://insideclimatenews.org/feed/
+  type: journalism
+  notes: Pulitzer-winning nonprofit climate journalism.
+
+- name: Grist
+  url: https://grist.org/feed/
+  type: journalism
+  notes: Climate solutions and justice. Strong on environmental justice angles.
+
+- name: Carbon Brief
+  url: https://www.carbonbrief.org/feed
+  type: journalism
+  notes: UK-based, science-heavy, excellent on IPCC and policy.
+
+- name: The Guardian Environment
+  url: https://www.theguardian.com/environment/rss
+  type: journalism
+  notes: High-volume, high-quality.
+
+- name: Heated (Emily Atkin)
+  url: https://heated.world/feed
+  type: newsletter
+  notes: Climate accountability. Best on fossil fuel industry influence and
+    greenwashing. [VERIFY active]
+
+- name: High Country News
+  url: https://www.hcn.org/articles.rss
+  type: journalism
+  notes: American West — public lands, Indigenous communities, water, mining,
+    energy. Highly relevant to Central Oregon. [VERIFY]
+
+- name: Oregon Wild
+  url: https://oregonwild.org/news/feed
+  type: advocacy
+  notes: Oregon public lands and wilderness advocacy. [VERIFY]
+
+# ─────────────────────────────────────────────
+# LABOR
+# ─────────────────────────────────────────────
+
+- name: Labor Notes
+  url: https://labornotes.org/feed
+  type: journalism
+  notes: Best dedicated labor journalism in the US. Union news, strikes,
+    organizing.
+
+- name: Economic Policy Institute
+  url: https://www.epi.org/feed/
+  type: advocacy
+  notes: Think tank, not journalism. Useful for economic data and policy analysis.
+
+- name: Workday Magazine
+  url: https://workdaymagazine.org/feed/
+  type: journalism
+  notes: PNW labor news specifically. [VERIFY]
+
+- name: Truthout Labor
+  url: https://truthout.org/category/labor/feed/
+  type: journalism
+  notes: Left news, variable quality. Labor section is the useful piece. [VERIFY]
+
+# ─────────────────────────────────────────────
+# LEGAL / COURTS / CIVIL LIBERTIES
+# ─────────────────────────────────────────────
+
+- name: SCOTUSblog
+  url: https://www.scotusblog.com/feed/
+  type: journalism
+  notes: Definitive Supreme Court tracker. Nonpartisan, factual. Indispensable
+    when the Court is in session.
+
+- name: Just Security
+  url: https://www.justsecurity.org/feed/
+  type: journalism
+  notes: National security law and human rights. Strong on executive power,
+    surveillance.
+
+- name: ACLU News
+  url: https://www.aclu.org/news/feed
+  type: advocacy
+  notes: Advocacy. Useful for civil liberties case tracking. [VERIFY]
+
+- name: Electronic Frontier Foundation
+  url: https://www.eff.org/rss/updates.xml
+  type: advocacy
+  notes: Digital civil liberties advocacy. Often the first source on surveillance
+    and digital rights cases.
+
+# ─────────────────────────────────────────────
+# INDIGENOUS
+# ─────────────────────────────────────────────
+
+- name: ICT News (Indian Country Today)
+  url: https://ictnews.org/feed
+  type: journalism
+  notes: National Indigenous news. Particularly relevant to PNW stories about
+    water rights, fishing, public lands.
+
+# ─────────────────────────────────────────────
+# SCIENCE / HEALTH
+# ─────────────────────────────────────────────
+
+- name: STAT News
+  url: https://www.statnews.com/feed/
+  type: journalism
+  notes: Best dedicated health and life-sciences journalism. Strong on pharma
+    accountability and public health policy.
+
+- name: Science News
+  url: https://www.sciencenews.org/feed
+  type: journalism
+  notes: General science, accessible. Not daily-news frequency.
+
+- name: CIDRAP
+  url: https://www.cidrap.umn.edu/news-perspective/rss.xml
+  type: journalism
+  notes: Center for Infectious Disease Research and Policy. Elevated when
+    anything is circulating. [VERIFY]
+
+# ─────────────────────────────────────────────
+# MEDIA / PRESS CRITICISM
+# Keeps the editor honest. Feeds the standing memo.
+# ─────────────────────────────────────────────
+
+- name: Columbia Journalism Review
+  url: https://www.cjr.org/feed
+  type: journalism
+  notes: Press criticism and media industry. Occasional standard cards when
+    about something the reader would care about.
+
+- name: Nieman Lab
+  url: https://www.niemanlab.org/feed/
+  type: journalism
+  notes: Journalism future. Useful context, rarely a daily news item.
+
+- name: Public Notice (Aaron Rupar)
+  url: https://www.publicnotice.co/feed
+  type: newsletter
+  notes: Daily politics. Prolific. Useful as a what's-happening filter even
+    when individual pieces don't make the paper.
+
+# ─────────────────────────────────────────────
+# HOUSING / URBAN
+# ─────────────────────────────────────────────
+
+- name: Shelterforce
+  url: https://shelterforce.org/feed/
+  type: journalism
+  notes: Housing policy, community development, affordable housing.
+
+# ─────────────────────────────────────────────
+# DROPPED FROM EARLIER DRAFTS
+# Documented for memory:
+#   - The Lens (New Orleans) — placeholder, not relevant
+#   - Markup duplicate listing under tech — single entry above suffices
+#   - "The Evicted" placeholder — never identified
+#   - PFF/EFF confusion — EFF kept above
+#   - Jacobin International — redundant with main Jacobin feed
+#   - In These Times — heavy overlap with Jacobin/Labor Notes/American Prospect
+#   - Primary-source feeds (Federal Register, EDGAR, CourtListener, OLIS, city
+#     council, county) — interesting but out of scope for an aggregator
+#   - The "state-media" type label — every outlet has institutional alignment;
+#     handle it in notes rather than as a categorical flag
+# ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# WATCHLIST — NOT IN ACTIVE ROTATION
+# Listed so they're not forgotten. Add if gaps emerge in the relevant beat.
+# ─────────────────────────────────────────────
+
+# - Axios (section feeds available, content extremely brief — may serve as
+#   triage signal without adding to researcher)
+# - Politico (high volume, DC-insider framing this paper pushes against)
+# - Bellingcat (verification/OSINT — occasional, not daily)
+# - KQED (Northern California — good on Western US policy and tech)
+# - El País English (Latin America/Spain — alternative to Americas Quarterly)
+# - Kyodo News / Japan Times (Japan/Asia — add if Asia coverage feels thin)
+# - The Conversation (academic explainers — could feed Longer Reads)
+# - Quanta Magazine (science longform — could feed Longer Reads)
