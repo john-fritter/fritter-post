@@ -711,6 +711,156 @@
 # ─────────────────────────────────────────────
 
 # ─────────────────────────────────────────────
+# NON-ENGLISH LANGUAGE SOURCES
+#
+# The LLM pipeline stages read any language natively and produce English output.
+# No translation layer is needed — the triage prompt instructs the model to
+# treat multilingual input and produce an English digest. The collector is
+# indifferent to language.
+#
+# Cross-language title-similarity clustering won't work at the lexical level
+# (Levenshtein/Jaccard), but the triage stage handles cross-language story
+# recognition natively.
+#
+# RSS URLs for these sources are less certain than the English sources above.
+# All marked [VERIFY]. The collector will log which ones fail; fix the YAML
+# from those results. See TODO block at the end of this section.
+# ─────────────────────────────────────────────
+
+# Filipino / Tagalog
+
+- name: GMA News Online (Filipino)
+  url: https://www.gmanetwork.com/news/rss/
+  type: journalism
+  notes: Major Philippine TV network news. Tagalog-language coverage is deeper
+    and different from Rappler's English-first approach. [VERIFY]
+
+- name: ABS-CBN News (Filipino)
+  url: https://news.abs-cbn.com/rss/
+  type: journalism
+  notes: Second major Philippine network. Pair with GMA for breadth. [VERIFY]
+
+# Mandarin
+
+- name: Initium Media / 端傳媒
+  url: https://theinitium.com/feed/
+  type: journalism
+  notes: Independent Chinese-language journalism founded in Hong Kong, now in
+    diaspora. Accountability-focused, no CCP constraint. Closest editorial DNA
+    to this paper in the Chinese-language space. High priority. [VERIFY]
+
+- name: Lianhe Zaobao / 联合早报
+  url: https://www.zaobao.com.sg/rss/news
+  type: journalism
+  notes: Singapore's major Chinese-language paper. Editorially independent,
+    covers China from outside the mainland. [VERIFY]
+
+# Japanese
+
+- name: Asahi Shimbun / 朝日新聞
+  url: https://www.asahi.com/rss/asahi/
+  type: journalism
+  notes: The liberal-leaning quality Japanese daily. May have paywall on full
+    text; RSS abstracts useful as signal. [VERIFY]
+
+- name: NHK Web News
+  url: https://www.nhk.or.jp/rss/news/
+  type: journalism
+  notes: Japanese public broadcaster. Alternative to Asahi if feed is behind
+    paywall. [VERIFY]
+
+# French
+
+- name: Le Monde
+  url: https://www.lemonde.fr/rss/une.xml
+  type: journalism
+  notes: The French paper of record. Strong on Africa, Middle East, Europe.
+    Much broader than Le Monde Diplomatique already on the list. [VERIFY]
+
+- name: Mediapart
+  url: https://www.mediapart.fr/articles/rss
+  type: journalism
+  notes: French investigative journalism, subscription-based. May publish RSS
+    abstracts only. Fits this paper's values well. [VERIFY — may be paywalled]
+
+# Spanish
+
+- name: Animal Político
+  url: https://www.animalpolitico.com/feed/
+  type: journalism
+  notes: Mexican nonprofit investigative journalism. Excellent on Mexican
+    politics, corruption, cartel violence and its political dimensions.
+    Genuinely strong accountability operation. [VERIFY]
+
+- name: La Nación (Argentina)
+  url: https://www.lanacion.com.ar/arc/outboundfeeds/rss/
+  type: journalism
+  notes: Major Argentine daily. Latin American breadth. [VERIFY]
+
+- name: Infobae
+  url: https://www.infobae.com/feeds/rss/
+  type: journalism
+  notes: Large digital Spanish-language news operation, covers all of Latin
+    America. High volume. [VERIFY]
+
+# Portuguese
+
+- name: Agência Pública
+  url: https://apublica.org/feed/
+  type: journalism
+  notes: Brazilian nonprofit investigative journalism — essentially the
+    Brazilian ProPublica. Strong on corruption, environmental destruction,
+    human rights. High priority. [VERIFY]
+
+- name: Folha de São Paulo
+  url: https://feeds.folha.uol.com.br/emcimadahora/rss091.xml
+  type: journalism
+  notes: Largest Brazilian paper. General news breadth. [VERIFY]
+
+# Korean
+
+- name: Hankyoreh / 한겨레
+  url: https://www.hani.co.kr/rss/
+  type: journalism
+  notes: Independent progressive Korean daily. The Korean paper most aligned
+    with this paper's editorial perspective. [VERIFY]
+
+# Arabic
+
+- name: Al Jazeera Arabic / الجزيرة
+  url: https://www.aljazeera.net/rss.xml
+  type: journalism
+  notes: Different editorial decisions, different story mix, different emphasis
+    from the English edition. The Arabic version covers things the English
+    version doesn't — worth having alongside Al Jazeera English. [VERIFY]
+
+# Russian
+
+- name: Meduza
+  url: https://meduza.io/rss/all
+  type: journalism
+  notes: Independent Russian journalism in exile, based in Latvia. Not war
+    coverage specifically — covers Russia broadly. One of the stronger
+    investigative operations that survived the post-2022 crackdown. [VERIFY]
+
+# German
+
+- name: Süddeutsche Zeitung
+  url: https://rss.sueddeutsche.de/rss/Topthemen
+  type: journalism
+  notes: Quality liberal German daily. Complement to Der Spiegel International
+    already on the list. [VERIFY]
+
+# ─────────────────────────────────────────────
+# TODO — verify all non-English source URLs
+# All 15 sources above are marked [VERIFY]. On the next collector run,
+# the per_source_results in collector_runs will show which ones 404 or
+# fail to parse. Fix the URLs from those results or drop sources that
+# have no accessible RSS feed. Initium Media, Animal Político, Agência
+# Pública, and Meduza are the highest-priority to get working.
+# ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # WATCHLIST — NOT IN ACTIVE ROTATION
 # Listed so they're not forgotten. Add if gaps emerge in the relevant beat.
 # ─────────────────────────────────────────────
