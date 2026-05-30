@@ -24,28 +24,45 @@
 # ─────────────────────────────────────────────
 
 - name: AP Top News
-  url: https://apnews.com/apf-topnews
+  url: https://news.google.com/rss/search?q=apnews.com%20when:24h&hl=en-US&gl=US&ceid=US:en
   type: wire
   notes: >
-    Direct AP RSS feed. If this returns 403, fall back to Google News proxy:
-    https://news.google.com/rss/search?q=when:24h+allinurl:apnews.com&ceid=US:en&hl=en-US&gl=US
+    Google News RSS proxy for AP content. Direct AP endpoints return HTML or 404
+    to curl from this server; this query returned valid RSS with current AP items.
+    Body field contains only a Google News link wrapper; researcher will need to
+    follow links for full content.
 
 - name: AP Politics
-  url: https://news.google.com/rss/search?q=when:24h+allinurl:apnews.com/article+politics&ceid=US:en&hl=en-US&gl=US
+  url: https://news.google.com/rss/search?q=apnews.com%20politics%20when:24h&hl=en-US&gl=US&ceid=US:en
   type: wire
+  notes: >
+    Google News RSS proxy scoped to AP politics. Direct AP politics feed returns
+    HTML/404 from this server; this query returned valid RSS with current AP
+    politics items. Body field contains only a link wrapper.
 
 - name: Reuters Top News
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US
   type: wire
-  notes: feeds.reuters.com DNS dead as of 2026-05; using Google News RSS proxy for Reuters content.
+  notes: >
+    Google News RSS proxy. Titles are correct; body field contains only a link
+    wrapper, not article text. Researcher will need to follow links for full
+    content. Known limitation.
 
 - name: Reuters World News
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com/world&ceid=US:en&hl=en-US&gl=US
   type: wire
+  notes: >
+    Google News RSS proxy. Titles are correct; body field contains only a link
+    wrapper, not article text. Researcher will need to follow links for full
+    content. Known limitation.
 
 - name: Reuters Business
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com/business&ceid=US:en&hl=en-US&gl=US
   type: wire
+  notes: >
+    Google News RSS proxy. Titles are correct; body field contains only a link
+    wrapper, not article text. Researcher will need to follow links for full
+    content. Known limitation.
 
 # ─────────────────────────────────────────────
 # NATIONAL NEWS (US)
@@ -161,10 +178,11 @@
   url: https://www.thenation.com/feed/?post_type=article
   type: journalism
 
-- name: Current Affairs
-  url: https://www.currentaffairs.org/feed/
-  type: journalism
-  notes: Longform, often polemical. Better for Longer Reads than daily news.
+# DROPPED — repeated 404; Jacobin covers similar ground.
+# - name: Current Affairs
+#   url: https://www.currentaffairs.org/feed/
+#   type: journalism
+#   notes: Longform, often polemical. Better for Longer Reads than daily news.
 
 - name: Defector
   url: https://defector.com/feed
@@ -271,8 +289,9 @@
   notes: Best general Oregon news RSS. State politics, environment, Portland metro.
 
 - name: OPB Politics & Government
-  url: https://www.opb.org/arc/outboundfeeds/rss/category/politics-government/?outputType=xml
+  url: https://www.opb.org/arc/outboundfeeds/rss/category/politics/?outputType=xml
   type: journalism
+  notes: Category feed verified by curl; older politics-government path returned 500.
 
 - name: The Oregonian (OregonLive)
   url: https://www.oregonlive.com/arc/outboundfeeds/rss/?outputType=xml
@@ -281,10 +300,11 @@
     will handle the internal duplication. [VERIFY]
 
 - name: Willamette Week
-  url: https://wweek-feeds.partner.nile.works/api/v1/feeds/rss/
+  url: https://news.google.com/rss/search?q=wweek.com%20when:7d&hl=en-US&gl=US&ceid=US:en
   type: journalism
-  notes: Portland alt-weekly. Investigative, local politics, culture. Good on
-    things the Oregonian won't touch.
+  notes: >
+    Portland alt-weekly. Native /feed/ and /rss.xml return 404; old nile.works
+    partner feed has DNS failure. Using Google News RSS proxy for current items.
 
 - name: Portland Mercury
   url: https://www.portlandmercury.com/feed/
@@ -292,9 +312,10 @@
   notes: Portland alt-weekly. More overlap with Willamette Week than complement.
 
 - name: The Bend Bulletin
-  url: https://www.bendbulletin.com/arc/outboundfeeds/rss/?outputType=xml
+  url: https://www.bendbulletin.com/feed/
   type: journalism
-  notes: Primary Bend-local paper. Reader lives here — elevated attention.
+  notes: Primary Bend-local paper. Reader lives here — elevated attention. Native
+    /feed/ endpoint verified with curl; arc outbound feed returns 404.
 
 - name: The Source Weekly
   url: https://www.bendsource.com/bend/Rss.xml
@@ -308,10 +329,11 @@
   notes: Bend local TV. Lower editorial quality but catches local incidents.
     Triage should weight down unless it's a genuine Bend story.
 
-- name: High Desert Advocate
-  url: https://highdesertadvocate.com/feed/
-  type: journalism
-  notes: Independent Bend journalism. [VERIFY active feed]
+# DROPPED — three runs returning not recognized as RSS.
+# - name: High Desert Advocate
+#   url: https://highdesertadvocate.com/feed/
+#   type: journalism
+#   notes: Independent Bend journalism. [VERIFY active feed]
 
 - name: Eugene Weekly
   url: https://eugeneweekly.com/feed/
@@ -409,11 +431,12 @@
     touching CCP interests is constrained. Best English daily coverage of China
     and Asia generally on stories outside that constraint.
 
-- name: Caixin Global
-  url: https://www.caixinglobal.com/feed/
-  type: journalism
-  notes: One of the more independent in-China outlets. Strong on Chinese economy
-    and business. [VERIFY]
+# DROPPED — candidate RSS URLs returned 404; dropping until a working free feed is found.
+# - name: Caixin Global
+#   url: https://www.caixinglobal.com/feed/
+#   type: journalism
+#   notes: One of the more independent in-China outlets. Strong on Chinese economy
+#     and business. [VERIFY]
 
 - name: Xinhua English
   url: http://www.xinhuanet.com/english/rss/chinarss.xml
@@ -429,10 +452,11 @@
   type: journalism
   notes: Asia-Pacific geopolitics, English, independent. Complement to SCMP.
 
-- name: The Wire (India)
-  url: https://thewire.in/rss
-  type: journalism
-  notes: Indian independent journalism. Good on South Asia. [VERIFY]
+# DROPPED — three runs with persistent malformed XML.
+# - name: The Wire (India)
+#   url: https://thewire.in/rss
+#   type: journalism
+#   notes: Indian independent journalism. Good on South Asia. [VERIFY]
 
 - name: "+972 Magazine"
   url: https://www.972mag.com/feed/
@@ -444,11 +468,12 @@
   type: journalism
   notes: South African independent. Helps close the Africa gap.
 
-- name: The Continent
-  url: https://thecontinent.org/feed/
-  type: journalism
-  notes: Pan-African weekly. Distributed via WhatsApp/PDF — RSS may be partial.
-    Worth keeping for Africa coverage breadth.
+# DROPPED — repeated 404; publication/feed may be defunct.
+# - name: The Continent
+#   url: https://thecontinent.org/feed/
+#   type: journalism
+#   notes: Pan-African weekly. Distributed via WhatsApp/PDF — RSS may be partial.
+#     Worth keeping for Africa coverage breadth.
 
 - name: Americas Quarterly
   url: https://www.americasquarterly.org/feed/
@@ -524,10 +549,11 @@
   type: newsletter
   notes: Best comprehensive AI roundups. Prolific, opinionated, thorough.
 
-- name: The Batch (DeepLearning.ai)
-  url: https://www.deeplearning.ai/the-batch/feed/
-  type: newsletter
-  notes: Andrew Ng's weekly. What the industry considers worth covering.
+# DROPPED — candidate RSS URLs returned 404; dropping until a working feed is found.
+# - name: The Batch (DeepLearning.ai)
+#   url: https://www.deeplearning.ai/the-batch/feed/
+#   type: newsletter
+#   notes: Andrew Ng's weekly. What the industry considers worth covering.
 
 - name: Platformer (Casey Newton)
   url: https://www.platformer.news/feed
@@ -659,10 +685,10 @@
   notes: General science, accessible. Not daily-news frequency.
 
 - name: CIDRAP
-  url: https://www.cidrap.umn.edu/feed/
+  url: https://www.cidrap.umn.edu/rss.xml
   type: journalism
   notes: Center for Infectious Disease Research and Policy. Elevated when
-    anything is circulating.
+    anything is circulating. /rss.xml verified; /feed returns 404.
 
 # ─────────────────────────────────────────────
 # MEDIA / PRESS CRITICISM
@@ -729,11 +755,12 @@
 
 # Filipino / Tagalog
 
-- name: GMA News Online (Filipino)
-  url: https://www.gmanetwork.com/news/rss/
-  type: journalism
-  notes: Major Philippine TV network news. Tagalog-language coverage is deeper
-    and different from Rappler's English-first approach. [VERIFY]
+# DROPPED — three runs with persistent malformed XML.
+# - name: GMA News Online (Filipino)
+#   url: https://www.gmanetwork.com/news/rss/
+#   type: journalism
+#   notes: Major Philippine TV network news. Tagalog-language coverage is deeper
+#     and different from Rappler's English-first approach. [VERIFY]
 
 # DROPPED 2026-05-30: Consistent 403 — server blocks automated requests.
 # - name: ABS-CBN News (Filipino)
@@ -750,11 +777,12 @@
     diaspora. Accountability-focused, no CCP constraint. Closest editorial DNA
     to this paper in the Chinese-language space. High priority. [VERIFY]
 
-- name: Lianhe Zaobao / 联合早报
-  url: https://www.zaobao.com.sg/rss/china
-  type: journalism
-  notes: Singapore's major Chinese-language paper. Editorially independent,
-    covers China from outside the mainland.
+# DROPPED — repeated 404.
+# - name: Lianhe Zaobao / 联合早报
+#   url: https://www.zaobao.com.sg/rss/china
+#   type: journalism
+#   notes: Singapore's major Chinese-language paper. Editorially independent,
+#     covers China from outside the mainland.
 
 # Japanese
 
@@ -798,11 +826,12 @@
   type: journalism
   notes: Major Argentine daily. Latin American breadth. [VERIFY]
 
-- name: Infobae
-  url: https://www.infobae.com/feeds/
-  type: journalism
-  notes: Large digital Spanish-language news operation, covers all of Latin
-    America. High volume.
+# DROPPED — candidate RSS URLs returned 404; dropping until a working feed is found.
+# - name: Infobae
+#   url: https://www.infobae.com/feeds/
+#   type: journalism
+#   notes: Large digital Spanish-language news operation, covers all of Latin
+#     America. High volume.
 
 # Portuguese
 
@@ -828,12 +857,13 @@
 
 # Arabic
 
-- name: Al Jazeera Arabic / الجزيرة
-  url: https://www.aljazeera.net/xml/rss/all.xml
-  type: journalism
-  notes: Different editorial decisions, different story mix, different emphasis
-    from the English edition. The Arabic version covers things the English
-    version doesn't — worth having alongside Al Jazeera English.
+# DROPPED — repeated 404; Al Jazeera English is working fine.
+# - name: Al Jazeera Arabic / الجزيرة
+#   url: https://www.aljazeera.net/xml/rss/all.xml
+#   type: journalism
+#   notes: Different editorial decisions, different story mix, different emphasis
+#     from the English edition. The Arabic version covers things the English
+#     version doesn't — worth having alongside Al Jazeera English.
 
 # Russian
 
@@ -857,12 +887,12 @@
 # - ABS-CBN: DROPPED (consistent 403)
 # - Asahi Shimbun: DROPPED (consistent 403)
 # - Mediapart: DROPPED (fully paywalled)
-# - Lianhe Zaobao: changed to /rss/china path
+# - Lianhe Zaobao: DROPPED (repeated 404)
 # - NHK: changed to nhk3.or.jp/rss/news/cat0.xml
-# - Al Jazeera Arabic: changed to /xml/rss/all.xml
+# - Al Jazeera Arabic: DROPPED (repeated 404; English feed works)
 # - Animal Político: switched to Google News proxy (direct feed dead)
-# - Infobae: changed to /feeds/ (removed /rss/ suffix)
-# Still [VERIFY] on next run: GMA News Online (parse error), Initium Media,
+# - Infobae: DROPPED (candidate feeds 404)
+# Still [VERIFY] on next run: Initium Media,
 # Agência Pública, Le Monde, Meduza, Hankyoreh, Süddeutsche Zeitung, Folha
 # ─────────────────────────────────────────────
 
