@@ -27,6 +27,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV PATH=/app/node_modules/.bin:$PATH
 
 # Non-root user for defence in depth.
 RUN addgroup --system --gid 1001 nodejs && \

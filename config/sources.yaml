@@ -167,16 +167,15 @@
 # Editor should distinguish news from analysis and size/label accordingly.
 # ─────────────────────────────────────────────
 
-# NOTE: feed returns zero items across all runs. May be rate-limited
-# or paywalled. URL appears correct. Monitor.
 - name: Jacobin
-  url: https://jacobin.com/feed/
+  url: https://jacobinmag.com/feed/
   type: journalism
   notes: >
     Editorial lineage the standing memo explicitly names. Analysis pieces,
     not breaking news. Strong on labor, housing, healthcare, democratic politics.
     Long pieces feed Longer Reads. Alternatives checked 2026-05-30: jacobinmag.com/feed/
-    is valid Atom but lacks link elements the collector can use; feed.rss and blog/feed 404.
+    is valid Atom and uses canonical URLs in <id>; the collector now falls back to
+    any URL-shaped guid/id when link is missing. feed.rss and blog/feed 404.
 
 - name: The Nation
   url: https://www.thenation.com/feed/?post_type=article

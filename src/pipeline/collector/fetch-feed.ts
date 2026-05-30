@@ -37,7 +37,19 @@ export async function fetchFeed(source: Source): Promise<FetchedItem[]> {
   const results: FetchedItem[] = [];
 
   for (const item of feed.items) {
-    const originalUrl = item.link ?? "";
+    const rawItem = item as Parser.Item & {
+      id?: unknown;
+      guid?: unknown;
+      link?: unknown;
+    };
+    const originalUrl =
+      typeof rawItem.link === "string" && rawItem.link
+        ? rawItem.link
+        : typeof rawItem.guid === "string" && /^https?:\/\//.test(rawItem.guid)
+          ? rawItem.guid
+          : typeof rawItem.id === "string" && /^https?:\/\//.test(rawItem.id)
+            ? rawItem.id
+            : null;
     const title = item.title ?? "(no title)";
 
     if (!originalUrl) {
