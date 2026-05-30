@@ -167,12 +167,16 @@
 # Editor should distinguish news from analysis and size/label accordingly.
 # ─────────────────────────────────────────────
 
+# NOTE: feed returns zero items across all runs. May be rate-limited
+# or paywalled. URL appears correct. Monitor.
 - name: Jacobin
   url: https://jacobin.com/feed/
   type: journalism
-  notes: Editorial lineage the standing memo explicitly names. Analysis pieces,
+  notes: >
+    Editorial lineage the standing memo explicitly names. Analysis pieces,
     not breaking news. Strong on labor, housing, healthcare, democratic politics.
-    Long pieces feed Longer Reads.
+    Long pieces feed Longer Reads. Alternatives checked 2026-05-30: jacobinmag.com/feed/
+    is valid Atom but lacks link elements the collector can use; feed.rss and blog/feed 404.
 
 - name: The Nation
   url: https://www.thenation.com/feed/?post_type=article
@@ -318,10 +322,11 @@
     /feed/ endpoint verified with curl; arc outbound feed returns 404.
 
 - name: The Source Weekly
-  url: https://www.bendsource.com/bend/Rss.xml
+  url: https://www.bendsource.com/feed/
   type: journalism
   notes: Bend's alt-weekly. Local culture, politics, investigative. Pair with
-    Bulletin for full Bend coverage. [VERIFY]
+    Bulletin for full Bend coverage. Native /feed/ endpoint verified with curl;
+    old /bend/Rss.xml returned 404.
 
 - name: KTVZ NewsChannel 21
   url: https://ktvz.com/feed/

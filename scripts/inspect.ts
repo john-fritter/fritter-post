@@ -238,6 +238,8 @@ Options:
   } finally {
     await pool.end();
   }
+
+  process.exit(0);
 }
 
 main().catch((err) => {

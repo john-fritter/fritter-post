@@ -79,6 +79,8 @@ async function main() {
     client.release();
     await pool.end();
   }
+
+  process.exit(0);
 }
 
 main().catch((err) => {

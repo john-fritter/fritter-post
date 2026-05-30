@@ -30,6 +30,7 @@ function parseArgs(argv: string[]): { source?: string; concurrency?: number } {
 async function main() {
   const { source, concurrency } = parseArgs(process.argv);
   await runCollector({ sourceFilter: source, concurrency });
+  process.exit(0);
 }
 
 main().catch((err) => {
