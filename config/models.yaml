@@ -1,0 +1,23 @@
+# Model assignments per pipeline stage.
+# All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
+
+triage:
+  model: gemini-3-flash-preview
+  temperature: 0.2
+  max_tokens: 8000
+
+researcher:
+  model: gemini-3-flash-preview  # placeholder
+  temperature: 0.4
+  max_tokens: 4000
+  step_limit: 20
+
+editor:
+  model: gemini-3-flash-preview  # placeholder
+  temperature: 0.2
+  max_tokens: 8000
+
+writers:
+  model: gemini-3-flash-preview  # placeholder
+  temperature: 0.6
+  max_tokens: 2000
