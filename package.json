@@ -12,10 +12,13 @@
     "typecheck": "tsc --noEmit",
     "migrate": "tsx scripts/migrate.ts",
     "inspect": "tsx scripts/inspect.ts",
-    "collect": "tsx scripts/collect.ts"
+    "collect": "tsx scripts/collect.ts",
+    "preprocess": "tsx scripts/preprocess.ts",
+    "assemble": "tsx scripts/assemble.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
+    "html-to-text": "^10.0.0",
     "next": "^15.0.0",
     "p-limit": "^7.3.0",
     "pg": "^8.13.0",
@@ -26,6 +29,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "@types/react": "^19.0.0",

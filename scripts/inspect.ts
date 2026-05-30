@@ -8,6 +8,8 @@
  *   npm run inspect -- list --source "ProPublica" --limit 20
  *   npm run inspect -- collector
  *   npm run inspect -- collector --id 3
+ *   npm run inspect -- preprocessor
+ *   npm run inspect -- preprocessor --id 1
  */
 
 import "dotenv/config";
@@ -43,6 +45,18 @@ interface SourceResult {
   items_inserted: number;
   error_message?: string;
   duration_ms: number;
+}
+
+interface PreprocessorRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  collector_run_id: number | null;
+  raw_items_considered: number;
+  items_kept: number;
+  items_dropped_recency: number;
+  items_dropped_duplicate: number;
+  notes: string | null;
 }
 
 function parseArgs(argv: string[]) {
@@ -219,6 +233,72 @@ async function main() {
         break;
       }
 
+      case "preprocessor": {
+        if (flags["id"]) {
+          // Detail view for one run.
+          const runId = parseInt(flags["id"], 10);
+          const { rows } = await pool.query<PreprocessorRunRow>(
+            "SELECT * FROM preprocessor_runs WHERE id = $1",
+            [runId]
+          );
+          const run = rows[0];
+          if (!run) {
+            console.log(`No preprocessor run with id ${runId}`);
+            break;
+          }
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Run #${run.id}`);
+          console.log(`  Started:                 ${started}`);
+          console.log(`  Completed:               ${finished}`);
+          if (run.collector_run_id !== null) {
+            console.log(`  Collector run id:        ${run.collector_run_id}`);
+          }
+          console.log(`  Raw items considered:    ${run.raw_items_considered}`);
+          console.log(`  Items kept:              ${run.items_kept}`);
+          console.log(`  Dropped (recency):       ${run.items_dropped_recency}`);
+          console.log(`  Dropped (duplicate):     ${run.items_dropped_duplicate}`);
+          if (run.notes) console.log(`  Notes: ${run.notes}`);
+        } else {
+          // Summary list of recent runs.
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<PreprocessorRunRow>(
+            `SELECT id, started_at, completed_at, collector_run_id,
+                    raw_items_considered, items_kept,
+                    items_dropped_recency, items_dropped_duplicate, notes
+             FROM preprocessor_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No preprocessor runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Considered".padEnd(12)} ${"Kept".padEnd(8)} ${"RecDrop".padEnd(10)} DupDrop`
+          );
+          console.log("─".repeat(65));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ` +
+              `${String(run.raw_items_considered).padEnd(12)} ` +
+              `${String(run.items_kept).padEnd(8)} ` +
+              `${String(run.items_dropped_recency).padEnd(10)} ` +
+              `${run.items_dropped_duplicate}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -227,11 +307,13 @@ Commands:
   list                     List recent raw_items
   collector                List recent collector runs
   collector --id <n>       Show full detail for one collector run
+  preprocessor             List recent preprocessor runs
+  preprocessor --id <n>    Show full stats for one preprocessor run
 
 Options:
   --source <name>          Filter by source name (exact match)
   --limit <n>              Max rows returned (default varies by command)
-  --id <n>                 Collector run id for detail view
+  --id <n>                 Run id for detail view
 `);
         process.exit(1);
     }

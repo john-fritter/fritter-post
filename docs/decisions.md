@@ -20,6 +20,77 @@ Entry format:
 
 ---
 
+## 2026-05-30 — Triage document is flat chronological, not pre-grouped
+
+**Decision:** The assembler produces a flat list of items sorted by
+published_at ascending (nulls last). No section headers, no grouping by
+source or topic.
+
+**Context:** An earlier instinct was to group items by source or cluster
+them by title similarity before feeding them to the triage LLM.
+
+**Rationale:** LLM clustering is smarter than mechanical clustering. The
+triage model has a large context window and can recognize cross-source
+coverage, semantic clusters, and story threads on its own — with better
+precision than Jaccard similarity on titles. Pre-grouping would bias the
+LLM toward the preprocessor's grouping decisions and obscure the raw
+signal. Flat chronological order preserves all signal and puts the
+analytical work where it belongs: in the LLM call that was designed for it.
+
+---
+
+## 2026-05-30 — Deduplication is canonical-URL-within-source, not cross-source
+
+**Decision:** The preprocessor deduplicates on `(canonical_url, source_name)`.
+Two items with the same canonical URL from different sources are both kept.
+
+**Context:** A simpler approach would deduplicate globally on canonical URL,
+keeping only one item per URL regardless of source.
+
+**Rationale:** Cross-source coverage of the same URL is signal, not noise.
+If AP, Reuters, and NPR all link to the same Washington Post story, that
+pickup count is meaningful prominence signal for the triage stage. Dropping
+the duplicates would discard that information. Deduplication within a single
+source is still correct: one source shouldn't contribute two rows for the
+same story just because it appeared twice in the feed.
+
+---
+
+## 2026-05-30 — Recency window is 48 hours, not 24
+
+**Decision:** The preprocessor includes raw_items where published_at or
+fetched_at is within the past 48 hours.
+
+**Context:** A 24-hour window matches the paper's daily cadence but risks
+dropping items that should appear in today's paper.
+
+**Rationale:** Some feeds lag — an item published at 11pm may not be fetched
+until the next day's run. A newsletter might summarize a story from yesterday
+that's still worth including. 48 hours provides a buffer without meaningfully
+increasing noise, because the recency filter is followed by triage, which
+filters by relevance, not just recency. True duplicates from across the window
+are handled by URL deduplication.
+
+---
+
+## 2026-05-30 — html-to-text for HTML stripping
+
+**Decision:** Use the `html-to-text` npm package to convert feed body content
+from HTML to clean plain text.
+
+**Context:** Alternatives considered: `cheerio` (full DOM parser, then
+text extraction); stripping tags with a regex; rolling a simple tag-stripper.
+
+**Rationale:** `html-to-text` handles document structure correctly — it
+turns `<p>` and `<br>` into newlines, `<li>` into list items, converts
+`<a>` to link text (href discarded), and ignores `<img>`, `<figure>`,
+`<script>`, and `<style>`. A regex strip would produce collapsed text with
+no whitespace between paragraphs, making it harder to read and harder to
+truncate meaningfully. Cheerio would work but requires two steps (parse +
+extract) for the same result. `html-to-text` is the right tool for the job.
+
+---
+
 ## 2026-05-27 — Self-contained Postgres inside the compose stack
 
 **Decision:** Postgres runs as a service inside the project's own
