@@ -20,6 +20,56 @@ Entry format:
 
 ---
 
+## 2026-05-30 — Triage is neutral by design
+
+**Decision:** The triage stage applies no editorial judgment, reader context, or research recommendations. It groups items into clusters and describes them neutrally. All judgment happens downstream.
+
+**Context:** Triage is the first LLM stage and the only one that reads every item. The temptation is to have it rank, score, or flag items for investigation.
+
+**Rationale:** Judgment requires context triage doesn't have: the reader's bio, the standing memo, yesterday's paper, the source policy. Asking triage to make editorial calls would produce premature filtering based on incomplete context. The editor stage, which has all of that context, is where those calls belong. Triage's only job is to make the pile navigable — a filing clerk, not an editor.
+
+---
+
+## 2026-05-30 — Clusters ordered by source count descending
+
+**Decision:** The triage prompt instructs the LLM to order clusters by source count, descending. Most-covered story first.
+
+**Context:** An alternative was to let the LLM use its own judgment about ordering, or to order chronologically.
+
+**Rationale:** Source count is a mechanical, observable proxy for coverage volume. Ordering by it gives a consistent, inspectable signal without asking the LLM to exercise judgment about importance. The most-covered story reliably leads. If source-count ordering turns out to be a bad signal in practice, the prompt can be revised.
+
+---
+
+## 2026-05-30 — Continuity system deferred
+
+**Decision:** Triage does not compare today's clusters to yesterday's. No continuity matching at this stage.
+
+**Context:** The concept doc mentions continuity as a first-class feature: today's paper is aware of yesterday's.
+
+**Rationale:** Continuity matching requires published papers to compare against, and the publisher doesn't exist yet. Implementing a continuity check now would mean writing against a hypothetical schema. The decision is documented so it gets added once the publisher exists and there's real data to match against.
+
+---
+
+## 2026-05-30 — LLM wrapper thin by design
+
+**Decision:** `src/llm/index.ts` wraps the OpenAI SDK with only two additions: generation_logs insertion and a typed interface. No retry logic, no streaming, no middleware chain.
+
+**Context:** Alternatives considered: LangChain-style middleware, a heavier abstraction with pluggable providers, retry with exponential backoff.
+
+**Rationale:** The OpenAI SDK handles HTTP/SSE transport. The only project-specific requirements are logging every call to Postgres and providing a typed interface for stage code. Adding retry logic before there's real failure data would be speculative. The wrapper is intentionally thin so it's easy to read and easy to extend when specific needs emerge.
+
+---
+
+## 2026-05-30 — No retry logic in V1
+
+**Decision:** callLLM() does not retry on failure. If the LLM call throws, the error is logged to generation_logs and rethrown immediately.
+
+**Context:** Retry logic with exponential backoff is standard practice for API calls.
+
+**Rationale:** The right retry policy depends on failure patterns we don't have yet. Transient rate limits need different treatment than timeout failures, which need different treatment than model errors. Adding generic retry now risks masking real failures or running up token costs during debugging. Add retry logic once there's real failure data to design from.
+
+---
+
 ## 2026-05-30 — Triage document is flat chronological, not pre-grouped
 
 **Decision:** The assembler produces a flat list of items sorted by

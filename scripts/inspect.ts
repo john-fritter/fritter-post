@@ -10,6 +10,8 @@
  *   npm run inspect -- collector --id 3
  *   npm run inspect -- preprocessor
  *   npm run inspect -- preprocessor --id 1
+ *   npm run inspect -- triage
+ *   npm run inspect -- triage --id 1
  */
 
 import "dotenv/config";
@@ -57,6 +59,24 @@ interface PreprocessorRunRow {
   items_dropped_recency: number;
   items_dropped_duplicate: number;
   notes: string | null;
+}
+
+interface TriageRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  preprocessor_run_id: number;
+  model_used: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  digest: string | null;
+  generation_log_id: string | null;
+}
+
+function parseClusterCount(digest: string): string {
+  const match = digest.match(/^Clusters identified:\s*(\d+)/m);
+  return match?.[1] ?? "?";
 }
 
 function parseArgs(argv: string[]) {
@@ -299,6 +319,62 @@ async function main() {
         break;
       }
 
+      case "triage": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows } = await pool.query<TriageRunRow>(
+            "SELECT * FROM triage_runs WHERE id = $1",
+            [runId]
+          );
+          const run = rows[0];
+          if (!run) {
+            console.log(`No triage run with id ${runId}`);
+            break;
+          }
+          if (run.digest) {
+            process.stdout.write(run.digest);
+            if (!run.digest.endsWith("\n")) process.stdout.write("\n");
+          } else {
+            console.log(`Triage run #${run.id} has no digest (failed or incomplete).`);
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<TriageRunRow>(
+            `SELECT id, started_at, completed_at, preprocessor_run_id,
+                    model_used, input_tokens, output_tokens, duration_ms, digest
+             FROM triage_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No triage runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Prep#".padEnd(7)} ${"Model".padEnd(26)} ${"InTok".padEnd(8)} ${"OutTok".padEnd(8)} ${"Ms".padEnd(8)} Clusters`
+          );
+          console.log("─".repeat(100));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const prepId = String(run.preprocessor_run_id);
+            const model = run.model_used.length > 24 ? run.model_used.slice(0, 23) + "…" : run.model_used;
+            const inTok = run.input_tokens !== null ? String(run.input_tokens) : "—";
+            const outTok = run.output_tokens !== null ? String(run.output_tokens) : "—";
+            const ms = run.duration_ms !== null ? String(run.duration_ms) : "—";
+            const clusterCount = run.digest ? parseClusterCount(run.digest) : "—";
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${prepId.padEnd(7)} ${model.padEnd(26)} ${inTok.padEnd(8)} ${outTok.padEnd(8)} ${ms.padEnd(8)} ${clusterCount}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -309,6 +385,8 @@ Commands:
   collector --id <n>       Show full detail for one collector run
   preprocessor             List recent preprocessor runs
   preprocessor --id <n>    Show full stats for one preprocessor run
+  triage                   List recent triage runs
+  triage --id <n>          Print full digest for one triage run
 
 Options:
   --source <name>          Filter by source name (exact match)

@@ -14,12 +14,14 @@
     "inspect": "tsx scripts/inspect.ts",
     "collect": "tsx scripts/collect.ts",
     "preprocess": "tsx scripts/preprocess.ts",
-    "assemble": "tsx scripts/assemble.ts"
+    "assemble": "tsx scripts/assemble.ts",
+    "triage": "tsx scripts/triage.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "html-to-text": "^10.0.0",
     "next": "^15.0.0",
+    "openai": "^6.39.1",
     "p-limit": "^7.3.0",
     "pg": "^8.13.0",
     "react": "^19.0.0",
