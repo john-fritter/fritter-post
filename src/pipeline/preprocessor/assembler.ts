@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { getPool } from "../../db/index.js";
+import { classifyItem } from "./junk-filter.js";
 
 interface PreprocessedItemRow {
   id: string;
@@ -11,7 +12,7 @@ interface PreprocessedItemRow {
   fetched_at: string;
 }
 
-const BODY_PREVIEW_LENGTH = 200;
+const BODY_PREVIEW_LENGTH = 50;
 
 function formatTimestamp(publishedAt: string | null): string {
   if (!publishedAt) return "no timestamp";
@@ -50,28 +51,40 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
     return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
   }
 
-  const sourceCount = new Set(items.map((i) => i.source_name)).size;
+  // Apply junk filter, logging every drop.
+  const kept: PreprocessedItemRow[] = [];
+  for (const item of items) {
+    const result = classifyItem({
+      id: item.id,
+      source_name: item.source_name,
+      title: item.title,
+      body_text: item.body_text,
+    });
+    if (!result.keep) {
+      console.log(`[junk-filter] DROP [${item.id}] ${item.source_name} | ${result.reason} | ${item.title}`);
+    } else {
+      kept.push(item);
+    }
+  }
+
+  const sourceCount = new Set(kept.map((i) => i.source_name)).size;
   const date = formatDate(new Date());
 
   const lines: string[] = [];
 
   lines.push(`FRITTER POST — TRIAGE INPUT ${date}`);
-  lines.push(`${items.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
+  lines.push(`${kept.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
   lines.push(`Reader location: Bend, Oregon`);
   lines.push("");
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!;
-    const index = String(i + 1).padStart(4, "0");
+  for (const item of kept) {
     const timeStr = formatTimestamp(item.published_at);
-
-    const bodyPreview = item.body_text
-      ? item.body_text.slice(0, BODY_PREVIEW_LENGTH)
-      : "(no body)";
-
-    lines.push(`[${index}] ${item.source_name} | ${item.source_type} | ${timeStr}`);
+    lines.push(`[${item.id}] ${item.source_name} | ${item.source_type} | ${timeStr}`);
     lines.push(item.title);
-    lines.push(bodyPreview);
+    if (item.body_text) {
+      const bodyPreview = item.body_text.replace(/\s+/g, " ").trim().slice(0, BODY_PREVIEW_LENGTH);
+      lines.push(bodyPreview);
+    }
     lines.push("");
   }
 

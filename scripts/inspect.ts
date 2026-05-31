@@ -74,9 +74,57 @@ interface TriageRunRow {
   generation_log_id: string | null;
 }
 
+interface PrepItemRow {
+  id: string;
+  source_name: string;
+  title: string;
+}
+
 function parseClusterCount(digest: string): string {
+  // Try new JSON schema first.
+  try {
+    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
+    if (Array.isArray(parsed.clusters)) return String(parsed.clusters.length);
+  } catch {
+    // fall through to legacy text format
+  }
   const match = digest.match(/^Clusters identified:\s*(\d+)/m);
   return match?.[1] ?? "?";
+}
+
+interface ClusterObject {
+  title: string;
+  item_ids: number[];
+  summary: string;
+  notes: string | null;
+}
+
+interface TriageJsonOutput {
+  clusters: ClusterObject[];
+}
+
+function parseTriageJson(digest: string): TriageJsonOutput | null {
+  try {
+    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const parsed = JSON.parse(stripped) as unknown;
+    if (
+      typeof parsed !== "object" || parsed === null ||
+      !Array.isArray((parsed as { clusters?: unknown }).clusters)
+    ) return null;
+    const obj = parsed as { clusters: unknown[] };
+    for (const c of obj.clusters) {
+      if (
+        typeof c !== "object" || c === null ||
+        typeof (c as ClusterObject).title !== "string" ||
+        !Array.isArray((c as ClusterObject).item_ids) ||
+        typeof (c as ClusterObject).summary !== "string"
+      ) return null;
+    }
+    return obj as TriageJsonOutput;
+  } catch {
+    return null;
+  }
 }
 
 function parseArgs(argv: string[]) {
@@ -331,11 +379,98 @@ async function main() {
             console.log(`No triage run with id ${runId}`);
             break;
           }
-          if (run.digest) {
+          if (!run.digest) {
+            console.log(`Triage run #${run.id} has no digest (failed or incomplete).`);
+            break;
+          }
+
+          const parsed = parseTriageJson(run.digest);
+          if (!parsed) {
+            // Fall back to raw output for old/unparseable digests.
             process.stdout.write(run.digest);
             if (!run.digest.endsWith("\n")) process.stdout.write("\n");
+            break;
+          }
+
+          // Load all preprocessed items for the run so we can resolve ids.
+          const { rows: prepItems } = await pool.query<PrepItemRow>(
+            `SELECT id, source_name, title FROM preprocessed_items
+             WHERE preprocessor_run_id = $1`,
+            [run.preprocessor_run_id]
+          );
+          const itemMap = new Map<number, PrepItemRow>();
+          for (const pi of prepItems) {
+            itemMap.set(Number(pi.id), pi);
+          }
+
+          const runStarted = new Date(run.started_at).toISOString().slice(0, 19);
+          console.log(`Triage run #${run.id}  |  preprocessor run #${run.preprocessor_run_id}  |  ${runStarted}`);
+          console.log(`Model: ${run.model_used}`);
+          const inTok = run.input_tokens !== null ? run.input_tokens.toLocaleString() : "?";
+          const outTok = run.output_tokens !== null ? run.output_tokens.toLocaleString() : "?";
+          console.log(`Tokens: ${inTok} in / ${outTok} out`);
+          console.log(`Clusters: ${parsed.clusters.length}  |  Items in run: ${prepItems.length}`);
+          console.log("");
+
+          // Integrity pre-checks.
+          const allClusteredIds = new Set<number>();
+          const seenIds = new Map<number, number>(); // id → cluster index (first seen)
+          const fabricatedIds: number[] = [];
+          const duplicateIds: number[] = [];
+          const singletonClusters: number[] = [];
+
+          for (let ci = 0; ci < parsed.clusters.length; ci++) {
+            const cluster = parsed.clusters[ci]!;
+            if (cluster.item_ids.length < 2) singletonClusters.push(ci);
+            for (const id of cluster.item_ids) {
+              if (!itemMap.has(id)) {
+                fabricatedIds.push(id);
+              } else if (seenIds.has(id)) {
+                duplicateIds.push(id);
+              } else {
+                seenIds.set(id, ci);
+                allClusteredIds.add(id);
+              }
+            }
+          }
+
+          // Print clusters.
+          for (let ci = 0; ci < parsed.clusters.length; ci++) {
+            const cluster = parsed.clusters[ci]!;
+            const validIds = cluster.item_ids.filter((id) => itemMap.has(id));
+            const sources = [...new Set(validIds.map((id) => itemMap.get(id)!.source_name))];
+            sources.sort();
+            console.log(`── [${ci + 1}/${parsed.clusters.length}] ${cluster.title}`);
+            console.log(`   Items: ${cluster.item_ids.length}  |  Sources (${sources.length}): ${sources.join(", ")}`);
+            console.log(`   ${cluster.summary}`);
+            if (cluster.notes) {
+              console.log(`   Notes: ${cluster.notes}`);
+            }
+            console.log("");
+          }
+
+          // Residual.
+          const residualItems = (prepItems as PrepItemRow[]).filter((pi) => !allClusteredIds.has(Number(pi.id)));
+          console.log(`── RESIDUAL: ${residualItems.length} unclustered item${residualItems.length !== 1 ? "s" : ""}`);
+          const sample = residualItems.slice(0, 30);
+          for (const pi of sample) {
+            console.log(`   [${pi.id}] ${pi.source_name} — ${pi.title}`);
+          }
+          if (residualItems.length > 30) {
+            console.log(`   … and ${residualItems.length - 30} more`);
+          }
+          console.log("");
+
+          // Integrity flags.
+          const flags2: string[] = [];
+          if (fabricatedIds.length > 0) flags2.push(`FABRICATED IDs (not in run): ${fabricatedIds.join(", ")}`);
+          if (duplicateIds.length > 0) flags2.push(`DUPLICATE IDs (in >1 cluster): ${duplicateIds.join(", ")}`);
+          if (singletonClusters.length > 0) flags2.push(`SINGLETON CLUSTERS (< 2 items): indices ${singletonClusters.map((i) => i + 1).join(", ")}`);
+          if (flags2.length > 0) {
+            console.log("── INTEGRITY FLAGS");
+            for (const f of flags2) console.log(`   ⚠  ${f}`);
           } else {
-            console.log(`Triage run #${run.id} has no digest (failed or incomplete).`);
+            console.log("── INTEGRITY: OK");
           }
         } else {
           const limit = parseInt(flags["limit"] ?? "20", 10);

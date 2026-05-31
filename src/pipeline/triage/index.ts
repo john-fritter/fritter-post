@@ -1,9 +1,37 @@
 import "dotenv/config";
+import { z } from "zod";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { assembleTriageDocument } from "../preprocessor/assembler.js";
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.js";
+
+const ClusterSchema = z.object({
+  title: z.string(),
+  item_ids: z.array(z.number().int()),
+  summary: z.string(),
+  notes: z.string().nullable(),
+});
+
+const TriageOutputSchema = z.object({
+  clusters: z.array(ClusterSchema),
+});
+
+export type TriageCluster = z.infer<typeof ClusterSchema>;
+export type TriageOutput = z.infer<typeof TriageOutputSchema>;
+
+function parseTriageOutput(text: string): TriageOutput | null {
+  try {
+    const stripped = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const parsed: unknown = JSON.parse(stripped);
+    return TriageOutputSchema.parse(parsed);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[triage] digest parse failed: ${reason}`);
+    console.warn(`[triage] first 500 chars: ${text.slice(0, 500)}`);
+    return null;
+  }
+}
 
 export interface TriageRun {
   id: number;
@@ -69,7 +97,10 @@ export async function runTriage(options: {
       maxTokens,
     });
 
-    // 6. Update triage_runs with results.
+    // 6. Defensively parse the output. Warn on failure but do not throw.
+    parseTriageOutput(result.text);
+
+    // 7. Update triage_runs with results (store raw text regardless of parse outcome).
     await pool.query(
       `UPDATE triage_runs
        SET completed_at       = NOW(),
@@ -82,7 +113,7 @@ export async function runTriage(options: {
       [result.inputTokens, result.outputTokens, result.durationMs, result.text, result.generationLogId, runId]
     );
 
-    // 7. Return completed run.
+    // 8. Return completed run.
     return await fetchTriageRun(pool, runId);
   } catch (err) {
     // Mark run as failed with a note if it never completed.

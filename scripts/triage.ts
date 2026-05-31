@@ -4,11 +4,12 @@
  * Usage:
  *   npm run triage
  *   npm run triage -- --preprocessor-run-id 3
- *   npm run triage -- --model gemini-3-flash-preview
+ *   npm run triage -- --model deepseek-v4-flash
  */
 
 import "dotenv/config";
 import { runTriage } from "../src/pipeline/triage/index.js";
+import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -43,13 +44,14 @@ async function main() {
 
   const modelOverride = flags["model"];
 
+  const modelConfig = loadModelConfig();
+  const effectiveModel = modelOverride ?? modelConfig.triage.model;
+
   console.log("Starting triage…");
   if (preprocessorRunId !== undefined) {
     console.log(`  preprocessor-run-id: ${preprocessorRunId}`);
   }
-  if (modelOverride) {
-    console.log(`  model override: ${modelOverride}`);
-  }
+  console.log(`  model: ${effectiveModel}${modelOverride ? " (override)" : " (default)"}`);
 
   const run = await runTriage({ preprocessorRunId, modelOverride });
 
