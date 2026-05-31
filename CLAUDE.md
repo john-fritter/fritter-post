@@ -58,7 +58,7 @@ fritter-post/
 │   └── preferences-observed.md  # agent-updated, dated entries (TBD)
 ├── config/
 │   ├── sources.yaml             # feed list
-│   └── models.yaml              # per-stage model config (TBD)
+│   └── models.yaml              # per-stage LLM model and budget config
 ├── src/
 │   ├── pipeline/                # the seven stages
 │   │   ├── collector/
@@ -92,7 +92,9 @@ stage is the abstraction.
   This is non-negotiable — it's the feedback loop.
 - **Per-stage configuration** lives in `config/models.yaml`. Model, token
   budgets, step limits for agentic loops, temperature, retry behavior.
-  Hardcoding any of these in stage code is a bug.
+  Hardcoding any of these in stage code is a bug. For Ollama Cloud, use
+  canonical model IDs from `/v1/models` such as `deepseek-v4-pro` or
+  `deepseek-v4-flash`, not display names or guessed suffixes.
 - **Structured outputs preferred** over freeform parsing wherever the
   schema is knowable. Use JSON mode or tool-call shapes when the consumer
   is software; freeform text only when the consumer is the reader.
@@ -142,14 +144,30 @@ here so future agents don't rediscover them the hard way:
 
 ## Commands
 
-To be filled in as the project is set up. Expected:
+Current scripts:
 
 - `npm run dev` — Next.js dev server
 - `npm run build` — production build
-- `npm run pipeline:run` — execute the daily pipeline once
-- `npm run pipeline:stage <name>` — execute one stage (for iteration)
-- `npm run inspect <stage> <run-id>` — pretty-print stage output
-- `npm run db:migrate` — run pending migrations
+- `npm run typecheck` — TypeScript check
+- `npm run migrate` — apply numbered SQL migrations
+- `npm run collect` — collect raw source items
+- `npm run preprocess` — deduplicate/canonicalize collected items
+- `npm run assemble` — assemble a preprocessor run into a triage document
+- `npm run triage` — run the LLM triage stage and write `triage_runs`
+- `npm run inspect -- <stage>` — inspect counts, lists, collector,
+  preprocessor, or triage runs
+
+In production, run CLI stages inside the app container, for example:
+
+```bash
+docker compose exec -T app npm run migrate
+docker compose exec -T app npm run triage
+docker compose exec -T app npm run inspect -- triage
+```
+
+`docker-compose.yml` uses `env_file: .env` for the app service. After any
+change to `LLM_BASE_URL`, `LLM_API_KEY`, or model config, recreate/rebuild the
+app container before assuming `docker compose exec` sees the new values.
 
 ---
 
