@@ -15,7 +15,8 @@
     "collect": "tsx scripts/collect.ts",
     "preprocess": "tsx scripts/preprocess.ts",
     "assemble": "tsx scripts/assemble.ts",
-    "triage": "tsx scripts/triage.ts"
+    "triage": "tsx scripts/triage.ts",
+    "filter": "tsx scripts/filter.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

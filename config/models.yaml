@@ -1,6 +1,13 @@
 # Model assignments per pipeline stage.
 # All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
 
+filter:
+  model: gpt-oss-120b
+  temperature: 0.1
+  max_tokens: 4096
+  batch_size: 100
+  concurrency: 3
+
 triage:
   model: gemini-3-flash-preview
   temperature: 0.2

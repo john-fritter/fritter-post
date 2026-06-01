@@ -80,6 +80,24 @@ interface PrepItemRow {
   title: string;
 }
 
+interface FilterRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  preprocessor_run_id: number;
+  model_used: string;
+  items_in: number;
+  items_kept: number;
+  items_dropped: number;
+}
+
+interface FilterDropRow {
+  id: string;
+  source_name: string;
+  title: string;
+  reason: string;
+}
+
 function parseClusterCount(digest: string): string {
   // Try new JSON schema first.
   try {
@@ -510,6 +528,96 @@ async function main() {
         break;
       }
 
+      case "filter": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<FilterRunRow>(
+            "SELECT * FROM filter_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No filter run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Filter run #${run.id}`);
+          console.log(`  Started:             ${started}`);
+          console.log(`  Completed:           ${finished}`);
+          console.log(`  Preprocessor run:    #${run.preprocessor_run_id}`);
+          console.log(`  Model:               ${run.model_used}`);
+          console.log(`  Items in:            ${run.items_in}`);
+          console.log(`  Items kept:          ${run.items_kept}`);
+          console.log(`  Items dropped:       ${run.items_dropped}`);
+          if (run.items_in > 0) {
+            const pct = ((run.items_dropped / run.items_in) * 100).toFixed(1);
+            console.log(`  Drop rate:           ${pct}%`);
+          }
+
+          if (run.items_dropped > 0) {
+            // Drops by reason.
+            const { rows: reasonRows } = await pool.query<{ reason: string; n: string }>(
+              `SELECT reason, COUNT(*) AS n FROM filter_results
+               WHERE filter_run_id = $1 AND keep = false
+               GROUP BY reason ORDER BY COUNT(*) DESC`,
+              [runId]
+            );
+            console.log("\nDrops by reason:");
+            for (const r of reasonRows) {
+              console.log(`  ${r.reason}: ${r.n}`);
+            }
+
+            // Full dropped-items list.
+            const { rows: dropRows } = await pool.query<FilterDropRow>(
+              `SELECT fr.preprocessed_item_id AS id, pi.source_name, pi.title, fr.reason
+               FROM filter_results fr
+               JOIN preprocessed_items pi ON pi.id = fr.preprocessed_item_id
+               WHERE fr.filter_run_id = $1 AND fr.keep = false
+               ORDER BY fr.reason, pi.source_name, pi.title`,
+              [runId]
+            );
+            console.log("\nDropped items:");
+            for (const row of dropRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<FilterRunRow>(
+            `SELECT id, started_at, completed_at, preprocessor_run_id,
+                    model_used, items_in, items_kept, items_dropped
+             FROM filter_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No filter runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Prep#".padEnd(7)} ${"Model".padEnd(26)} ${"In".padEnd(6)} ${"Kept".padEnd(6)} Dropped`
+          );
+          console.log("─".repeat(82));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 24 ? run.model_used.slice(0, 23) + "…" : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.preprocessor_run_id).padEnd(7)} ${model.padEnd(26)} ${String(run.items_in).padEnd(6)} ${String(run.items_kept).padEnd(6)} ${run.items_dropped}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -522,6 +630,8 @@ Commands:
   preprocessor --id <n>    Show full stats for one preprocessor run
   triage                   List recent triage runs
   triage --id <n>          Print full digest for one triage run
+  filter                   List recent filter runs
+  filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
 
 Options:
   --source <name>          Filter by source name (exact match)

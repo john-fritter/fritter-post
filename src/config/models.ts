@@ -10,7 +10,13 @@ const StageConfigSchema = z.object({
   step_limit: z.number().int().optional(),
 });
 
+const FilterStageConfigSchema = StageConfigSchema.extend({
+  batch_size: z.number().int(),
+  concurrency: z.number().int(),
+});
+
 const ModelsConfigSchema = z.object({
+  filter: FilterStageConfigSchema,
   triage: StageConfigSchema,
   researcher: StageConfigSchema,
   editor: StageConfigSchema,
@@ -18,6 +24,7 @@ const ModelsConfigSchema = z.object({
 });
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;
+export type FilterStageConfig = z.infer<typeof FilterStageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(
