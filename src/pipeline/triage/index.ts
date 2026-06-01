@@ -72,6 +72,7 @@ export async function runTriage(options: {
   const model = options.modelOverride ?? modelConfig.triage.model;
   const temperature = modelConfig.triage.temperature;
   const maxTokens = modelConfig.triage.max_tokens;
+  const reasoningEffort = modelConfig.triage.reasoning_effort;
 
   // 3. Create triage_runs row.
   const { rows: runRows } = await pool.query<{ id: number }>(
@@ -95,6 +96,7 @@ export async function runTriage(options: {
       userPrompt: buildUserPrompt(document),
       temperature,
       maxTokens,
+      reasoningEffort,
     });
 
     // 6. Defensively parse the output. Warn on failure but do not throw.

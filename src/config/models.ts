@@ -8,6 +8,7 @@ const StageConfigSchema = z.object({
   temperature: z.number(),
   max_tokens: z.number().int(),
   step_limit: z.number().int().optional(),
+  reasoning_effort: z.string().optional(),
 });
 
 const FilterStageConfigSchema = StageConfigSchema.extend({
