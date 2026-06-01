@@ -98,6 +98,25 @@ interface FilterDropRow {
   reason: string;
 }
 
+interface EditorPass1RunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  triage_run_id: number;
+  model_used: string;
+  items_in: number;
+  items_research: number;
+  items_footer: number;
+  items_cut: number;
+}
+
+interface EditorPass1ResultRow {
+  id: string;
+  source_name: string;
+  title: string;
+  reason: string;
+}
+
 function parseClusterCount(digest: string): string {
   // Try new JSON schema first.
   try {
@@ -618,6 +637,101 @@ async function main() {
         break;
       }
 
+      case "editor-pass-1": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<EditorPass1RunRow>(
+            "SELECT * FROM editor_pass_1_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No editor-pass-1 run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Editor-pass-1 run #${run.id}`);
+          console.log(`  Started:          ${started}`);
+          console.log(`  Completed:        ${finished}`);
+          console.log(`  Triage run:       #${run.triage_run_id}`);
+          console.log(`  Model:            ${run.model_used}`);
+          console.log(`  Items in:         ${run.items_in}`);
+          console.log(`  Research:         ${run.items_research}`);
+          console.log(`  Footer:           ${run.items_footer}`);
+          console.log(`  Cut:              ${run.items_cut}`);
+          if (run.items_in > 0) {
+            const cutPct = ((run.items_cut / run.items_in) * 100).toFixed(1);
+            console.log(`  Cut rate:         ${cutPct}%`);
+          }
+
+          if (run.items_cut > 0) {
+            const { rows: cutRows } = await pool.query<EditorPass1ResultRow>(
+              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.reason
+               FROM editor_pass_1_results r
+               JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
+               WHERE r.run_id = $1 AND r.bucket = 'cut'
+               ORDER BY pi.source_name, pi.title`,
+              [runId]
+            );
+            console.log(`\n── CUT ITEMS (${run.items_cut})`);
+            for (const row of cutRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+
+          if (run.items_footer > 0) {
+            const { rows: footerRows } = await pool.query<EditorPass1ResultRow>(
+              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.reason
+               FROM editor_pass_1_results r
+               JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
+               WHERE r.run_id = $1 AND r.bucket = 'footer'
+               ORDER BY pi.source_name, pi.title`,
+              [runId]
+            );
+            console.log(`\n── FOOTER ITEMS (${run.items_footer})`);
+            for (const row of footerRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<EditorPass1RunRow>(
+            `SELECT id, started_at, completed_at, triage_run_id,
+                    model_used, items_in, items_research, items_footer, items_cut
+             FROM editor_pass_1_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No editor-pass-1 runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(22)} ${"In".padEnd(6)} ${"Research".padEnd(10)} ${"Footer".padEnd(8)} Cut`
+          );
+          console.log("─".repeat(90));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 20
+              ? run.model_used.slice(0, 19) + "…"
+              : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(22)} ${String(run.items_in).padEnd(6)} ${String(run.items_research).padEnd(10)} ${String(run.items_footer).padEnd(8)} ${run.items_cut}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -632,6 +746,8 @@ Commands:
   triage --id <n>          Print full digest for one triage run
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
+  editor-pass-1            List recent editor-pass-1 runs
+  editor-pass-1 --id <n>   Show detail, cut list, and footer list for one run
 
 Options:
   --source <name>          Filter by source name (exact match)

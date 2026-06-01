@@ -22,6 +22,7 @@ const ModelsConfigSchema = z.object({
   researcher: StageConfigSchema,
   editor: StageConfigSchema,
   writers: StageConfigSchema,
+  editor_pass_1: FilterStageConfigSchema,
 });
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;

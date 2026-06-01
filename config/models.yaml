@@ -30,3 +30,11 @@ writers:
   model: gemini-3-flash-preview  # placeholder
   temperature: 0.6
   max_tokens: 2000
+
+editor_pass_1:
+  model: glm-5.1
+  temperature: 0.1
+  max_tokens: 4096
+  batch_size: 40
+  concurrency: 3
+  reasoning_effort: "none"
