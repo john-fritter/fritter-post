@@ -130,3 +130,67 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
 
   return lines.join("\n");
 }
+
+/**
+ * Assembles a triage document restricted to the given item IDs.
+ * Used by the categorized triage path to build per-section documents.
+ * Applies the junk filter; does NOT re-run the LLM filter (callers
+ * are expected to pass already-filtered IDs).
+ */
+export async function assembleTriageDocumentForItemIds(
+  preprocessorRunId: number,
+  itemIds: Set<number>
+): Promise<string> {
+  if (itemIds.size === 0) {
+    return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
+  }
+
+  const pool = getPool();
+  const idArray = [...itemIds];
+
+  const { rows: items } = await pool.query<PreprocessedItemRow>(
+    `SELECT id, source_name, source_type, title, body_text, published_at, fetched_at
+     FROM preprocessed_items
+     WHERE preprocessor_run_id = $1
+       AND id = ANY($2::bigint[])
+     ORDER BY published_at ASC NULLS LAST, fetched_at ASC`,
+    [preprocessorRunId, idArray]
+  );
+
+  const kept: PreprocessedItemRow[] = [];
+  for (const item of items) {
+    const result = classifyItem({
+      id: item.id,
+      source_name: item.source_name,
+      title: item.title,
+      body_text: item.body_text,
+    });
+    if (result.keep) kept.push(item);
+  }
+
+  if (kept.length === 0) {
+    return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
+  }
+
+  const sourceCount = new Set(kept.map((i) => i.source_name)).size;
+  const date = formatDate(new Date());
+  const lines: string[] = [];
+
+  lines.push(`FRITTER POST — TRIAGE INPUT ${date}`);
+  lines.push(`${kept.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
+  lines.push(`Reader location: Bend, Oregon`);
+  lines.push("");
+
+  for (const item of kept) {
+    const timeStr = formatTimestamp(item.published_at);
+    lines.push(`[${item.id}] ${item.source_name} | ${item.source_type} | ${timeStr}`);
+    lines.push(item.title);
+    if (item.body_text) {
+      const bodyPreview = item.body_text.replace(/\s+/g, " ").trim().slice(0, BODY_PREVIEW_LENGTH);
+      lines.push(bodyPreview);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
