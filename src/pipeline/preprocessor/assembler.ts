@@ -33,8 +33,35 @@ function formatDate(d: Date): string {
 }
 
 /**
+ * Returns the set of kept preprocessed_item IDs from the latest completed
+ * filter run for the given preprocessor run, or null if no filter run exists.
+ */
+async function getFilterKeptIds(
+  pool: import("pg").Pool,
+  preprocessorRunId: number
+): Promise<Set<number> | null> {
+  const { rows: runRows } = await pool.query<{ id: number }>(
+    `SELECT id FROM filter_runs
+     WHERE preprocessor_run_id = $1 AND completed_at IS NOT NULL
+     ORDER BY completed_at DESC LIMIT 1`,
+    [preprocessorRunId]
+  );
+  if (!runRows[0]) return null;
+
+  const filterRunId = runRows[0].id;
+  const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
+    `SELECT preprocessed_item_id FROM filter_results
+     WHERE filter_run_id = $1 AND keep = true`,
+    [filterRunId]
+  );
+  return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));
+}
+
+/**
  * Reads preprocessed_items for a given run and produces a flat
  * chronological plain-text document for the triage LLM.
+ * If a completed filter run exists for this preprocessor run, only the
+ * items kept by that filter run are included.
  */
 export async function assembleTriageDocument(preprocessorRunId: number): Promise<string> {
   const pool = getPool();
@@ -47,13 +74,26 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
     [preprocessorRunId]
   );
 
-  if (items.length === 0) {
+  // Apply LLM filter results if a completed filter run exists.
+  const keptIds = await getFilterKeptIds(pool, preprocessorRunId);
+  const preFilterItems = keptIds !== null
+    ? items.filter((item: PreprocessedItemRow) => (keptIds as Set<number>).has(Number(item.id)))
+    : items;
+
+  if (keptIds !== null) {
+    const dropped = items.length - preFilterItems.length;
+    if (dropped > 0) {
+      console.log(`[assembler] filter run applied: ${preFilterItems.length} kept, ${dropped} dropped`);
+    }
+  }
+
+  if (preFilterItems.length === 0) {
     return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
   }
 
   // Apply junk filter, logging every drop.
   const kept: PreprocessedItemRow[] = [];
-  for (const item of items) {
+  for (const item of preFilterItems) {
     const result = classifyItem({
       id: item.id,
       source_name: item.source_name,
