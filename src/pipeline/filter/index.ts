@@ -65,7 +65,8 @@ async function processBatch(
   model: string,
   temperature: number,
   maxTokens: number,
-  systemPrompt: string
+  systemPrompt: string,
+  reasoningEffort?: string
 ): Promise<FilterItemResult[]> {
   const batchPayload: FilterBatchItem[] = batch.map((item) => ({
     id: Number(item.id),
@@ -83,6 +84,7 @@ async function processBatch(
       userPrompt: buildUserPrompt(batchPayload),
       temperature,
       maxTokens,
+      reasoningEffort,
     });
 
     const parsed = parseBatchOutput(llmResult.text);
@@ -148,6 +150,7 @@ export async function runFilter(
   const maxTokens = modelConfig.filter.max_tokens;
   const batchSize = modelConfig.filter.batch_size;
   const concurrency = modelConfig.filter.concurrency;
+  const reasoningEffort = modelConfig.filter.reasoning_effort;
 
   // 3. Fetch preprocessed items for this run.
   const { rows: items } = await pool.query<PreprocessedItemRow>(
@@ -181,7 +184,7 @@ export async function runFilter(
     const batchResults = await Promise.all(
       batches.map((batch, batchIndex) =>
         limit(() =>
-          processBatch(batch, batchIndex, batches.length, runId, model, temperature, maxTokens, systemPrompt)
+          processBatch(batch, batchIndex, batches.length, runId, model, temperature, maxTokens, systemPrompt, reasoningEffort)
         )
       )
     );

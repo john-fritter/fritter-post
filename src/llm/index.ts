@@ -10,6 +10,7 @@ export interface LLMCallOptions {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: string;
 }
 
 export interface LLMCallResult {
@@ -31,7 +32,7 @@ function getClient(): OpenAI {
 }
 
 export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
-  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens } = options;
+  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort } = options;
   const pool = getPool();
   const startMs = Date.now();
 
@@ -43,7 +44,7 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   try {
     const client = getClient();
 
-    const completion = await client.chat.completions.create({
+    const completionParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
       model,
       messages: [
         { role: "system", content: systemPrompt },
@@ -51,7 +52,14 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
       ],
       ...(temperature !== undefined ? { temperature } : {}),
       ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
-    });
+    };
+    if (reasoningEffort !== undefined) {
+      // reasoning_effort is not in OpenAI SDK types but is forwarded verbatim
+      // to OpenAI-compatible endpoints. Double-cast narrowly — only this assignment.
+      (completionParams as unknown as Record<string, unknown>)["reasoning_effort"] = reasoningEffort;
+    }
+
+    const completion = await client.chat.completions.create(completionParams);
 
     responseText = completion.choices[0]?.message?.content ?? null;
     inputTokens = completion.usage?.prompt_tokens ?? null;
