@@ -39,6 +39,14 @@ const EditorPass1BatchOutputSchema = z.array(EditorPass1ItemResultSchema);
 
 export type EditorPass1ItemResult = z.infer<typeof EditorPass1ItemResultSchema>;
 
+export interface EditorPass1BatchParseResult {
+  mode: "strict" | "recovered";
+  results: EditorPass1ItemResult[];
+  recoveredCount: number;
+  unrecoveredCount: number;
+  strictError?: string;
+}
+
 interface PreprocessedItemRow {
   id: string;
   source_name: string;
@@ -72,15 +80,124 @@ interface EditorPass1RunRow {
   items_in: number;
 }
 
-function parseBatchOutput(text: string): EditorPass1ItemResult[] | null {
+function stripJsonFence(text: string): string {
+  return text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+}
+
+function extractBalancedObjectCandidates(text: string): string[] {
+  const candidates = new Set<string>();
+
+  // Fast path for the known flat object shape. This can recover valid objects even
+  // when the previous separator is corrupt (`{"{"id":...`), because the match can
+  // start at the inner `{` immediately before a valid `"id"` property.
+  const flatObjectPattern =
+    /\{\s*"id"\s*:\s*\d+\s*,\s*"score"\s*:\s*\d+\s*,\s*"reason"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g;
+  for (const match of text.matchAll(flatObjectPattern)) {
+    candidates.add(match[0]);
+  }
+
+  // Fallback scan for any future valid flat objects with harmless whitespace or
+  // property additions. This is intentionally small, not a full JSON grammar.
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth++;
+      if (ch === "}" && depth > 0) {
+        depth--;
+        if (depth === 0) {
+          candidates.add(text.slice(i, j + 1));
+          break;
+        }
+      }
+    }
+  }
+
+  return [...candidates];
+}
+
+function recoverBatchItems(text: string, expectedIds: number[]): EditorPass1ItemResult[] {
+  const expected = new Set(expectedIds);
+  const recovered = new Map<number, EditorPass1ItemResult>();
+
+  // The observed model failure mode is not truncated arrays; it is junk delimiter
+  // fragments between otherwise valid objects, e.g. `},{"},{"id":85,...` or
+  // `},{""id":...`. We therefore scan for balanced `{...}` substrings and trust
+  // only candidates that independently validate against the item schema.
+  for (const candidate of extractBalancedObjectCandidates(stripJsonFence(text))) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      const result = EditorPass1ItemResultSchema.safeParse(parsed);
+      if (!result.success) continue;
+      if (!expected.has(result.data.id)) continue;
+      if (!recovered.has(result.data.id)) recovered.set(result.data.id, result.data);
+    } catch {
+      // Ignore malformed junk fragments; unrecovered expected ids get per-item fail-safe rows below.
+    }
+  }
+
+  return expectedIds.map((id) =>
+    recovered.get(id) ?? {
+      id,
+      score: 50,
+      reason: "fail-safe: unrecovered from malformed batch",
+    },
+  );
+}
+
+export function parseBatchOutput(
+  text: string,
+  expectedIds?: number[],
+): EditorPass1BatchParseResult | null {
   try {
-    const stripped = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const stripped = stripJsonFence(text);
     const parsed: unknown = JSON.parse(stripped);
-    return EditorPass1BatchOutputSchema.parse(parsed);
+    return {
+      mode: "strict",
+      results: EditorPass1BatchOutputSchema.parse(parsed),
+      recoveredCount: 0,
+      unrecoveredCount: 0,
+    };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[editor-pass-1] batch parse failed: ${reason}`);
-    return null;
+    if (expectedIds === undefined) {
+      console.warn(`[editor-pass-1] batch parse failed: ${reason}`);
+      return null;
+    }
+
+    const results = recoverBatchItems(text, expectedIds);
+    const recoveredCount = results.filter(
+      (result) => result.reason !== "fail-safe: unrecovered from malformed batch",
+    ).length;
+
+    return {
+      mode: "recovered",
+      results,
+      recoveredCount,
+      unrecoveredCount: expectedIds.length - recoveredCount,
+      strictError: reason,
+    };
   }
 }
 
@@ -136,7 +253,8 @@ async function processBatch(
       reasoningEffort,
     });
 
-    const parsed = parseBatchOutput(llmResult.text);
+    const expectedIds = batch.map((item) => Number(item.id));
+    const parsed = parseBatchOutput(llmResult.text, expectedIds);
     if (parsed === null) {
       console.warn(
         `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${batch.length} items to score=50`,
@@ -148,7 +266,20 @@ async function processBatch(
       }));
     }
 
-    const resultMap = new Map(parsed.map((r) => [r.id, r]));
+    if (parsed.mode === "strict") {
+      console.log(
+        `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: strict parsed ` +
+          `${parsed.results.length}/${batch.length}; recovered=0; unrecovered=0`,
+      );
+    } else {
+      console.warn(
+        `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: strict parse failed ` +
+          `(${parsed.strictError}) — recovered=${parsed.recoveredCount}; ` +
+          `unrecovered=${parsed.unrecoveredCount}`,
+      );
+    }
+
+    const resultMap = new Map(parsed.results.map((r) => [r.id, r]));
     return batch.map((item) => {
       const result = resultMap.get(Number(item.id));
       if (!result) {
