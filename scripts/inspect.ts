@@ -114,6 +114,31 @@ interface EditorPass1ResultRow {
   id: string;
   source_name: string;
   title: string;
+  score: number;
+  reason: string;
+}
+
+interface ScoreDistRow {
+  range_label: string;
+  range_ord: number;
+  n: string;
+}
+
+interface EditorPileRow {
+  id: number;
+  clusters_included: number;
+  singletons_in_pile: number;
+  singletons_below_line: number;
+  score_cutoff: number | null;
+  singleton_pile_target: number;
+}
+
+interface BelowLineRow {
+  id: string;
+  source_name: string;
+  title: string;
+  score: number;
+  bucket: string;
   reason: string;
 }
 
@@ -668,33 +693,110 @@ async function main() {
             console.log(`  Cut rate:         ${cutPct}%`);
           }
 
+          // Score distribution for non-cut items.
+          const { rows: distRows } = await pool.query<ScoreDistRow>(
+            `SELECT
+               CASE WHEN score >= 90 THEN '90–100'
+                    WHEN score >= 70 THEN '70–89'
+                    WHEN score >= 50 THEN '50–69'
+                    WHEN score >= 30 THEN '30–49'
+                    ELSE                  '0–29'
+               END AS range_label,
+               CASE WHEN score >= 90 THEN 4
+                    WHEN score >= 70 THEN 3
+                    WHEN score >= 50 THEN 2
+                    WHEN score >= 30 THEN 1
+                    ELSE                  0
+               END AS range_ord,
+               COUNT(*) AS n
+             FROM editor_pass_1_results
+             WHERE run_id = $1 AND bucket IN ('research', 'footer')
+             GROUP BY range_label, range_ord
+             ORDER BY range_ord DESC`,
+            [runId]
+          );
+          if (distRows.length > 0) {
+            console.log("\n── SCORE DISTRIBUTION (research + footer)");
+            const allRanges = [
+              { label: "90–100", ord: 4 },
+              { label: "70–89",  ord: 3 },
+              { label: "50–69",  ord: 2 },
+              { label: "30–49",  ord: 1 },
+              { label: "0–29",   ord: 0 },
+            ];
+            for (const r of allRanges) {
+              const found = distRows.find((d) => d.range_ord === r.ord);
+              const count = found ? found.n : "0";
+              console.log(`  ${r.label.padEnd(8)} ${count}`);
+            }
+          }
+
           if (run.items_cut > 0) {
             const { rows: cutRows } = await pool.query<EditorPass1ResultRow>(
-              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.reason
+              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
                FROM editor_pass_1_results r
                JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
                WHERE r.run_id = $1 AND r.bucket = 'cut'
-               ORDER BY pi.source_name, pi.title`,
+               ORDER BY r.score DESC, pi.source_name, pi.title`,
               [runId]
             );
             console.log(`\n── CUT ITEMS (${run.items_cut})`);
             for (const row of cutRows) {
-              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
             }
           }
 
           if (run.items_footer > 0) {
             const { rows: footerRows } = await pool.query<EditorPass1ResultRow>(
-              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.reason
+              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
                FROM editor_pass_1_results r
                JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
                WHERE r.run_id = $1 AND r.bucket = 'footer'
-               ORDER BY pi.source_name, pi.title`,
+               ORDER BY r.score DESC, pi.source_name, pi.title`,
               [runId]
             );
             console.log(`\n── FOOTER ITEMS (${run.items_footer})`);
             for (const row of footerRows) {
-              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+
+          // Pile info, if assembly has been run for this editor-pass-1 run.
+          const { rows: pileRows } = await pool.query<EditorPileRow>(
+            `SELECT id, clusters_included, singletons_in_pile, singletons_below_line,
+                    score_cutoff, singleton_pile_target
+             FROM editor_piles
+             WHERE editor_pass_1_run_id = $1
+             ORDER BY created_at DESC LIMIT 1`,
+            [runId]
+          );
+          const pile = pileRows[0];
+          if (pile) {
+            const totalPile = pile.clusters_included + pile.singletons_in_pile;
+            console.log(`\n── PILE #${pile.id}`);
+            console.log(`  Singleton target:    ${pile.singleton_pile_target}`);
+            console.log(`  Clusters in pile:    ${pile.clusters_included} (all pass through)`);
+            console.log(`  Singletons in pile:  ${pile.singletons_in_pile}`);
+            console.log(`  Singletons below:    ${pile.singletons_below_line}`);
+            if (pile.score_cutoff !== null) {
+              console.log(`  Score cutoff:        ${pile.score_cutoff}`);
+            }
+            console.log(`  Total pile size:     ${totalPile}`);
+
+            if (pile.singletons_below_line > 0) {
+              const { rows: belowRows } = await pool.query<BelowLineRow>(
+                `SELECT epi.preprocessed_item_id AS id, pi.source_name, pi.title,
+                        epi.score, epi.bucket, epi.reason
+                 FROM editor_pile_items epi
+                 JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
+                 WHERE epi.pile_id = $1 AND epi.in_pile = false
+                 ORDER BY epi.score DESC, pi.title ASC`,
+                [pile.id]
+              );
+              console.log(`\n── BELOW LINE (${pile.singletons_below_line})`);
+              for (const row of belowRows) {
+                console.log(`  [${row.id}] score=${row.score} ${row.bucket} | ${row.source_name} | ${row.reason} | ${row.title}`);
+              }
             }
           }
         } else {
@@ -747,7 +849,7 @@ Commands:
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
   editor-pass-1            List recent editor-pass-1 runs
-  editor-pass-1 --id <n>   Show detail, cut list, and footer list for one run
+  editor-pass-1 --id <n>   Show scores, cut/footer lists, and pile info for one run
 
 Options:
   --source <name>          Filter by source name (exact match)

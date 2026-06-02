@@ -38,3 +38,4 @@ editor_pass_1:
   batch_size: 40
   concurrency: 3
   reasoning_effort: "none"
+  singleton_pile_target: 100

@@ -30,12 +30,25 @@ Classify each item into exactly one of:
 - Because this stage only processes singletons (multi-source stories are already rescued by the clustering stage), aggressive cutting here cannot eliminate a prominent story. Lean on that safety rail.
 - A single-source item clearly relevant to this reader — local news, a domain the bio marks as high-interest, a named person the reader follows — goes to "research" even from one source.
 
+## PRIORITY SCORE
+
+Assign an integer score from 0 to 100 reflecting how strongly this item matters to this specific reader.
+
+Score each item on its OWN MERIT against the reader's interests — NOT relative to the other items shown in this batch. The score should be identical regardless of what other items appear alongside it.
+
+- 90–100: Exactly what this reader wants to read. Directly in a core interest domain, high-stakes, or clearly affects them personally.
+- 70–89: High relevance. Clearly within a domain they care about, though not a top-priority story.
+- 50–69: Moderate. The reader might find this mildly interesting; uncertain relevance.
+- 30–49: Low relevance. Tangential to their interests; probably not worth their time.
+- 0–29: Irrelevant. Nothing in the bio suggests this reader would care.
+
 ## OUTPUT
 
 Return a JSON array and nothing else — no markdown, no code fences, no commentary before or after. One element per input item:
 {
   "id": <integer matching the input id>,
   "bucket": <"research" | "footer" | "cut">,
+  "score": <integer 0–100, per the scoring guidance above>,
   "reason": <short phrase, 3–8 words, stating the specific editorial reason>
 }
 

@@ -32,6 +32,7 @@ function loadBio(): string {
 const EditorPass1ItemResultSchema = z.object({
   id: z.number().int(),
   bucket: z.enum(["research", "footer", "cut"]),
+  score: z.number().int().min(0).max(100),
   reason: z.string(),
 });
 
@@ -150,6 +151,7 @@ async function processBatch(
       return batch.map((item) => ({
         id: Number(item.id),
         bucket: "research" as const,
+        score: 50,
         reason: "parse-error-kept",
       }));
     }
@@ -164,6 +166,7 @@ async function processBatch(
         return {
           id: Number(item.id),
           bucket: "research" as const,
+          score: 50,
           reason: "missing-from-response-kept",
         };
       }
@@ -177,6 +180,7 @@ async function processBatch(
     return batch.map((item) => ({
       id: Number(item.id),
       bucket: "research" as const,
+      score: 50,
       reason: "llm-error-kept",
     }));
   }
@@ -305,13 +309,13 @@ export async function runEditorPass1(
         itemsFooter++;
         const item = itemMap.get(result.id);
         console.log(
-          `[editor-pass-1] FOOTER [${result.id}] ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
+          `[editor-pass-1] FOOTER [${result.id}] score=${result.score} | ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
         );
       } else {
         itemsCut++;
         const item = itemMap.get(result.id);
         console.log(
-          `[editor-pass-1] CUT [${result.id}] ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
+          `[editor-pass-1] CUT [${result.id}] score=${result.score} | ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
         );
       }
     }
@@ -322,16 +326,16 @@ export async function runEditorPass1(
       const chunk = allResults.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_item: EditorPass1ItemResult, j: number) => {
-          const base = j * 4;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
+          const base = j * 5;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
         })
         .join(", ");
       const params: Array<number | string> = [];
       for (const r of chunk) {
-        params.push(runId, r.id, r.bucket, r.reason);
+        params.push(runId, r.id, r.bucket, r.score, r.reason);
       }
       await pool.query(
-        `INSERT INTO editor_pass_1_results (run_id, preprocessed_item_id, bucket, reason) VALUES ${placeholders}`,
+        `INSERT INTO editor_pass_1_results (run_id, preprocessed_item_id, bucket, score, reason) VALUES ${placeholders}`,
         params,
       );
     }

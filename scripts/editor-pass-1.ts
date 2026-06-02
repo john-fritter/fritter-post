@@ -1,5 +1,5 @@
 /**
- * CLI entry point for the editor-pass-1 stage.
+ * CLI entry point for the editor-pass-1 stage (scoring + pile assembly).
  *
  * Usage:
  *   npm run editor-pass-1
@@ -9,6 +9,7 @@
 
 import "dotenv/config";
 import { runEditorPass1 } from "../src/pipeline/editor-pass-1/index.js";
+import { assemblePile } from "../src/pipeline/editor-pass-1/assemble-pile.js";
 import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
@@ -47,7 +48,7 @@ async function main() {
   const modelConfig = loadModelConfig();
   const effectiveModel = modelOverride ?? modelConfig.editor_pass_1.model;
 
-  console.log("Starting editor-pass-1…");
+  console.log("Starting editor-pass-1 scoring…");
   if (triageRunId !== undefined) {
     console.log(`  triage-run-id: ${triageRunId}`);
   }
@@ -58,7 +59,7 @@ async function main() {
 
   const run = await runEditorPass1({ triageRunId, modelOverride });
 
-  console.log(`\nEditor-pass-1 run #${run.id} complete.`);
+  console.log(`\nScoring run #${run.id} complete.`);
   console.log(`  Triage run:   #${run.triageRunId}`);
   console.log(`  Model:        ${run.modelUsed}`);
   console.log(`  Items in:     ${run.itemsIn}`);
@@ -69,6 +70,22 @@ async function main() {
     const cutPct = ((run.itemsCut / run.itemsIn) * 100).toFixed(1);
     console.log(`  Cut rate:     ${cutPct}%`);
   }
+
+  console.log("\nAssembling editor pile…");
+  console.log(`  singleton_pile_target: ${modelConfig.editor_pass_1.singleton_pile_target}`);
+
+  const pile = await assemblePile(run.id);
+
+  console.log(`\nPile #${pile.pileId} assembled.`);
+  console.log(`  Clusters in pile:      ${pile.clustersIncluded} (all pass through)`);
+  console.log(`  Eligible singletons:   ${pile.singletonsTotalEligible}`);
+  console.log(`  Singletons in pile:    ${pile.singletonsInPile}`);
+  console.log(`  Singletons below line: ${pile.singletonsBelowLine}`);
+  if (pile.scoreCutoff !== null) {
+    console.log(`  Score cutoff:          ${pile.scoreCutoff}`);
+  }
+  const totalPile = pile.clustersIncluded + pile.singletonsInPile;
+  console.log(`  Total pile size:       ${totalPile} (${pile.clustersIncluded} clusters + ${pile.singletonsInPile} singletons)`);
 
   process.exit(0);
 }
