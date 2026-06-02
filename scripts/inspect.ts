@@ -680,7 +680,10 @@ async function main() {
           console.log(`  Completed:        ${finished}`);
           console.log(`  Triage run:       #${run.triage_run_id}`);
           console.log(`  Model:            ${run.model_used}`);
-          console.log(`  Items scored:     ${run.items_in}`);
+          console.log(`  Items in:         ${run.items_in}`);
+          if (run.items_in > 0) {
+            console.log(`  Results scored:   ${run.items_in}`);
+          }
 
           // Score distribution across all scored singletons.
           const { rows: distRows } = await pool.query<ScoreDistRow>(
@@ -720,6 +723,51 @@ async function main() {
             }
           }
 
+          // Score-50 fail-safe audit.
+          const { rows: failSafeRows } = await pool.query<{ reason: string; n: string }>(
+            `SELECT reason, COUNT(*)::int AS n
+             FROM editor_pass_1_results
+             WHERE run_id = $1 AND score = 50
+             GROUP BY reason
+             ORDER BY n DESC, reason`,
+            [runId]
+          );
+          if (failSafeRows.length > 0) {
+            console.log("\n── FAIL-SAFE (score=50)");
+            for (const row of failSafeRows) {
+              console.log(`  ${row.reason.padEnd(28)} ${row.n}`);
+            }
+          }
+
+          // Low-score protected-beat audit.
+          const protectedBeatPatterns = [
+            /philipp|manila|aira/i,
+            /qorvo|semi|semiconductor|fab|chip/i,
+            /labor|union|strike/i,
+            /bend|central oregon|oregon/i,
+            /immigr|ice\b/i,
+            /housing|homeless/i,
+          ];
+          const { rows: lowRows } = await pool.query<EditorPass1ResultRow & { source_name: string }>(
+            `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
+             FROM editor_pass_1_results r
+             JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
+             WHERE r.run_id = $1 AND r.score < 30
+             ORDER BY r.score ASC, pi.source_name, pi.title`,
+            [runId]
+          );
+          const protectedMatches = lowRows.filter((row) => {
+            const haystack = `${row.source_name} ${row.title} ${row.reason}`;
+            return protectedBeatPatterns.some((re) => re.test(haystack));
+          });
+          console.log(`\n── PROTECTED-BEAT LOW-SCORE AUDIT (${protectedMatches.length})`);
+          if (protectedMatches.length === 0) {
+            console.log("  none");
+          } else {
+            for (const row of protectedMatches) {
+              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
           // Pile info, if assembly has been run for this editor-pass-1 run.
           const { rows: pileRows } = await pool.query<EditorPileRow>(
             `SELECT id, clusters_included, singletons_in_pile, singletons_below_line,
@@ -761,7 +809,8 @@ async function main() {
         } else {
           const limit = parseInt(flags["limit"] ?? "20", 10);
           const { rows } = await pool.query<EditorPass1RunRow>(
-            `SELECT id, started_at, completed_at, triage_run_id, model_used, items_in
+            `SELECT id, started_at, completed_at, triage_run_id,
+                    model_used, items_in, items_research, items_footer, items_cut
              FROM editor_pass_1_runs
              ORDER BY started_at DESC
              LIMIT $1`,
@@ -774,9 +823,9 @@ async function main() {
           }
 
           console.log(
-            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(26)} Scored`
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(22)} ${"In".padEnd(6)}`
           );
-          console.log("─".repeat(70));
+          console.log("─".repeat(65));
 
           for (const run of rows) {
             const started = new Date(run.started_at).toISOString().slice(0, 19);
@@ -785,7 +834,7 @@ async function main() {
               : run.model_used;
             const status = run.completed_at ? "" : " (running…)";
             console.log(
-              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(26)} ${run.items_in}${status}`
+              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(22)} ${String(run.items_in).padEnd(6)}${status}`
             );
           }
         }

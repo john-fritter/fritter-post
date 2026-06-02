@@ -68,7 +68,7 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
 
   const clustersIncluded = parseClusters(triageRun.digest);
 
-  // 3. Load all scored singletons, sorted by score desc (tiebreak: item id asc).
+  // 3. Load scored singletons, sorted by score desc.
   const { rows: resultRows } = await pool.query<EditorPass1ResultRow>(
     `SELECT preprocessed_item_id, score, reason
      FROM editor_pass_1_results
