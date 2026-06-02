@@ -118,16 +118,16 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
 
     const placeholders = indices
       .map((_idx, j) => {
-        const base = j * 3;
-        return `($${base + 1}, $${base + 2}, $${base + 3})`;
+        const base = j * 4;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
       })
       .join(", ");
     const params: Array<number | string | boolean> = [];
     for (const idx of indices) {
-      params.push(pileId, idx, true);
+      params.push(pileId, "cluster", idx, true);
     }
     await pool.query(
-      `INSERT INTO editor_pile_items (pile_id, cluster_index, in_pile) VALUES ${placeholders}`,
+      `INSERT INTO editor_pile_items (pile_id, item_type, cluster_index, in_pile) VALUES ${placeholders}`,
       params,
     );
   }
@@ -145,13 +145,13 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
 
     const placeholders = chunk
       .map((_s: ScoredSingleton, j: number) => {
-        const base = j * 6;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
+        const base = j * 7;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
       })
       .join(", ");
     const params: Array<number | string | boolean> = [];
     for (const s of chunk) {
-      params.push(pileId, Number(s.preprocessed_item_id), s.inPile, s.bucket, s.score, s.reason);
+      params.push(pileId, "singleton", Number(s.preprocessed_item_id), s.inPile, s.bucket, s.score, s.reason);
     }
     await pool.query(
       `INSERT INTO editor_pile_items
