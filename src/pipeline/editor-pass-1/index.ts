@@ -61,9 +61,6 @@ export interface EditorPass1Run {
   triageRunId: number;
   modelUsed: string;
   itemsIn: number;
-  itemsResearch: number;
-  itemsFooter: number;
-  itemsCut: number;
 }
 
 interface EditorPass1RunRow {
@@ -73,9 +70,6 @@ interface EditorPass1RunRow {
   triage_run_id: number;
   model_used: string;
   items_in: number;
-  items_research: number;
-  items_footer: number;
-  items_cut: number;
 }
 
 function parseBatchOutput(text: string): EditorPass1ItemResult[] | null {
@@ -290,24 +284,7 @@ export async function runEditorPass1(
 
     const allResults = batchResults.flat();
 
-    // 10. Persist results in chunks and derive coarse score-band counts.
-    const itemMap = new Map<number, PreprocessedItemRow>(
-      residuals.map((item: PreprocessedItemRow) => [Number(item.id), item]),
-    );
-    let itemsResearch = 0;
-    let itemsFooter = 0;
-    let itemsCut = 0;
-
-    for (const result of allResults) {
-      if (result.score >= 70) {
-        itemsResearch++;
-      } else if (result.score >= 30) {
-        itemsFooter++;
-      } else {
-        itemsCut++;
-      }
-    }
-
+    // 10. Persist score-only results in chunks.
     const INSERT_CHUNK = 500;
     for (let i = 0; i < allResults.length; i += INSERT_CHUNK) {
       const chunk = allResults.slice(i, i + INSERT_CHUNK);
@@ -330,12 +307,9 @@ export async function runEditorPass1(
     // 11. Finalize run.
     await pool.query(
       `UPDATE editor_pass_1_runs
-       SET completed_at   = NOW(),
-           items_research = $1,
-           items_footer   = $2,
-           items_cut      = $3
-       WHERE id = $4`,
-      [itemsResearch, itemsFooter, itemsCut, runId],
+       SET completed_at = NOW()
+       WHERE id = $1`,
+      [runId],
     );
 
     return await fetchEditorPass1Run(pool, runId);
@@ -365,8 +339,5 @@ async function fetchEditorPass1Run(
     triageRunId: r.triage_run_id,
     modelUsed: r.model_used,
     itemsIn: r.items_in,
-    itemsResearch: r.items_research,
-    itemsFooter: r.items_footer,
-    itemsCut: r.items_cut,
   };
 }

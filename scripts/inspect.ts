@@ -708,7 +708,7 @@ async function main() {
             [runId]
           );
           if (distRows.length > 0) {
-            console.log("\n── SCORE DISTRIBUTION (research + footer)");
+            console.log("\n── SCORE DISTRIBUTION");
             const allRanges = [
               { label: "90–100", ord: 4 },
               { label: "70–89",  ord: 3 },
@@ -810,7 +810,7 @@ async function main() {
           const limit = parseInt(flags["limit"] ?? "20", 10);
           const { rows } = await pool.query<EditorPass1RunRow>(
             `SELECT id, started_at, completed_at, triage_run_id,
-                    model_used, items_in, items_research, items_footer, items_cut
+                    model_used, items_in
              FROM editor_pass_1_runs
              ORDER BY started_at DESC
              LIMIT $1`,
