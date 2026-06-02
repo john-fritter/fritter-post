@@ -62,14 +62,7 @@ async function main() {
   console.log(`\nScoring run #${run.id} complete.`);
   console.log(`  Triage run:   #${run.triageRunId}`);
   console.log(`  Model:        ${run.modelUsed}`);
-  console.log(`  Items in:     ${run.itemsIn}`);
-  console.log(`  Research:     ${run.itemsResearch}`);
-  console.log(`  Footer:       ${run.itemsFooter}`);
-  console.log(`  Cut:          ${run.itemsCut}`);
-  if (run.itemsIn > 0) {
-    const cutPct = ((run.itemsCut / run.itemsIn) * 100).toFixed(1);
-    console.log(`  Cut rate:     ${cutPct}%`);
-  }
+  console.log(`  Items scored: ${run.itemsIn}`);
 
   console.log("\nAssembling editor pile…");
   console.log(`  singleton_pile_target: ${modelConfig.editor_pass_1.singleton_pile_target}`);

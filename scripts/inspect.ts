@@ -105,9 +105,6 @@ interface EditorPass1RunRow {
   triage_run_id: number;
   model_used: string;
   items_in: number;
-  items_research: number;
-  items_footer: number;
-  items_cut: number;
 }
 
 interface EditorPass1ResultRow {
@@ -138,7 +135,6 @@ interface BelowLineRow {
   source_name: string;
   title: string;
   score: number;
-  bucket: string;
   reason: string;
 }
 
@@ -684,16 +680,9 @@ async function main() {
           console.log(`  Completed:        ${finished}`);
           console.log(`  Triage run:       #${run.triage_run_id}`);
           console.log(`  Model:            ${run.model_used}`);
-          console.log(`  Items in:         ${run.items_in}`);
-          console.log(`  Research:         ${run.items_research}`);
-          console.log(`  Footer:           ${run.items_footer}`);
-          console.log(`  Cut:              ${run.items_cut}`);
-          if (run.items_in > 0) {
-            const cutPct = ((run.items_cut / run.items_in) * 100).toFixed(1);
-            console.log(`  Cut rate:         ${cutPct}%`);
-          }
+          console.log(`  Items scored:     ${run.items_in}`);
 
-          // Score distribution for non-cut items.
+          // Score distribution across all scored singletons.
           const { rows: distRows } = await pool.query<ScoreDistRow>(
             `SELECT
                CASE WHEN score >= 90 THEN '90–100'
@@ -710,7 +699,7 @@ async function main() {
                END AS range_ord,
                COUNT(*) AS n
              FROM editor_pass_1_results
-             WHERE run_id = $1 AND bucket IN ('research', 'footer')
+             WHERE run_id = $1
              GROUP BY range_label, range_ord
              ORDER BY range_ord DESC`,
             [runId]
@@ -725,39 +714,9 @@ async function main() {
               { label: "0–29",   ord: 0 },
             ];
             for (const r of allRanges) {
-              const found = distRows.find((d) => d.range_ord === r.ord);
+              const found = distRows.find((d: ScoreDistRow) => d.range_ord === r.ord);
               const count = found ? found.n : "0";
               console.log(`  ${r.label.padEnd(8)} ${count}`);
-            }
-          }
-
-          if (run.items_cut > 0) {
-            const { rows: cutRows } = await pool.query<EditorPass1ResultRow>(
-              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
-               FROM editor_pass_1_results r
-               JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
-               WHERE r.run_id = $1 AND r.bucket = 'cut'
-               ORDER BY r.score DESC, pi.source_name, pi.title`,
-              [runId]
-            );
-            console.log(`\n── CUT ITEMS (${run.items_cut})`);
-            for (const row of cutRows) {
-              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
-            }
-          }
-
-          if (run.items_footer > 0) {
-            const { rows: footerRows } = await pool.query<EditorPass1ResultRow>(
-              `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
-               FROM editor_pass_1_results r
-               JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
-               WHERE r.run_id = $1 AND r.bucket = 'footer'
-               ORDER BY r.score DESC, pi.source_name, pi.title`,
-              [runId]
-            );
-            console.log(`\n── FOOTER ITEMS (${run.items_footer})`);
-            for (const row of footerRows) {
-              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
             }
           }
 
@@ -786,7 +745,7 @@ async function main() {
             if (pile.singletons_below_line > 0) {
               const { rows: belowRows } = await pool.query<BelowLineRow>(
                 `SELECT epi.preprocessed_item_id AS id, pi.source_name, pi.title,
-                        epi.score, epi.bucket, epi.reason
+                        epi.score, epi.reason
                  FROM editor_pile_items epi
                  JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
                  WHERE epi.pile_id = $1 AND epi.in_pile = false
@@ -795,15 +754,14 @@ async function main() {
               );
               console.log(`\n── BELOW LINE (${pile.singletons_below_line})`);
               for (const row of belowRows) {
-                console.log(`  [${row.id}] score=${row.score} ${row.bucket} | ${row.source_name} | ${row.reason} | ${row.title}`);
+                console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
               }
             }
           }
         } else {
           const limit = parseInt(flags["limit"] ?? "20", 10);
           const { rows } = await pool.query<EditorPass1RunRow>(
-            `SELECT id, started_at, completed_at, triage_run_id,
-                    model_used, items_in, items_research, items_footer, items_cut
+            `SELECT id, started_at, completed_at, triage_run_id, model_used, items_in
              FROM editor_pass_1_runs
              ORDER BY started_at DESC
              LIMIT $1`,
@@ -816,18 +774,18 @@ async function main() {
           }
 
           console.log(
-            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(22)} ${"In".padEnd(6)} ${"Research".padEnd(10)} ${"Footer".padEnd(8)} Cut`
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(26)} Scored`
           );
-          console.log("─".repeat(90));
+          console.log("─".repeat(70));
 
           for (const run of rows) {
             const started = new Date(run.started_at).toISOString().slice(0, 19);
-            const model = run.model_used.length > 20
-              ? run.model_used.slice(0, 19) + "…"
+            const model = run.model_used.length > 24
+              ? run.model_used.slice(0, 23) + "…"
               : run.model_used;
             const status = run.completed_at ? "" : " (running…)";
             console.log(
-              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(22)} ${String(run.items_in).padEnd(6)} ${String(run.items_research).padEnd(10)} ${String(run.items_footer).padEnd(8)} ${run.items_cut}${status}`
+              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(26)} ${run.items_in}${status}`
             );
           }
         }
@@ -849,7 +807,7 @@ Commands:
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
   editor-pass-1            List recent editor-pass-1 runs
-  editor-pass-1 --id <n>   Show scores, cut/footer lists, and pile info for one run
+  editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
 
 Options:
   --source <name>          Filter by source name (exact match)

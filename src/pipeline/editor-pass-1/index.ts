@@ -15,10 +15,10 @@ import {
 const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
 
 const BIO_FALLBACK =
-  "(Reader bio not yet written. Apply generic editorial judgment: " +
-  "cut routine sports results, celebrity tabloid items, routine financial " +
-  "market noise, and generic wire filler. Keep anything substantive " +
-  "from a credible source.)";
+  "(Reader bio not yet written. Apply generic editorial judgment when scoring: " +
+  "score routine sports results, celebrity tabloid items, routine financial market " +
+  "noise, and generic wire filler near zero. Score substantive news from credible " +
+  "sources higher. Use the full 0–100 range.)";
 
 function loadBio(): string {
   try {
@@ -31,7 +31,6 @@ function loadBio(): string {
 
 const EditorPass1ItemResultSchema = z.object({
   id: z.number().int(),
-  bucket: z.enum(["research", "footer", "cut"]),
   score: z.number().int().min(0).max(100),
   reason: z.string(),
 });
@@ -62,9 +61,6 @@ export interface EditorPass1Run {
   triageRunId: number;
   modelUsed: string;
   itemsIn: number;
-  itemsResearch: number;
-  itemsFooter: number;
-  itemsCut: number;
 }
 
 interface EditorPass1RunRow {
@@ -74,9 +70,6 @@ interface EditorPass1RunRow {
   triage_run_id: number;
   model_used: string;
   items_in: number;
-  items_research: number;
-  items_footer: number;
-  items_cut: number;
 }
 
 function parseBatchOutput(text: string): EditorPass1ItemResult[] | null {
@@ -146,13 +139,12 @@ async function processBatch(
     const parsed = parseBatchOutput(llmResult.text);
     if (parsed === null) {
       console.warn(
-        `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${batch.length} items to "research"`,
+        `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${batch.length} items to score=50`,
       );
       return batch.map((item) => ({
         id: Number(item.id),
-        bucket: "research" as const,
         score: 50,
-        reason: "parse-error-kept",
+        reason: "fail-safe: batch parse error",
       }));
     }
 
@@ -161,13 +153,12 @@ async function processBatch(
       const result = resultMap.get(Number(item.id));
       if (!result) {
         console.warn(
-          `[editor-pass-1] batch ${batchIndex + 1}: item ${item.id} missing from response — defaulting to "research"`,
+          `[editor-pass-1] batch ${batchIndex + 1}: item ${item.id} missing from response — defaulting to score=50`,
         );
         return {
           id: Number(item.id),
-          bucket: "research" as const,
           score: 50,
-          reason: "missing-from-response-kept",
+          reason: "fail-safe: missing from response",
         };
       }
       return result;
@@ -175,13 +166,12 @@ async function processBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — defaulting all ${batch.length} items to "research"`,
+      `[editor-pass-1] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — defaulting all ${batch.length} items to score=50`,
     );
     return batch.map((item) => ({
       id: Number(item.id),
-      bucket: "research" as const,
       score: 50,
-      reason: "llm-error-kept",
+      reason: "fail-safe: LLM error",
     }));
   }
 }
@@ -294,30 +284,15 @@ export async function runEditorPass1(
 
     const allResults = batchResults.flat();
 
-    // 10. Log cut and footer items to stdout for audit.
-    const itemMap = new Map<number, PreprocessedItemRow>(
-      residuals.map((item: PreprocessedItemRow) => [Number(item.id), item]),
-    );
-    let itemsResearch = 0;
-    let itemsFooter = 0;
-    let itemsCut = 0;
-
-    for (const result of allResults) {
-      if (result.bucket === "research") {
-        itemsResearch++;
-      } else if (result.bucket === "footer") {
-        itemsFooter++;
-        const item = itemMap.get(result.id);
-        console.log(
-          `[editor-pass-1] FOOTER [${result.id}] score=${result.score} | ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
-        );
-      } else {
-        itemsCut++;
-        const item = itemMap.get(result.id);
-        console.log(
-          `[editor-pass-1] CUT [${result.id}] score=${result.score} | ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
-        );
-      }
+    // 10. Log score distribution summary for operator visibility.
+    const scores = allResults.map((r: EditorPass1ItemResult) => r.score).sort((a: number, b: number) => a - b);
+    if (scores.length > 0) {
+      const min = scores[0]!;
+      const max = scores[scores.length - 1]!;
+      const median = scores[Math.floor(scores.length / 2)]!;
+      console.log(
+        `[editor-pass-1] scored ${scores.length} singletons | min=${min} p50=${median} max=${max}`,
+      );
     }
 
     // 11. Persist results in chunks.
@@ -326,29 +301,24 @@ export async function runEditorPass1(
       const chunk = allResults.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_item: EditorPass1ItemResult, j: number) => {
-          const base = j * 5;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
+          const base = j * 4;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
         })
         .join(", ");
       const params: Array<number | string> = [];
       for (const r of chunk) {
-        params.push(runId, r.id, r.bucket, r.score, r.reason);
+        params.push(runId, r.id, r.score, r.reason);
       }
       await pool.query(
-        `INSERT INTO editor_pass_1_results (run_id, preprocessed_item_id, bucket, score, reason) VALUES ${placeholders}`,
+        `INSERT INTO editor_pass_1_results (run_id, preprocessed_item_id, score, reason) VALUES ${placeholders}`,
         params,
       );
     }
 
     // 12. Finalize run.
     await pool.query(
-      `UPDATE editor_pass_1_runs
-       SET completed_at   = NOW(),
-           items_research = $1,
-           items_footer   = $2,
-           items_cut      = $3
-       WHERE id = $4`,
-      [itemsResearch, itemsFooter, itemsCut, runId],
+      `UPDATE editor_pass_1_runs SET completed_at = NOW() WHERE id = $1`,
+      [runId],
     );
 
     return await fetchEditorPass1Run(pool, runId);
@@ -378,8 +348,5 @@ async function fetchEditorPass1Run(
     triageRunId: r.triage_run_id,
     modelUsed: r.model_used,
     itemsIn: r.items_in,
-    itemsResearch: r.items_research,
-    itemsFooter: r.items_footer,
-    itemsCut: r.items_cut,
   };
 }

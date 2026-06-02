@@ -13,7 +13,6 @@ interface TriageDigestRow {
 
 interface EditorPass1ResultRow {
   preprocessed_item_id: string;
-  bucket: string;
   score: number;
   reason: string;
 }
@@ -69,11 +68,11 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
 
   const clustersIncluded = parseClusters(triageRun.digest);
 
-  // 3. Load scored singletons (research + footer only, sorted by score desc).
+  // 3. Load all scored singletons, sorted by score desc (tiebreak: item id asc).
   const { rows: resultRows } = await pool.query<EditorPass1ResultRow>(
-    `SELECT preprocessed_item_id, bucket, score, reason
+    `SELECT preprocessed_item_id, score, reason
      FROM editor_pass_1_results
-     WHERE run_id = $1 AND bucket IN ('research', 'footer')
+     WHERE run_id = $1
      ORDER BY score DESC, preprocessed_item_id ASC`,
     [editorPass1RunId],
   );
@@ -145,17 +144,17 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
 
     const placeholders = chunk
       .map((_s: ScoredSingleton, j: number) => {
-        const base = j * 7;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+        const base = j * 6;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
       })
       .join(", ");
     const params: Array<number | string | boolean> = [];
     for (const s of chunk) {
-      params.push(pileId, "singleton", Number(s.preprocessed_item_id), s.inPile, s.bucket, s.score, s.reason);
+      params.push(pileId, "singleton", Number(s.preprocessed_item_id), s.inPile, s.score, s.reason);
     }
     await pool.query(
       `INSERT INTO editor_pile_items
-         (pile_id, item_type, preprocessed_item_id, in_pile, bucket, score, reason)
+         (pile_id, item_type, preprocessed_item_id, in_pile, score, reason)
        VALUES ${placeholders}`,
       params,
     );
