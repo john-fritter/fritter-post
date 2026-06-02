@@ -155,7 +155,7 @@ export async function assemblePile(editorPass1RunId: number): Promise<PileSummar
     }
     await pool.query(
       `INSERT INTO editor_pile_items
-         (pile_id, preprocessed_item_id, in_pile, bucket, score, reason)
+         (pile_id, item_type, preprocessed_item_id, in_pile, bucket, score, reason)
        VALUES ${placeholders}`,
       params,
     );
