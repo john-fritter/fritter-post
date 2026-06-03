@@ -98,6 +98,46 @@ interface FilterDropRow {
   reason: string;
 }
 
+interface EditorPass1RunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  triage_run_id: number;
+  model_used: string;
+  items_in: number;
+}
+
+interface EditorPass1ResultRow {
+  id: string;
+  source_name: string;
+  title: string;
+  score: number;
+  reason: string;
+}
+
+interface ScoreDistRow {
+  range_label: string;
+  range_ord: number;
+  n: string;
+}
+
+interface EditorPileRow {
+  id: number;
+  clusters_included: number;
+  singletons_in_pile: number;
+  singletons_below_line: number;
+  score_cutoff: number | null;
+  singleton_pile_target: number;
+}
+
+interface BelowLineRow {
+  id: string;
+  source_name: string;
+  title: string;
+  score: number;
+  reason: string;
+}
+
 function parseClusterCount(digest: string): string {
   // Try new JSON schema first.
   try {
@@ -618,6 +658,189 @@ async function main() {
         break;
       }
 
+      case "editor-pass-1": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<EditorPass1RunRow>(
+            "SELECT * FROM editor_pass_1_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No editor-pass-1 run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Editor-pass-1 run #${run.id}`);
+          console.log(`  Started:          ${started}`);
+          console.log(`  Completed:        ${finished}`);
+          console.log(`  Triage run:       #${run.triage_run_id}`);
+          console.log(`  Model:            ${run.model_used}`);
+          console.log(`  Items in:         ${run.items_in}`);
+          if (run.items_in > 0) {
+            console.log(`  Results scored:   ${run.items_in}`);
+          }
+
+          // Score distribution across all scored singletons.
+          const { rows: distRows } = await pool.query<ScoreDistRow>(
+            `SELECT
+               CASE WHEN score >= 90 THEN '90–100'
+                    WHEN score >= 70 THEN '70–89'
+                    WHEN score >= 50 THEN '50–69'
+                    WHEN score >= 30 THEN '30–49'
+                    ELSE                  '0–29'
+               END AS range_label,
+               CASE WHEN score >= 90 THEN 4
+                    WHEN score >= 70 THEN 3
+                    WHEN score >= 50 THEN 2
+                    WHEN score >= 30 THEN 1
+                    ELSE                  0
+               END AS range_ord,
+               COUNT(*) AS n
+             FROM editor_pass_1_results
+             WHERE run_id = $1
+             GROUP BY range_label, range_ord
+             ORDER BY range_ord DESC`,
+            [runId]
+          );
+          if (distRows.length > 0) {
+            console.log("\n── SCORE DISTRIBUTION");
+            const allRanges = [
+              { label: "90–100", ord: 4 },
+              { label: "70–89",  ord: 3 },
+              { label: "50–69",  ord: 2 },
+              { label: "30–49",  ord: 1 },
+              { label: "0–29",   ord: 0 },
+            ];
+            for (const r of allRanges) {
+              const found = distRows.find((d: ScoreDistRow) => d.range_ord === r.ord);
+              const count = found ? found.n : "0";
+              console.log(`  ${r.label.padEnd(8)} ${count}`);
+            }
+          }
+
+          // Score-50 fail-safe audit.
+          const { rows: failSafeRows } = await pool.query<{ reason: string; n: string }>(
+            `SELECT reason, COUNT(*)::int AS n
+             FROM editor_pass_1_results
+             WHERE run_id = $1 AND score = 50
+             GROUP BY reason
+             ORDER BY n DESC, reason`,
+            [runId]
+          );
+          if (failSafeRows.length > 0) {
+            console.log("\n── FAIL-SAFE (score=50)");
+            for (const row of failSafeRows) {
+              console.log(`  ${row.reason.padEnd(28)} ${row.n}`);
+            }
+          }
+
+          // Low-score protected-beat audit.
+          const protectedBeatPatterns = [
+            /philipp|manila|aira/i,
+            /qorvo|semi|semiconductor|fab|chip/i,
+            /labor|union|strike/i,
+            /bend|central oregon|oregon/i,
+            /immigr|ice\b/i,
+            /housing|homeless/i,
+          ];
+          const { rows: lowRows } = await pool.query<EditorPass1ResultRow & { source_name: string }>(
+            `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
+             FROM editor_pass_1_results r
+             JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
+             WHERE r.run_id = $1 AND r.score < 30
+             ORDER BY r.score ASC, pi.source_name, pi.title`,
+            [runId]
+          );
+          const protectedMatches = lowRows.filter((row) => {
+            const haystack = `${row.source_name} ${row.title} ${row.reason}`;
+            return protectedBeatPatterns.some((re) => re.test(haystack));
+          });
+          console.log(`\n── PROTECTED-BEAT LOW-SCORE AUDIT (${protectedMatches.length})`);
+          if (protectedMatches.length === 0) {
+            console.log("  none");
+          } else {
+            for (const row of protectedMatches) {
+              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+          // Pile info, if assembly has been run for this editor-pass-1 run.
+          const { rows: pileRows } = await pool.query<EditorPileRow>(
+            `SELECT id, clusters_included, singletons_in_pile, singletons_below_line,
+                    score_cutoff, singleton_pile_target
+             FROM editor_piles
+             WHERE editor_pass_1_run_id = $1
+             ORDER BY created_at DESC LIMIT 1`,
+            [runId]
+          );
+          const pile = pileRows[0];
+          if (pile) {
+            const totalPile = pile.clusters_included + pile.singletons_in_pile;
+            console.log(`\n── PILE #${pile.id}`);
+            console.log(`  Singleton target:    ${pile.singleton_pile_target}`);
+            console.log(`  Clusters in pile:    ${pile.clusters_included} (all pass through)`);
+            console.log(`  Singletons in pile:  ${pile.singletons_in_pile}`);
+            console.log(`  Singletons below:    ${pile.singletons_below_line}`);
+            if (pile.score_cutoff !== null) {
+              console.log(`  Score cutoff:        ${pile.score_cutoff}`);
+            }
+            console.log(`  Total pile size:     ${totalPile}`);
+
+            if (pile.singletons_below_line > 0) {
+              const { rows: belowRows } = await pool.query<BelowLineRow>(
+                `SELECT epi.preprocessed_item_id AS id, pi.source_name, pi.title,
+                        epi.score, epi.reason
+                 FROM editor_pile_items epi
+                 JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
+                 WHERE epi.pile_id = $1 AND epi.in_pile = false
+                 ORDER BY epi.score DESC, pi.title ASC`,
+                [pile.id]
+              );
+              console.log(`\n── BELOW LINE (${pile.singletons_below_line})`);
+              for (const row of belowRows) {
+                console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
+              }
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<EditorPass1RunRow>(
+            `SELECT id, started_at, completed_at, triage_run_id,
+                    model_used, items_in
+             FROM editor_pass_1_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No editor-pass-1 runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(22)} ${"In".padEnd(6)}`
+          );
+          console.log("─".repeat(65));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 24
+              ? run.model_used.slice(0, 23) + "…"
+              : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(22)} ${String(run.items_in).padEnd(6)}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -632,6 +855,8 @@ Commands:
   triage --id <n>          Print full digest for one triage run
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
+  editor-pass-1            List recent editor-pass-1 runs
+  editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
 
 Options:
   --source <name>          Filter by source name (exact match)

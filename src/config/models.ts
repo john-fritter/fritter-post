@@ -16,16 +16,22 @@ const FilterStageConfigSchema = StageConfigSchema.extend({
   concurrency: z.number().int(),
 });
 
+const EditorPass1StageConfigSchema = FilterStageConfigSchema.extend({
+  singleton_pile_target: z.number().int(),
+});
+
 const ModelsConfigSchema = z.object({
   filter: FilterStageConfigSchema,
   triage: StageConfigSchema,
   researcher: StageConfigSchema,
   editor: StageConfigSchema,
   writers: StageConfigSchema,
+  editor_pass_1: EditorPass1StageConfigSchema,
 });
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type FilterStageConfig = z.infer<typeof FilterStageConfigSchema>;
+export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(
