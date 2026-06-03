@@ -1,36 +1,120 @@
 import "dotenv/config";
-import { z } from "zod";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { assembleTriageDocument } from "../preprocessor/assembler.js";
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.js";
 
-const ClusterSchema = z.object({
-  title: z.string(),
-  item_ids: z.array(z.number().int()),
-  summary: z.string(),
-  notes: z.string().nullable(),
-});
+export interface TriageCluster {
+  title: string;
+  item_ids: number[];
+  summary: string;
+  notes: string | null;
+}
 
-const TriageOutputSchema = z.object({
-  clusters: z.array(ClusterSchema),
-});
+export interface TriageOutput {
+  clusters: TriageCluster[];
+}
 
-export type TriageCluster = z.infer<typeof ClusterSchema>;
-export type TriageOutput = z.infer<typeof TriageOutputSchema>;
+export interface FlatClusterParseResult {
+  clusters: TriageCluster[];
+  fabricatedIds: number[];
+  duplicateIds: number[];
+  droppedSingletonCount: number;
+  parsedLineCount: number;
+}
 
-function parseTriageOutput(text: string): TriageOutput | null {
-  try {
-    const stripped = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed: unknown = JSON.parse(stripped);
-    return TriageOutputSchema.parse(parsed);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[triage] digest parse failed: ${reason}`);
+/**
+ * Parses the flat line-based cluster format:
+ *   label;;summary;;id,id,id,...
+ *
+ * The id list is last so any ;; inside summary cannot shift the id column.
+ * Validates each cluster against inputIds: drops fabricated ids (logs them),
+ * records duplicates (logs them), and drops clusters with fewer than 2 valid ids.
+ * Returns null only if the entire output has no parseable cluster lines.
+ */
+export function parseFlatClusterOutput(
+  text: string,
+  inputIds: Set<number>,
+): FlatClusterParseResult | null {
+  const seenIds = new Set<number>();
+  const clusters: TriageCluster[] = [];
+  const allFabricated: number[] = [];
+  const allDuplicates: number[] = [];
+  let parsedLineCount = 0;
+  let droppedSingletonCount = 0;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    const last = line.lastIndexOf(";;");
+    if (last === first) continue; // only one ;; — needs exactly two distinct occurrences
+
+    parsedLineCount++;
+
+    const label = line.slice(0, first).trim();
+    const summary = line.slice(first + 2, last).trim(); // absorbs any ;; inside summary
+    const idPart = line.slice(last + 2).trim();
+
+    if (label.length === 0 || summary.length === 0) {
+      console.warn(`[triage] skipping malformed line: empty label or summary`);
+      continue;
+    }
+
+    const fabricated: number[] = [];
+    const duplicate: number[] = [];
+    const validIds: number[] = [];
+
+    for (const tok of idPart.split(",")) {
+      const trimmed = tok.trim();
+      if (!/^\d+$/.test(trimmed)) continue;
+      const id = Number.parseInt(trimmed, 10);
+      if (!inputIds.has(id)) {
+        fabricated.push(id);
+      } else if (seenIds.has(id)) {
+        duplicate.push(id);
+      } else {
+        validIds.push(id);
+        seenIds.add(id);
+      }
+    }
+
+    if (fabricated.length > 0) {
+      console.warn(`[triage] fabricated ids in cluster "${label}": ${fabricated.join(", ")}`);
+      allFabricated.push(...fabricated);
+    }
+    if (duplicate.length > 0) {
+      console.warn(`[triage] duplicate ids (appeared in earlier cluster): ${duplicate.join(", ")}`);
+      allDuplicates.push(...duplicate);
+    }
+
+    if (validIds.length < 2) {
+      console.warn(
+        `[triage] dropped cluster "${label}": only ${validIds.length} valid id(s) after filtering`,
+      );
+      droppedSingletonCount++;
+      continue;
+    }
+
+    clusters.push({ title: label, item_ids: validIds, summary, notes: null });
+  }
+
+  if (parsedLineCount === 0) {
+    console.warn(`[triage] digest parse failed: no cluster lines found`);
     console.warn(`[triage] first 500 chars: ${text.slice(0, 500)}`);
     return null;
   }
+
+  return {
+    clusters,
+    fabricatedIds: allFabricated,
+    duplicateIds: allDuplicates,
+    droppedSingletonCount,
+    parsedLineCount,
+  };
 }
 
 export interface TriageRun {
@@ -84,10 +168,17 @@ export async function runTriage(options: {
   const runId = runRows[0]!.id;
 
   try {
-    // 4. Assemble the triage document from preprocessed items.
+    // 4. Fetch input item ids for parse-time validation.
+    const { rows: itemIdRows } = await pool.query<{ id: string }>(
+      "SELECT id FROM preprocessed_items WHERE preprocessor_run_id = $1",
+      [preprocessorRunId],
+    );
+    const inputIds = new Set<number>(itemIdRows.map((r: { id: string }) => Number(r.id)));
+
+    // 5. Assemble the triage document from preprocessed items.
     const document = await assembleTriageDocument(preprocessorRunId);
 
-    // 5. Call the LLM.
+    // 6. Call the LLM.
     const result = await callLLM({
       stage: "triage",
       stageRunId: runId,
@@ -99,10 +190,20 @@ export async function runTriage(options: {
       reasoningEffort,
     });
 
-    // 6. Defensively parse the output. Warn on failure but do not throw.
-    parseTriageOutput(result.text);
+    // 7. Defensively parse the output. Warn on failure but do not throw.
+    const parseResult = parseFlatClusterOutput(result.text, inputIds);
+    if (parseResult !== null) {
+      const parts = [
+        `clusters=${parseResult.clusters.length}`,
+        `lines=${parseResult.parsedLineCount}`,
+      ];
+      if (parseResult.fabricatedIds.length > 0) parts.push(`fabricated=${parseResult.fabricatedIds.length}`);
+      if (parseResult.duplicateIds.length > 0) parts.push(`duplicates=${parseResult.duplicateIds.length}`);
+      if (parseResult.droppedSingletonCount > 0) parts.push(`dropped-singletons=${parseResult.droppedSingletonCount}`);
+      console.log(`[triage] run #${runId}: ${parts.join(", ")}`);
+    }
 
-    // 7. Update triage_runs with results (store raw text regardless of parse outcome).
+    // 8. Update triage_runs with results (store raw text regardless of parse outcome).
     await pool.query(
       `UPDATE triage_runs
        SET completed_at       = NOW(),
@@ -115,7 +216,7 @@ export async function runTriage(options: {
       [result.inputTokens, result.outputTokens, result.durationMs, result.text, result.generationLogId, runId]
     );
 
-    // 8. Return completed run.
+    // 9. Return completed run.
     return await fetchTriageRun(pool, runId);
   } catch (err) {
     // Mark run as failed with a note if it never completed.

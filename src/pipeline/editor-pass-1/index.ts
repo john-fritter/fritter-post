@@ -125,24 +125,46 @@ export function parseBatchOutput(
 }
 
 function extractClusteredIds(digest: string): Set<number> | null {
-  try {
-    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed = JSON.parse(stripped) as {
-      clusters?: Array<{ item_ids?: unknown[] }>;
-    };
-    if (!Array.isArray(parsed.clusters)) return null;
-    const ids = new Set<number>();
-    for (const cluster of parsed.clusters) {
-      if (Array.isArray(cluster.item_ids)) {
-        for (const id of cluster.item_ids) {
-          if (typeof id === "number") ids.add(id);
+  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
+  // JSON format (old digests start with '{').
+  if (stripped.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(stripped) as { clusters?: Array<{ item_ids?: unknown[] }> };
+      if (!Array.isArray(parsed.clusters)) return null;
+      const ids = new Set<number>();
+      for (const cluster of parsed.clusters) {
+        if (Array.isArray(cluster.item_ids)) {
+          for (const id of cluster.item_ids) {
+            if (typeof id === "number") ids.add(id);
+          }
         }
       }
+      return ids;
+    } catch {
+      return null;
     }
-    return ids;
-  } catch {
-    return null;
   }
+
+  // Flat line format: label;;summary;;id,id,...
+  // Use first and last ;; so summary can contain ;; without disrupting the id column.
+  const ids = new Set<number>();
+  let lineCount = 0;
+  for (const rawLine of digest.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    const last = line.lastIndexOf(";;");
+    if (last === first) continue;
+    lineCount++;
+    const idPart = line.slice(last + 2).trim();
+    for (const tok of idPart.split(",")) {
+      const trimmed = tok.trim();
+      if (/^\d+$/.test(trimmed)) ids.add(Number.parseInt(trimmed, 10));
+    }
+  }
+  return lineCount > 0 ? ids : null;
 }
 
 async function processBatch(
