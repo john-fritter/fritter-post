@@ -13,6 +13,7 @@ export interface PreprocessorRun {
   itemsKept: number;
   itemsDroppedRecency: number;
   itemsDroppedDuplicate: number;
+  itemsDroppedParentDedup: number;
   notes: string | null;
 }
 
@@ -43,13 +44,19 @@ function stripHtml(raw: string | null): string | null {
   return text.length > 0 ? text : null;
 }
 
+function normalizeTitle(t: string): string {
+  return t.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 export async function runPreprocessor(options: { collectorRunId?: number } = {}): Promise<PreprocessorRun> {
   const pool = getPool();
 
-  // Build source-type lookup from config.
+  // Build source-type and source-parent lookup from config.
   const sourceTypeMap = new Map<string, string>();
+  const parentMap = new Map<string, string>(); // source.name → parent (or source.name if no parent)
   for (const source of loadSources()) {
     sourceTypeMap.set(source.name, source.type);
+    parentMap.set(source.name, source.parent ?? source.name);
   }
 
   // Create the run record.
@@ -94,6 +101,10 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       fetchedAt: Date;
     }
 
+    interface ExtendedCandidate extends Candidate {
+      alsoAppearedIn: string[];
+    }
+
     const candidates: Candidate[] = allRows.map((row) => ({
       rawItemId: row.id,
       sourceName: row.source_name,
@@ -133,18 +144,59 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       }
     }
 
-    // 5. Bulk insert with a transaction.
+    // 5. Within-parent dedup: collapse duplicate items from different feeds of the
+    //    same parent outlet (e.g. AP Top News + AP Politics both carrying same story).
+    //    Items are already sorted by published_at ASC from the SQL query — first seen wins.
+    const parentUrlSeen = new Map<string, ExtendedCandidate>();   // `${parent}::${canonical_url}`
+    const parentTitleSeen = new Map<string, ExtendedCandidate>(); // `${parent}::${normalized_title}`
+    let droppedParentDedup = 0;
+    const finalSurviving: ExtendedCandidate[] = [];
+
+    for (const item of surviving) {
+      const parent = parentMap.get(item.sourceName) ?? item.sourceName;
+      const urlKey = `${parent}::${item.canonicalUrl}`;
+      const normalizedTitle = normalizeTitle(item.title);
+      const titleKey = `${parent}::${normalizedTitle}`;
+
+      // Check URL match first.
+      let winner = parentUrlSeen.get(urlKey);
+      let matchType = "url";
+
+      // Fall back to title match (only for titles long enough to be distinctive).
+      if (!winner && normalizedTitle.length >= 30) {
+        winner = parentTitleSeen.get(titleKey);
+        matchType = "title";
+      }
+
+      if (winner) {
+        console.log(
+          `[preprocessor] parent-dedup [${matchType}]: kept "${winner.sourceName}" over "${item.sourceName}" | parent: ${parent} | "${item.title}"`
+        );
+        winner.alsoAppearedIn.push(item.sourceName);
+        // Register winner under the duplicate's keys too (handles 3-way dedup).
+        parentUrlSeen.set(urlKey, winner);
+        if (normalizedTitle.length >= 30) parentTitleSeen.set(titleKey, winner);
+        droppedParentDedup++;
+      } else {
+        const extended: ExtendedCandidate = { ...item, alsoAppearedIn: [] };
+        finalSurviving.push(extended);
+        parentUrlSeen.set(urlKey, extended);
+        if (normalizedTitle.length >= 30) parentTitleSeen.set(titleKey, extended);
+      }
+    }
+
+    // 6. Bulk insert with a transaction.
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
-      for (const item of surviving) {
+      for (const item of finalSurviving) {
         await client.query(
           `INSERT INTO preprocessed_items
              (preprocessor_run_id, raw_item_id, source_name, source_type,
               title, canonical_url, original_url, body_text,
-              published_at, fetched_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              published_at, fetched_at, also_appeared_in)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             runId,
             item.rawItemId,
@@ -156,6 +208,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
             item.bodyText,
             item.publishedAt,
             item.fetchedAt,
+            item.alsoAppearedIn.length > 0 ? item.alsoAppearedIn.join(", ") : null,
           ]
         );
       }
@@ -178,13 +231,14 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
     // Finalize the run record.
     await pool.query(
       `UPDATE preprocessor_runs
-       SET completed_at            = NOW(),
-           raw_items_considered    = $1,
-           items_kept              = $2,
-           items_dropped_recency   = $3,
-           items_dropped_duplicate = $4
-       WHERE id = $5`,
-      [totalConsidered, surviving.length, droppedRecency, droppedDuplicate, runId]
+       SET completed_at                = NOW(),
+           raw_items_considered        = $1,
+           items_kept                  = $2,
+           items_dropped_recency       = $3,
+           items_dropped_duplicate     = $4,
+           items_dropped_parent_dedup  = $5
+       WHERE id = $6`,
+      [totalConsidered, finalSurviving.length, droppedRecency, droppedDuplicate, droppedParentDedup, runId]
     );
 
     const { rows: finalRows } = await pool.query<{
@@ -196,6 +250,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       items_kept: number;
       items_dropped_recency: number;
       items_dropped_duplicate: number;
+      items_dropped_parent_dedup: number;
       notes: string | null;
     }>("SELECT * FROM preprocessor_runs WHERE id = $1", [runId]);
 
@@ -209,6 +264,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       itemsKept: r.items_kept,
       itemsDroppedRecency: r.items_dropped_recency,
       itemsDroppedDuplicate: r.items_dropped_duplicate,
+      itemsDroppedParentDedup: r.items_dropped_parent_dedup,
       notes: r.notes,
     };
   } catch (err) {

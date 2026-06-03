@@ -58,6 +58,7 @@ interface PreprocessorRunRow {
   items_kept: number;
   items_dropped_recency: number;
   items_dropped_duplicate: number;
+  items_dropped_parent_dedup: number;
   notes: string | null;
 }
 
@@ -434,6 +435,7 @@ async function main() {
           console.log(`  Items kept:              ${run.items_kept}`);
           console.log(`  Dropped (recency):       ${run.items_dropped_recency}`);
           console.log(`  Dropped (duplicate):     ${run.items_dropped_duplicate}`);
+          console.log(`  Dropped (parent-dedup):  ${run.items_dropped_parent_dedup}`);
           if (run.notes) console.log(`  Notes: ${run.notes}`);
         } else {
           // Summary list of recent runs.
@@ -441,7 +443,8 @@ async function main() {
           const { rows } = await pool.query<PreprocessorRunRow>(
             `SELECT id, started_at, completed_at, collector_run_id,
                     raw_items_considered, items_kept,
-                    items_dropped_recency, items_dropped_duplicate, notes
+                    items_dropped_recency, items_dropped_duplicate,
+                    items_dropped_parent_dedup, notes
              FROM preprocessor_runs
              ORDER BY started_at DESC
              LIMIT $1`,

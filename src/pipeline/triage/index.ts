@@ -44,7 +44,32 @@ export function parseFlatClusterOutput(
   let parsedLineCount = 0;
   let droppedSingletonCount = 0;
 
-  for (const rawLine of text.split(/\r?\n/)) {
+  // Pre-pass: join split-line clusters.
+  // The model may emit "label;;summary" on one line and "id,id,..." on the next.
+  // Detect: line with exactly one ;;, followed by a bare id-list line.
+  const rawLines = text.split(/\r?\n/);
+  const lines: string[] = [];
+  {
+    let i = 0;
+    while (i < rawLines.length) {
+      const line = rawLines[i]!.trim();
+      const firstSep = line.indexOf(";;");
+      if (firstSep !== -1 && line.indexOf(";;", firstSep + 2) === -1) {
+        // Exactly one ;; — look ahead for a bare id list.
+        let j = i + 1;
+        while (j < rawLines.length && rawLines[j]!.trim().length === 0) j++;
+        if (j < rawLines.length && /^\d+(?:,\s*\d+)*$/.test(rawLines[j]!.trim())) {
+          lines.push(`${line};;${rawLines[j]!.trim()}`);
+          i = j + 1;
+          continue;
+        }
+      }
+      lines.push(line);
+      i++;
+    }
+  }
+
+  for (const rawLine of lines) {
     const line = rawLine.trim();
     if (line.length === 0) continue;
 

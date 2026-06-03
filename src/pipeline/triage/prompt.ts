@@ -38,6 +38,10 @@ OUTPUT
 Output one line per cluster and nothing else — no JSON, no brackets, no markdown fence, no
 header, no prose before or after.
 
+CRITICAL: every cluster must be a SINGLE LINE. Do not break a cluster across multiple lines.
+All three fields must appear on the same line, separated by ;; — the label, the summary, and
+the id list must all be on one line together.
+
 Each line has exactly this shape:
   label;;summary;;id,id,id,...
 
@@ -49,6 +53,9 @@ Fields:
 The delimiter between fields is ;; (two semicolons). The id list is always the last field so that
 any ;; inside the summary text cannot displace the id column.
 
+Example of a correctly formatted cluster line (all on one line):
+  Gaza Ceasefire Talks;;Egyptian and Qatari mediators proposed a 40-day pause in fighting. Hamas and Israel both expressed reservations.;;312,318,301,327
+
 Do not output items that did not cluster. Omitted items are handled downstream by software.`;
 
 export function buildSystemPrompt(): string {
@@ -56,5 +63,5 @@ export function buildSystemPrompt(): string {
 }
 
 export function buildUserPrompt(document: string): string {
-  return `Here is today's news intake. Cluster it and output the cluster lines.\n\n${document}`;
+  return `Here is today's news intake. Cluster it and output the flat cluster lines — one line per cluster.\n\n${document}`;
 }

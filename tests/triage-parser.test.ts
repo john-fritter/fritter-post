@@ -68,6 +68,23 @@ function testOneIdClusterDropped() {
   }
 }
 
+function testSplitLineJoinFallback() {
+  // Model emits label;;summary on one line, id list on the next — parser joins them.
+  const text = [
+    "Gaza Ceasefire Talks;;Mediators proposed a 40-day pause in fighting.",
+    "101,102,103",
+    "Senate Tariff Vote;;The Senate passed the tariff bill 67-33.",
+    "104,105",
+  ].join("\n");
+  const result = parseFlatClusterOutput(text, INPUT_IDS);
+  if (result === null) throw new Error("expected parse result");
+  assert.equal(result.clusters.length, 2);
+  assert.equal(result.clusters[0]!.title, "Gaza Ceasefire Talks");
+  assert.deepEqual(result.clusters[0]!.item_ids, [101, 102, 103]);
+  assert.equal(result.clusters[1]!.title, "Senate Tariff Vote");
+  assert.deepEqual(result.clusters[1]!.item_ids, [104, 105]);
+}
+
 function testWholeOutputUnparseableReturnsNull() {
   const text = "This is just prose with no delimiters at all.\nAnother stray line.";
   const warns: string[] = [];
@@ -86,5 +103,6 @@ testNormalClusterParsesCorrectly();
 testSummaryContainingDoubleDelimiterParsesCorrectly();
 testFabricatedIdDroppedAndLogged();
 testOneIdClusterDropped();
+testSplitLineJoinFallback();
 testWholeOutputUnparseableReturnsNull();
 console.log("triage parser tests passed");
