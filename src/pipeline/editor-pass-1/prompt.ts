@@ -29,14 +29,15 @@ Scores that are too tightly clustered (e.g. everything between 70–85) are less
 
 ## OUTPUT
 
-Return a JSON array and nothing else — no markdown, no code fences, no commentary before or after. One element per input item:
-{
-  "id": <integer matching the input id>,
-  "score": <integer 0–100>,
-  "reason": <short phrase, 3–8 words, stating why this item scored high or low>
-}
+Output ONE LINE PER ITEM and nothing else — no JSON, no brackets, no markdown fence, no header, no prose before or after. Each line must be:
 
-Return exactly one element per input item. Do not omit any id from the input.`;
+id;;score;;reason
+
+- id: integer matching the input id
+- score: integer 0–100
+- reason: short phrase, 3–8 words, stating why this item scored high or low
+
+Return exactly one line per input item. Do not omit any id from the input.`;
 }
 
 export function buildUserPrompt(items: EditorPass1BatchItem[]): string {
