@@ -23,6 +23,13 @@ CLUSTERING RULES
 - Same topic or same actors is NOT enough. The items must be about the same
   specific event. Two separate shootings are two stories. Two articles about
   the same shooting are one cluster.
+- Topically related events are SEPARATE clusters. A legislative vote about a
+  war, that war's military strikes, and a different country's strikes are
+  three different events — three clusters — even if they share actors or
+  geography. Do not merge them into one "conflict" or "region" bucket.
+- When you are unsure whether two items belong together, keep them separate.
+  Under-merging is recoverable downstream. A large merged bucket that
+  conflates distinct events destroys structure that cannot be recovered.
 - An item that does not clearly belong with others stays out of every
   cluster. Do not force singletons together, and do not create a cluster for
   a single item.

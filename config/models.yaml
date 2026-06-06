@@ -11,7 +11,7 @@ filter:
 
 triage:
   model: gemini-3-flash-preview
-  temperature: 0.2
+  temperature: 0
   max_tokens: 65536
   reasoning_effort: "none"
 
