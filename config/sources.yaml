@@ -9,6 +9,16 @@
 #           Functional distinction, not editorial judgment. The source policy
 #           reads each type differently in operational ways (wires high volume,
 #           advocacy has a policy position, newsletters often single-author).
+#   track — news | analysis  (default: news when omitted)
+#           Which pipeline lane the source feeds. 'news' items flow into the
+#           clusterer and daily triage. 'analysis' items are routed aside and
+#           pool unconsumed until a Longer Reads selector exists — they never
+#           enter the clusterer context.
+#           track is a SEPARATE axis from type: type is operational (wire/
+#           journalism/advocacy/newsletter); track is which lane the item feeds.
+#           A source's track is a stable property of what it publishes, not a
+#           story-by-story judgment — that's why it's set on the source, not
+#           derived per item.
 #   notes — free text. Anything the editor/researcher should know about the
 #           source, including institutional alignment where it's worth knowing.
 #
@@ -178,6 +188,7 @@
 - name: Jacobin
   url: https://jacobinmag.com/feed/
   type: journalism
+  track: analysis
   notes: >
     Editorial lineage the standing memo explicitly names. Analysis pieces,
     not breaking news. Strong on labor, housing, healthcare, democratic politics.
@@ -188,6 +199,7 @@
 - name: The Nation
   url: https://www.thenation.com/feed/?post_type=article
   type: journalism
+  track: analysis
 
 # DROPPED — repeated 404; Jacobin covers similar ground.
 # - name: Current Affairs
@@ -210,6 +222,7 @@
 - name: Naked Capitalism
   url: https://www.nakedcapitalism.com/feed
   type: journalism
+  track: analysis
   notes: Heterodox economics, long-running. Counterweight to wire business framing.
 
 # ─────────────────────────────────────────────
@@ -223,34 +236,40 @@
 - name: The Atlantic
   url: https://www.theatlantic.com/feed/all/
   type: journalism
+  track: analysis
   notes: Centrist establishment, but consistently publishes pieces worth reading.
     Better for Longer Reads than daily news rotation.
 
 - name: The New Yorker
   url: https://www.newyorker.com/feed/everything
   type: journalism
+  track: analysis
   notes: Gold standard for longform journalism. Most pieces are Longer Reads
     candidates.
 
 - name: Harper's Magazine
   url: https://harpers.org/feed/
   type: journalism
+  track: analysis
   notes: Monthly essay magazine. Strong cultural and political longform.
 
 - name: The New York Review of Books
   url: https://www.nybooks.com/feed/
   type: journalism
+  track: analysis
   notes: Book reviews that are usually essays on the books' subjects. The reviews
     themselves are often the best writing on those topics.
 
 - name: London Review of Books
   url: https://www.lrb.co.uk/feeds/rss
   type: journalism
+  track: analysis
   notes: UK counterpart to NYRB. Excellent on politics, foreign policy, ideas.
 
 - name: Reason
   url: https://reason.com/latest/feed/
   type: journalism
+  track: analysis
   notes: Libertarian. Important for ideological breadth — best counter-perspective
     on regulatory state, civil liberties, drug policy. Has been right when most
     of the press has been wrong on specific stories.
@@ -258,6 +277,7 @@
 - name: Foreign Affairs
   url: https://www.foreignaffairs.com/rss.xml
   type: journalism
+  track: analysis
   notes: Council on Foreign Relations house journal. Establishment foreign policy
     perspective by design — useful as a baseline of what elite consensus is on
     international issues. Paywalled abstracts.
@@ -265,27 +285,32 @@
 - name: The Marshall Project
   url: https://www.themarshallproject.org/rss/recent
   type: journalism
+  track: analysis
   notes: Criminal justice longform. Nonprofit.
 
 - name: Aeon
   url: https://aeon.co/feed.rss
   type: journalism
+  track: analysis
   notes: Ideas and philosophy. Less news-driven, more enduring essays.
 
 - name: Noema
   url: https://www.noemamag.com/feed/
   type: journalism
+  track: analysis
   notes: Berggruen Institute. Technology, society, longform. High signal on AI
     and political economy.
 
 - name: The Baffler
   url: https://thebaffler.com/feed
   type: journalism
+  track: analysis
   notes: Cultural criticism, left politics, longform.
 
 - name: n+1
   url: https://www.nplusonemag.com/feed/
   type: journalism
+  track: analysis
   notes: Literary and political. Quarterly print, more frequent online.
 
 # ─────────────────────────────────────────────
@@ -410,6 +435,7 @@
 - name: Le Monde Diplomatique (English)
   url: https://mondediplo.com/rss/feed1.php
   type: journalism
+  track: analysis
   notes: Monthly cadence — rarely contributes to a daily run, but excellent on
     geopolitics and global economy. Long pieces feed Longer Reads.
 

@@ -20,6 +20,45 @@ Entry format:
 
 ---
 
+## 2026-06-06 — News/analysis track split
+
+**Decision:** Added a `track` field (`news` | `analysis`, default `news`) to
+sources.yaml and a corresponding `track` column to `preprocessed_items`.
+Longform analysis sources (The Atlantic, The New Yorker, Harper's Magazine,
+The New York Review of Books, London Review of Books, Reason, Foreign Affairs,
+The Marshall Project, Aeon, Noema, The Baffler, n+1, Jacobin, The Nation,
+Naked Capitalism, Le Monde Diplomatique (English)) are marked `track:
+analysis`. Everything else defaults to `news`.
+
+The two "piles" are just two WHERE clauses against one table — no new tables,
+stages, or plumbing. Analysis items are never consumed by any current stage:
+the assembler, triage, and editor-pass-1 all filter to `track = 'news'`.
+Analysis items pool in `preprocessed_items` unconsumed until a Longer Reads
+selector is built.
+
+**Why it's a source property, not a per-story judgment:** `track` is stable
+for a given outlet — The Atlantic reliably publishes longform analysis, AP
+reliably publishes news wire. This is fundamentally different from
+story-level topic (whether a given piece is about climate, labor, etc.),
+which varies within a source and is correctly assigned by the editor stage.
+We explicitly rejected a per-story news/analysis classification in earlier
+design: we have no budget for an extra LLM pass over every item, and the
+source-level signal is sufficient to separate the two populations.
+
+**Why derived at preprocess time:** `track` is looked up from the source
+config at preprocess time and written onto the row, so it is immediately
+queryable by all downstream stages without re-joining to the config file.
+It is trivially re-derivable on re-run — no new information is consumed.
+
+**Why not a new table or stage:** Adding a separate analysis table would
+duplicate schema and require all downstream queries to union two tables.
+A separate pipeline stage would be waste until there is a consumer. One
+discriminator column on an existing table, filtered by WHERE clause, is
+the right shape for a feature that is currently only one side of the query
+useful.
+
+---
+
 ## 2026-05-30 — Triage is neutral by design
 
 **Decision:** The triage stage applies no editorial judgment, reader context, or research recommendations. It groups items into clusters and describes them neutrally. All judgment happens downstream.
