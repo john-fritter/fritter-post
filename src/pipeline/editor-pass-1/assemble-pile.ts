@@ -22,14 +22,29 @@ interface EditorPileRow {
 }
 
 function parseClusters(digest: string): number {
-  try {
-    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
-    if (!Array.isArray(parsed.clusters)) return 0;
-    return parsed.clusters.length;
-  } catch {
-    return 0;
+  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
+  // JSON format (old digests start with '{').
+  if (stripped.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
+      if (!Array.isArray(parsed.clusters)) return 0;
+      return parsed.clusters.length;
+    } catch {
+      return 0;
+    }
   }
+
+  // Flat line format: label;;summary;;id,id,... — count lines with two distinct ;; occurrences.
+  let count = 0;
+  for (const rawLine of digest.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    if (line.lastIndexOf(";;") !== first) count++;
+  }
+  return count;
 }
 
 export interface PileSummary {

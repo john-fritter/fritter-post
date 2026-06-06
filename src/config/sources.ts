@@ -8,6 +8,7 @@ const SourceSchema = z.object({
   url: z.string().url(),
   type: z.enum(["wire", "journalism", "advocacy", "newsletter"]),
   notes: z.string().optional(),
+  parent: z.string().optional(),
 });
 
 export type Source = z.infer<typeof SourceSchema>;

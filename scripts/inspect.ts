@@ -58,6 +58,7 @@ interface PreprocessorRunRow {
   items_kept: number;
   items_dropped_recency: number;
   items_dropped_duplicate: number;
+  items_dropped_parent_dedup: number;
   notes: string | null;
 }
 
@@ -139,14 +140,31 @@ interface BelowLineRow {
 }
 
 function parseClusterCount(digest: string): string {
-  // Try new JSON schema first.
-  try {
-    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
-    if (Array.isArray(parsed.clusters)) return String(parsed.clusters.length);
-  } catch {
-    // fall through to legacy text format
+  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
+  // JSON format (old digests start with '{').
+  if (stripped.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
+      if (Array.isArray(parsed.clusters)) return String(parsed.clusters.length);
+    } catch {
+      // fall through
+    }
+    return "?";
   }
+
+  // Flat line format: count lines with two distinct ;; occurrences.
+  let count = 0;
+  for (const rawLine of digest.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    if (line.lastIndexOf(";;") !== first) count++;
+  }
+  if (count > 0) return String(count);
+
+  // Legacy text format.
   const match = digest.match(/^Clusters identified:\s*(\d+)/m);
   return match?.[1] ?? "?";
 }
@@ -163,26 +181,57 @@ interface TriageJsonOutput {
 }
 
 function parseTriageJson(digest: string): TriageJsonOutput | null {
-  try {
-    const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed = JSON.parse(stripped) as unknown;
-    if (
-      typeof parsed !== "object" || parsed === null ||
-      !Array.isArray((parsed as { clusters?: unknown }).clusters)
-    ) return null;
-    const obj = parsed as { clusters: unknown[] };
-    for (const c of obj.clusters) {
+  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
+  // JSON format (old digests start with '{').
+  if (stripped.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(stripped) as unknown;
       if (
-        typeof c !== "object" || c === null ||
-        typeof (c as ClusterObject).title !== "string" ||
-        !Array.isArray((c as ClusterObject).item_ids) ||
-        typeof (c as ClusterObject).summary !== "string"
+        typeof parsed !== "object" || parsed === null ||
+        !Array.isArray((parsed as { clusters?: unknown }).clusters)
       ) return null;
+      const obj = parsed as { clusters: unknown[] };
+      for (const c of obj.clusters) {
+        if (
+          typeof c !== "object" || c === null ||
+          typeof (c as ClusterObject).title !== "string" ||
+          !Array.isArray((c as ClusterObject).item_ids) ||
+          typeof (c as ClusterObject).summary !== "string"
+        ) return null;
+      }
+      return obj as TriageJsonOutput;
+    } catch {
+      return null;
     }
-    return obj as TriageJsonOutput;
-  } catch {
-    return null;
   }
+
+  // Flat line format: label;;summary;;id,id,...
+  const clusters: ClusterObject[] = [];
+  for (const rawLine of digest.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    const last = line.lastIndexOf(";;");
+    if (last === first) continue;
+
+    const title = line.slice(0, first).trim();
+    const summary = line.slice(first + 2, last).trim();
+    const idPart = line.slice(last + 2).trim();
+
+    if (title.length === 0 || summary.length === 0) continue;
+
+    const item_ids: number[] = [];
+    for (const tok of idPart.split(",")) {
+      const trimmed = tok.trim();
+      if (/^\d+$/.test(trimmed)) item_ids.push(Number.parseInt(trimmed, 10));
+    }
+
+    clusters.push({ title, item_ids, summary, notes: null });
+  }
+
+  return clusters.length > 0 ? { clusters } : null;
 }
 
 function parseArgs(argv: string[]) {
@@ -386,6 +435,7 @@ async function main() {
           console.log(`  Items kept:              ${run.items_kept}`);
           console.log(`  Dropped (recency):       ${run.items_dropped_recency}`);
           console.log(`  Dropped (duplicate):     ${run.items_dropped_duplicate}`);
+          console.log(`  Dropped (parent-dedup):  ${run.items_dropped_parent_dedup}`);
           if (run.notes) console.log(`  Notes: ${run.notes}`);
         } else {
           // Summary list of recent runs.
@@ -393,7 +443,8 @@ async function main() {
           const { rows } = await pool.query<PreprocessorRunRow>(
             `SELECT id, started_at, completed_at, collector_run_id,
                     raw_items_considered, items_kept,
-                    items_dropped_recency, items_dropped_duplicate, notes
+                    items_dropped_recency, items_dropped_duplicate,
+                    items_dropped_parent_dedup, notes
              FROM preprocessor_runs
              ORDER BY started_at DESC
              LIMIT $1`,

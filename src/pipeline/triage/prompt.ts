@@ -23,6 +23,13 @@ CLUSTERING RULES
 - Same topic or same actors is NOT enough. The items must be about the same
   specific event. Two separate shootings are two stories. Two articles about
   the same shooting are one cluster.
+- Topically related events are SEPARATE clusters. A legislative vote about a
+  war, that war's military strikes, and a different country's strikes are
+  three different events — three clusters — even if they share actors or
+  geography. Do not merge them into one "conflict" or "region" bucket.
+- When you are unsure whether two items belong together, keep them separate.
+  Under-merging is recoverable downstream. A large merged bucket that
+  conflates distinct events destroys structure that cannot be recovered.
 - An item that does not clearly belong with others stays out of every
   cluster. Do not force singletons together, and do not create a cluster for
   a single item.
@@ -35,23 +42,33 @@ Items may be in any language. Read them in their original language. Write all
 output in English.
 
 OUTPUT
-Output a single JSON object and nothing else — no markdown, no code fences,
-no commentary before or after. The object has one key, "clusters", an array.
-Each cluster is an object:
-{
-  "title": "short, neutral, descriptive; no framing or adjectives not in the sources",
-  "item_ids": [integer ids of every item in this cluster],
-  "summary": "1 to 3 neutral, factual sentences. What happened. No stakes, no framing.",
-  "notes": "optional; only if the SOURCING is structurally notable (sources conflict on a specific fact, one source has a detail others lack, a single-source claim sits inside an otherwise multi-source cluster). Use null if nothing is notable."
-}
+Output one line per cluster and nothing else — no JSON, no brackets, no markdown fence, no
+header, no prose before or after.
 
-Do not output items that did not cluster. Do not add any section other than
-the clusters array. Omitted items are handled downstream by software.`;
+CRITICAL: every cluster must be a SINGLE LINE. Do not break a cluster across multiple lines.
+All three fields must appear on the same line, separated by ;; — the label, the summary, and
+the id list must all be on one line together.
+
+Each line has exactly this shape:
+  label;;summary;;id,id,id,...
+
+Fields:
+  label    — short, neutral, descriptive cluster title; no framing or adjectives not in the sources
+  summary  — 1 to 3 neutral, factual sentences. What happened. No stakes, no framing.
+  id list  — comma-separated integer ids of every item in this cluster
+
+The delimiter between fields is ;; (two semicolons). The id list is always the last field so that
+any ;; inside the summary text cannot displace the id column.
+
+Example of a correctly formatted cluster line (all on one line):
+  Gaza Ceasefire Talks;;Egyptian and Qatari mediators proposed a 40-day pause in fighting. Hamas and Israel both expressed reservations.;;312,318,301,327
+
+Do not output items that did not cluster. Omitted items are handled downstream by software.`;
 
 export function buildSystemPrompt(): string {
   return SYSTEM_PROMPT;
 }
 
 export function buildUserPrompt(document: string): string {
-  return `Here is today's news intake. Cluster it and return the JSON object.\n\n${document}`;
+  return `Here is today's news intake. Cluster it and output the flat cluster lines — one line per cluster.\n\n${document}`;
 }

@@ -31,6 +31,7 @@
     to curl from this server; this query returned valid RSS with current AP items.
     Body field contains only a Google News link wrapper; researcher will need to
     follow links for full content.
+  parent: "AP"
 
 - name: AP Politics
   url: https://news.google.com/rss/search?q=apnews.com%20politics%20when:24h&hl=en-US&gl=US&ceid=US:en
@@ -39,6 +40,7 @@
     Google News RSS proxy scoped to AP politics. Direct AP politics feed returns
     HTML/404 from this server; this query returned valid RSS with current AP
     politics items. Body field contains only a link wrapper.
+  parent: "AP"
 
 - name: Reuters Top News
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US
@@ -47,6 +49,7 @@
     Google News RSS proxy. Titles are correct; body field contains only a link
     wrapper, not article text. Researcher will need to follow links for full
     content. Known limitation.
+  parent: "Reuters"
 
 - name: Reuters World News
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com/world&ceid=US:en&hl=en-US&gl=US
@@ -55,6 +58,7 @@
     Google News RSS proxy. Titles are correct; body field contains only a link
     wrapper, not article text. Researcher will need to follow links for full
     content. Known limitation.
+  parent: "Reuters"
 
 - name: Reuters Business
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com/business&ceid=US:en&hl=en-US&gl=US
@@ -63,6 +67,7 @@
     Google News RSS proxy. Titles are correct; body field contains only a link
     wrapper, not article text. Researcher will need to follow links for full
     content. Known limitation.
+  parent: "Reuters"
 
 # ─────────────────────────────────────────────
 # NATIONAL NEWS (US)
@@ -86,10 +91,12 @@
     Paywalled full text. RSS abstracts useful as triage prominence signal — what
     the Times put on the homepage today is information the triage needs, even if
     the framing requires editor pushback.
+  parent: "New York Times"
 
 - name: New York Times Politics
   url: https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml
   type: journalism
+  parent: "New York Times"
 
 - name: Washington Post National
   url: https://feeds.washingtonpost.com/rss/national
@@ -101,6 +108,7 @@
   type: journalism
   notes: UK-based, free full text. Often stronger on US stories than US-domiciled
     outlets.
+  parent: "The Guardian"
 
 - name: Los Angeles Times
   url: https://www.latimes.com/rss2.0.xml
@@ -290,11 +298,13 @@
   url: https://www.opb.org/arc/outboundfeeds/rss/?outputType=xml
   type: journalism
   notes: Best general Oregon news RSS. State politics, environment, Portland metro.
+  parent: "OPB"
 
 - name: OPB Politics & Government
   url: https://www.opb.org/arc/outboundfeeds/rss/category/politics/?outputType=xml
   type: journalism
   notes: Category feed verified by curl; older politics-government path returned 500.
+  parent: "OPB"
 
 - name: The Oregonian (OregonLive)
   url: https://www.oregonlive.com/arc/outboundfeeds/rss/?outputType=xml
@@ -372,10 +382,12 @@
     independent on most stories; historically aligned with UK foreign policy
     framing on certain geopolitical issues. Most reliable international RSS,
     full text in feed.
+  parent: "BBC"
 
 - name: BBC News UK
   url: https://feeds.bbci.co.uk/news/uk/rss.xml
   type: journalism
+  parent: "BBC"
 
 - name: Al Jazeera English
   url: https://www.aljazeera.com/xml/rss/all.xml
@@ -388,6 +400,7 @@
 - name: The Guardian World
   url: https://www.theguardian.com/world/rss
   type: journalism
+  parent: "The Guardian"
 
 - name: Der Spiegel International
   url: https://www.spiegel.de/international/index.rss
@@ -593,6 +606,7 @@
   url: https://www.theguardian.com/environment/rss
   type: journalism
   notes: High-volume, high-quality.
+  parent: "The Guardian"
 
 - name: Heated (Emily Atkin)
   url: https://heated.world/feed
