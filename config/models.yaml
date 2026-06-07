@@ -16,14 +16,48 @@ triage:
   reasoning_effort: "none"
   clustering:
     # Ordered rounds for the incremental clusterer. Each round admits items
-    # whose source_type matches one of `types`, or any not-yet-admitted item
-    # if `types` includes the catch-all "*". Round membership is evaluated
-    # in order, so a later "*" round only sees what earlier rounds didn't take.
+    # whose preprocessed_items.group matches one of `groups`, or any
+    # not-yet-admitted item if `groups` includes the catch-all "*". Round
+    # membership is evaluated in order, so a later "*" round only sees what
+    # earlier rounds didn't take.
+    #
+    # Order is spine-first by design: wire and national-prominence groups go
+    # first so the major stories of the day already exist as clusters before
+    # the regional/topical tail (local, labor, climate, tech, ai, science...)
+    # accretes onto them or forms its own smaller clusters. This keeps every
+    # round's "new items" pile in the model's working range — see
+    # docs/decisions.md 2026-06-07 "two-round split → group-based rounds".
+    #
+    # group is set on preprocessed_items at preprocess time from each
+    # source's `group` in config/sources.yaml — a structural clustering axis,
+    # not an editorial tag (see that file's schema comment).
     rounds:
       - name: wire
-        types: [wire]
+        groups: [wire]
+      - name: national
+        groups: [national]
+      - name: intl_broad
+        groups: [intl_broad]
+      - name: accountability
+        groups: [accountability]
+      - name: legal
+        groups: [legal]
+      - name: intl_regional
+        groups: [intl_regional]
+      - name: local
+        groups: [local]
+      - name: labor
+        groups: [labor]
+      - name: climate
+        groups: [climate]
+      - name: tech
+        groups: [tech]
+      - name: ai
+        groups: [ai]
+      - name: science
+        groups: [science]
       - name: rest
-        types: ["*"]
+        groups: ["*"]
 
 researcher:
   model: gemini-3-flash-preview  # placeholder

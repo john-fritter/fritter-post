@@ -18,7 +18,7 @@ const FilterStageConfigSchema = StageConfigSchema.extend({
 
 const ClusteringRoundSchema = z.object({
   name: z.string(),
-  types: z.array(z.string()).min(1),
+  groups: z.array(z.string()).min(1),
 });
 
 const TriageStageConfigSchema = StageConfigSchema.extend({

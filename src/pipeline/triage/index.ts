@@ -12,11 +12,14 @@ import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
 import { buildSystemPrompt, buildUserPrompt, buildIncrementalUserPrompt } from "./prompt.js";
 
 /**
- * Buckets items into clustering rounds by source_type, in round order.
- * Membership is config-driven: a round admits items whose source_type
- * appears in its `types`, or — if `types` includes the catch-all "*" —
- * every item not already claimed by an earlier round. Each item lands in
- * exactly one bucket, in its original (chronological) order.
+ * Buckets items into clustering rounds by their source's `group` (set on
+ * preprocessed_items at preprocess time from config/sources.yaml — a
+ * structural clustering axis, not an editorial tag), in round order.
+ * Membership is config-driven: a round admits items whose group appears in
+ * its `groups`, or — if `groups` includes the catch-all "*" — every item not
+ * already claimed by an earlier round (including items with no group set).
+ * Each item lands in exactly one bucket, in its original (chronological)
+ * order.
  */
 function bucketItemsByRound(
   items: PreprocessedItemRow[],
@@ -26,12 +29,12 @@ function bucketItemsByRound(
   const claimed = new Set<number>();
 
   for (let r = 0; r < rounds.length; r++) {
-    const types = rounds[r]!.types;
-    const isCatchAll = types.includes("*");
+    const groups = rounds[r]!.groups;
+    const isCatchAll = groups.includes("*");
     for (const item of items) {
       const id = Number(item.id);
       if (claimed.has(id)) continue;
-      if (isCatchAll || types.includes(item.source_type)) {
+      if (isCatchAll || (item.group !== null && groups.includes(item.group))) {
         buckets[r]!.push(item);
         claimed.add(id);
       }
@@ -240,7 +243,7 @@ export async function runTriage(options: {
 
     // 5. Fetch the kept items (post filter-run, post junk-filter — the same
     // set the old whole-pile document contained) and bucket them into rounds
-    // by source_type, per config/models.yaml's clustering.rounds.
+    // by source `group`, per config/models.yaml's clustering.rounds.
     const allItems = await getTriageItems(preprocessorRunId);
     const rounds = modelConfig.triage.clustering.rounds;
     const buckets = bucketItemsByRound(allItems, rounds);
@@ -305,9 +308,15 @@ export async function runTriage(options: {
         );
       }
 
+      // Watch the loose pool: `total_prompt_items` is the number to watch.
+      // If it climbs back toward full-pile size in late rounds, the split
+      // isn't holding — items aren't landing in clusters and are piling up
+      // as loose carry-forward instead.
       const parts = [
         `round="${round.name}"`,
-        `items_in=${roundItems.length}`,
+        `new=${bucket.length}`,
+        `loose=${looseItems.length}`,
+        `total_prompt_items=${roundItems.length}`,
         `clusters_out=${parseResult?.clusters.length ?? 0}`,
       ];
       if (parseResult && parseResult.fabricatedIds.length > 0) parts.push(`fabricated=${parseResult.fabricatedIds.length}`);

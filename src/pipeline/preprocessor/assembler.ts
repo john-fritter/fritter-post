@@ -6,6 +6,7 @@ export interface PreprocessedItemRow {
   id: string;
   source_name: string;
   source_type: string;
+  group: string | null;
   title: string;
   body_text: string | null;
   published_at: string | null;
@@ -67,7 +68,7 @@ export async function getTriageItems(preprocessorRunId: number): Promise<Preproc
   const pool = getPool();
 
   const { rows: items } = await pool.query<PreprocessedItemRow>(
-    `SELECT id, source_name, source_type, title, body_text, published_at, fetched_at
+    `SELECT id, source_name, source_type, "group", title, body_text, published_at, fetched_at
      FROM preprocessed_items
      WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY published_at ASC NULLS LAST, fetched_at ASC`,

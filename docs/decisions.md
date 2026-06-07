@@ -20,6 +20,66 @@ Entry format:
 
 ---
 
+## 2026-06-07 — Triage clusterer: two-round split → group-based rounds
+
+**Decision:** Replace the two-round `wire` / `rest` split with an ordered
+sequence of thirteen rounds keyed on a new `preprocessed_items.group` field,
+in spine-first order: `wire`, `national`, `intl_broad`, `accountability`,
+`legal`, `intl_regional`, `local`, `labor`, `climate`, `tech`, `ai`,
+`science`, then a final catch-all (`*`) `rest` round.
+
+**Context:** The two-round split (below) failed in practice. Round 1 (133
+wire items) completed in ~40s; round 2 (~1,234 remaining items, the entire
+non-wire pile) timed out `qwen3.5:397b` at 903s and produced no digest —
+confirmed twice. Diagnosis: `rest` wasn't a round, it was the whole pile
+again. `source_type` couldn't provide finer-grained rounds either — 1,168 of
+~1,174 non-wire items share `source_type: journalism`.
+
+**Rationale:** Round 1 proved the model handles ~130 items cleanly, so the
+fix is to keep every round's prompt in that working range. That requires an
+axis finer than `source_type`. We added `group` — a new, optional field on
+each source in `config/sources.yaml` (and `preprocessed_items.group`,
+migration 015, set at preprocess time exactly like `track`: looked up by
+`source_name`, inherited, nullable, no default). `group` is a **structural
+clustering axis only** — it controls which round an item enters and nothing
+else. It is NOT an editorial or topic tag: it never reaches the paper, the
+editor, or the reader, and is orthogonal to both `type` (wire / journalism /
+advocacy / newsletter) and `track` (news / analysis). The thirteen group
+values map directly onto the organizational sections `config/sources.yaml`
+already had in comments (wire, national news, accountability/investigative,
+PNW/Oregon local, international broad vs. regional, technology, AI, climate,
+labor, legal, science, plus a `national` default for genuinely ambiguous
+sources).
+
+Round order is spine-first by design: wire and national-prominence groups go
+first so the major stories of the day already exist as clusters before the
+regional/topical tail (local, labor, climate, tech, ai, science, ...)
+accretes onto them or forms its own smaller clusters — rather than the tail
+forming its own competing clusters that later have to be merged with the
+spine's. `config/models.yaml`'s `triage.clustering.rounds` schema changed
+from `{name, types}` (matched against `source_type`) to `{name, groups}`
+(matched against `preprocessed_items.group`); the catch-all `"*"` semantics
+are unchanged. The re-emit-full-list mechanism, loose-item carry-forward, and
+lost-id detection from the prior decision are unchanged — this is purely
+"more, smaller, better-ordered rounds," not a new clustering strategy.
+
+New per-round logging makes the loose pool observable: `new=` (this round's
+group items), `loose=` (carried-forward unclustered items), and
+`total_prompt_items=` (the number to watch — if it climbs back toward
+full-pile size in late rounds, the split isn't holding and items are piling
+up as loose carry-forward instead of landing in clusters).
+
+**Deferred:** A final cluster-only merge pass over just the emitted cluster
+lines (no items) to catch residual same-story duplicates across rounds —
+cheap and timeout-safe because it sees only ~60 lines of cluster summaries,
+not items. Not built; add only if duplicates persist after this multi-round
+split proves insufficient on its own.
+
+**Supersedes:** The "start with exactly two rounds: `wire` and `rest`"
+portion of the entry immediately below.
+
+---
+
 ## 2026-06-07 — Triage clusterer: single-pass → multi-round incremental clustering
 
 **Decision:** Replace the triage clusterer's single whole-pile LLM call with
