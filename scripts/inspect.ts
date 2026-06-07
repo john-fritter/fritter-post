@@ -12,6 +12,7 @@
  *   npm run inspect -- preprocessor --id 1
  *   npm run inspect -- triage
  *   npm run inspect -- triage --id 1
+ *   npm run inspect -- triage --id 1 --rounds
  */
 
 import "dotenv/config";
@@ -72,6 +73,7 @@ interface TriageRunRow {
   output_tokens: number | null;
   duration_ms: number | null;
   digest: string | null;
+  round_digests: { name: string; text: string }[] | null;
   generation_log_id: string | null;
 }
 
@@ -505,7 +507,9 @@ async function main() {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
           const { rows } = await pool.query<TriageRunRow>(
-            "SELECT * FROM triage_runs WHERE id = $1",
+            `SELECT id, started_at, completed_at, preprocessor_run_id, model_used,
+                    input_tokens, output_tokens, duration_ms, digest, round_digests, generation_log_id
+             FROM triage_runs WHERE id = $1`,
             [runId]
           );
           const run = rows[0];
@@ -545,6 +549,34 @@ async function main() {
           console.log(`Tokens: ${inTok} in / ${outTok} out`);
           console.log(`Clusters: ${parsed.clusters.length}  |  Items in run: ${prepItems.length}`);
           console.log("");
+
+          // Per-round breakdown (multi-round incremental clustering).
+          if (flags["rounds"] && run.round_digests && run.round_digests.length > 0) {
+            console.log(`Rounds (${run.round_digests.length}):`);
+            let priorIds: Set<number> | null = null;
+            for (let ri = 0; ri < run.round_digests.length; ri++) {
+              const rd = run.round_digests[ri]!;
+              const roundParsed = parseTriageJson(rd.text);
+              const currentIds = new Set<number>();
+              if (roundParsed) {
+                for (const c of roundParsed.clusters) {
+                  for (const id of c.item_ids) currentIds.add(id);
+                }
+              }
+              let lostNote = "";
+              if (priorIds !== null) {
+                const lost = [...priorIds].filter((id) => !currentIds.has(id));
+                if (lost.length > 0) lostNote = `  ⚠  LOST FROM PRIOR: ${lost.join(", ")}`;
+              }
+              const clusterCount = roundParsed ? roundParsed.clusters.length : 0;
+              console.log(
+                `  [${ri + 1}/${run.round_digests.length}] ${rd.name.padEnd(10)} ` +
+                `clusters=${clusterCount}  ids_clustered=${currentIds.size}${lostNote}`
+              );
+              priorIds = currentIds;
+            }
+            console.log("");
+          }
 
           // Integrity pre-checks.
           const allClusteredIds = new Set<number>();
@@ -1041,6 +1073,7 @@ Commands:
   preprocessor --id <n>    Show full stats for one preprocessor run
   triage                   List recent triage runs
   triage --id <n>          Print full digest for one triage run
+  triage --id <n> --rounds Also show per-round cluster counts and lost-id flags
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
   editor-pass-1            List recent editor-pass-1 runs

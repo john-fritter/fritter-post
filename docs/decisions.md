@@ -20,6 +20,74 @@ Entry format:
 
 ---
 
+## 2026-06-07 — Triage clusterer: single-pass → multi-round incremental clustering
+
+**Decision:** Replace the triage clusterer's single whole-pile LLM call with
+an ordered sequence of rounds, each admitting a config-defined subset of
+items by `preprocessed_items.source_type`. Each round shows the model the
+complete cluster list built so far (the prior round's raw emitted text,
+verbatim) plus a "new items" batch — this round's items, plus any item from
+earlier rounds that hasn't landed in a cluster yet — and asks it to fold the
+new batch in and **re-emit the complete updated cluster list** in the
+existing flat `label;;summary;;ids` format. Adding a member, creating a
+cluster, and merging two clusters all become the same operation: edit the
+re-emitted list. No new instruction language or output schema was needed.
+
+`config/models.yaml` gains `triage.clustering.rounds`: an ordered list of
+`{name, types}`. `types` may name explicit `source_type` values or include
+the catch-all `"*"`, which admits everything not yet claimed by an earlier
+round. Round membership is purely config-driven — adding, removing, or
+reordering rounds is a config edit, not a code change. We start with exactly
+two rounds: `wire` (types: `[wire]`) and `rest` (types: `[*]`).
+
+The contract with everything downstream is unchanged: `triage_runs.digest`
+still holds the **final** round's raw text, in the same flat format.
+`parseFlatClusterOutput`, `cluster_index` semantics, the editor, and
+assemble-pile required no changes. A new nullable `round_digests JSONB`
+column (migration 014) additionally stores every round's raw text — `[{name,
+text}, ...]` — purely for round-by-round inspection (`npm run inspect --
+triage --id <n> --rounds`); it plays no role in the pipeline.
+
+Validation is extended, not replaced: ids are still checked against the full
+news-item id set for the run (the union across all rounds — broader than any
+single round's pile, exactly as the old whole-pile validation was), with
+fabricated/duplicate/sub-2-id handling unchanged. The new failure mode this
+staging introduces — a re-emission round silently dropping a previously-
+clustered id or whole cluster — is caught explicitly: after each round we diff
+its clustered-id set against the prior round's, log anything that disappeared
+as **lost**, loudly, and feed those ids back into the next round's loose-item
+pool so they get another chance rather than vanishing.
+
+**Context:** Consistency checks on the old whole-pile call showed the model
+losing track at full pile size — 86 to 223 duplicate cluster ids per run
+(the same story split into multiple clusters) and missed merges of obvious
+near-duplicates. The pile is too large for the model to hold in working
+memory as a single reasoning pass.
+
+**Rationale:** Staging never asks the model to reason over the whole pile at
+once — each call sees a manageable slice plus a running summary it already
+produced (and can therefore trust and edit, rather than re-derive from raw
+items). Re-emit-the-complete-list is the simplest mechanism that unifies
+"add," "create," and "merge" into one operation the model already knows how
+to do (it's the same output shape as round one), so no prompt-engineering for
+new operations was needed — only an instruction to treat the prior list as
+editable rather than fixed. Keeping the digest format, validation contract,
+and downstream consumers untouched means this is purely an internal staging
+change to triage; nothing else in the pipeline needs to know clustering now
+happens in rounds. We deliberately did not loosen the conservative merge
+threshold in this pass — we're isolating whether staging alone fixes the
+duplicate-cluster problem before changing what "same story" means.
+
+**Known limitation:** With only two rounds and this source list, the second
+round (`rest` — everything that isn't wire) is still large; staging reduces
+the pile the model reasons over per call but doesn't eliminate big single
+calls. Finer-grained round membership (e.g. splitting `journalism` further,
+or admitting by volume rather than type) is deferred until the inspection
+harness shows the two-round split isn't enough — we'd rather learn that from
+real `lost-from-prior` and duplicate-id data than guess at a finer split now.
+
+---
+
 ## 2026-06-07 — Editor stage: whole-pile single call, three tiers + cut, line-order ranking
 
 **Decision:** The editor stage reads the assembled `editor_pile` (clusters +

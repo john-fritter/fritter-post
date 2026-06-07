@@ -1,9 +1,45 @@
 import "dotenv/config";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import type { ClusteringRound } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
-import { assembleTriageDocument } from "../preprocessor/assembler.js";
-import { buildSystemPrompt, buildUserPrompt } from "./prompt.js";
+import {
+  assembleTriageDocument,
+  getTriageItems,
+  formatTriageItemBlocks,
+} from "../preprocessor/assembler.js";
+import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
+import { buildSystemPrompt, buildUserPrompt, buildIncrementalUserPrompt } from "./prompt.js";
+
+/**
+ * Buckets items into clustering rounds by source_type, in round order.
+ * Membership is config-driven: a round admits items whose source_type
+ * appears in its `types`, or — if `types` includes the catch-all "*" —
+ * every item not already claimed by an earlier round. Each item lands in
+ * exactly one bucket, in its original (chronological) order.
+ */
+function bucketItemsByRound(
+  items: PreprocessedItemRow[],
+  rounds: ClusteringRound[],
+): PreprocessedItemRow[][] {
+  const buckets: PreprocessedItemRow[][] = rounds.map(() => []);
+  const claimed = new Set<number>();
+
+  for (let r = 0; r < rounds.length; r++) {
+    const types = rounds[r]!.types;
+    const isCatchAll = types.includes("*");
+    for (const item of items) {
+      const id = Number(item.id);
+      if (claimed.has(id)) continue;
+      if (isCatchAll || types.includes(item.source_type)) {
+        buckets[r]!.push(item);
+        claimed.add(id);
+      }
+    }
+  }
+
+  return buckets;
+}
 
 export interface TriageCluster {
   title: string;
@@ -193,42 +229,122 @@ export async function runTriage(options: {
   const runId = runRows[0]!.id;
 
   try {
-    // 4. Fetch input item ids for parse-time validation.
+    // 4. Fetch input item ids for parse-time validation. This is the full
+    // news-item id set for the run (union across all rounds) — broader than
+    // any single round's pile, same validation set as the old whole-pile call.
     const { rows: itemIdRows } = await pool.query<{ id: string }>(
       "SELECT id FROM preprocessed_items WHERE preprocessor_run_id = $1",
       [preprocessorRunId],
     );
     const inputIds = new Set<number>(itemIdRows.map((r: { id: string }) => Number(r.id)));
 
-    // 5. Assemble the triage document from preprocessed items.
-    const document = await assembleTriageDocument(preprocessorRunId);
+    // 5. Fetch the kept items (post filter-run, post junk-filter — the same
+    // set the old whole-pile document contained) and bucket them into rounds
+    // by source_type, per config/models.yaml's clustering.rounds.
+    const allItems = await getTriageItems(preprocessorRunId);
+    const rounds = modelConfig.triage.clustering.rounds;
+    const buckets = bucketItemsByRound(allItems, rounds);
 
-    // 6. Call the LLM.
-    const result = await callLLM({
-      stage: "triage",
-      stageRunId: runId,
-      model,
-      systemPrompt: buildSystemPrompt(),
-      userPrompt: buildUserPrompt(document),
-      temperature,
-      maxTokens,
-      reasoningEffort,
-    });
+    // 6. Run each round in order. Each round sees the cumulative cluster list
+    // re-emitted by the prior round plus its own new items and any items that
+    // haven't clustered yet — and re-emits the complete updated cluster list.
+    // The final round's raw text becomes triage_runs.digest, unchanged.
+    const roundDigests: { name: string; text: string }[] = [];
+    let seenItems: typeof allItems = [];
+    let priorClusteredIds = new Set<number>();
+    let priorRoundText: string | null = null;
+    let lastResult: Awaited<ReturnType<typeof callLLM>> | null = null;
+    let lastParse: FlatClusterParseResult | null = null;
 
-    // 7. Defensively parse the output. Warn on failure but do not throw.
-    const parseResult = parseFlatClusterOutput(result.text, inputIds);
-    if (parseResult !== null) {
+    for (let r = 0; r < rounds.length; r++) {
+      const round = rounds[r]!;
+      const bucket = buckets[r]!;
+      const looseItems = seenItems.filter((item) => !priorClusteredIds.has(Number(item.id)));
+      const roundItems = [...bucket, ...looseItems];
+
+      let userPrompt: string;
+      if (r === 0) {
+        const bucketIds = new Set(bucket.map((item) => Number(item.id)));
+        const document = await assembleTriageDocument(preprocessorRunId, (item) => bucketIds.has(Number(item.id)));
+        userPrompt = buildUserPrompt(document);
+      } else {
+        userPrompt = buildIncrementalUserPrompt(priorRoundText!, formatTriageItemBlocks(roundItems));
+      }
+
+      const result = await callLLM({
+        stage: "triage",
+        stageRunId: runId,
+        model,
+        systemPrompt: buildSystemPrompt(),
+        userPrompt,
+        temperature,
+        maxTokens,
+        reasoningEffort,
+      });
+
+      // Defensively parse the output. Warn on failure but do not throw —
+      // the next round (if any) still gets this round's raw text verbatim.
+      const parseResult = parseFlatClusterOutput(result.text, inputIds);
+      const currentClusteredIds = new Set<number>();
+      if (parseResult !== null) {
+        for (const cluster of parseResult.clusters) {
+          for (const id of cluster.item_ids) currentClusteredIds.add(id);
+        }
+      }
+
+      // A re-emission round may silently drop a cluster or a previously
+      // clustered id. Anything that was clustered going in but isn't
+      // clustered coming out is "lost" — log it loudly. It rejoins the loose
+      // pool above on the next iteration (priorClusteredIds no longer
+      // contains it, so it reappears in `seenItems.filter(...)`), so it gets
+      // another chance rather than silently vanishing.
+      const lostIds = [...priorClusteredIds].filter((id) => !currentClusteredIds.has(id));
+      if (lostIds.length > 0) {
+        console.warn(
+          `[triage] round "${round.name}": LOST ${lostIds.length} previously-clustered id(s) on re-emission: ${lostIds.join(", ")}`,
+        );
+      }
+
       const parts = [
-        `clusters=${parseResult.clusters.length}`,
-        `lines=${parseResult.parsedLineCount}`,
+        `round="${round.name}"`,
+        `items_in=${roundItems.length}`,
+        `clusters_out=${parseResult?.clusters.length ?? 0}`,
       ];
-      if (parseResult.fabricatedIds.length > 0) parts.push(`fabricated=${parseResult.fabricatedIds.length}`);
-      if (parseResult.duplicateIds.length > 0) parts.push(`duplicates=${parseResult.duplicateIds.length}`);
-      if (parseResult.droppedSingletonCount > 0) parts.push(`dropped-singletons=${parseResult.droppedSingletonCount}`);
-      console.log(`[triage] run #${runId}: ${parts.join(", ")}`);
+      if (parseResult && parseResult.fabricatedIds.length > 0) parts.push(`fabricated=${parseResult.fabricatedIds.length}`);
+      if (parseResult && parseResult.duplicateIds.length > 0) parts.push(`duplicates=${parseResult.duplicateIds.length}`);
+      if (parseResult && parseResult.droppedSingletonCount > 0) parts.push(`dropped-singletons=${parseResult.droppedSingletonCount}`);
+      if (lostIds.length > 0) parts.push(`lost-from-prior=${lostIds.length}`);
+      console.log(`[triage] ${parts.join(", ")}`);
+
+      roundDigests.push({ name: round.name, text: result.text });
+      seenItems = [...seenItems, ...bucket];
+      priorClusteredIds = currentClusteredIds;
+      priorRoundText = result.text;
+      lastResult = result;
+      lastParse = parseResult;
     }
 
-    // 8. Update triage_runs with results (store raw text regardless of parse outcome).
+    const finalResult = lastResult!;
+
+    // Final run-level summary, in the same shape the old whole-pile call logged.
+    if (lastParse !== null) {
+      const summaryParts = [
+        `rounds=${rounds.length}`,
+        `clusters=${lastParse.clusters.length}`,
+        `lines=${lastParse.parsedLineCount}`,
+      ];
+      if (lastParse.fabricatedIds.length > 0) summaryParts.push(`fabricated=${lastParse.fabricatedIds.length}`);
+      if (lastParse.duplicateIds.length > 0) summaryParts.push(`duplicates=${lastParse.duplicateIds.length}`);
+      if (lastParse.droppedSingletonCount > 0) summaryParts.push(`dropped-singletons=${lastParse.droppedSingletonCount}`);
+      console.log(`[triage] run #${runId}: ${summaryParts.join(", ")}`);
+    } else {
+      console.log(`[triage] run #${runId}: rounds=${rounds.length}, final round failed to parse`);
+    }
+
+    // 7. Update triage_runs with results (store raw text regardless of parse
+    // outcome). digest holds the final round's text, exactly as before;
+    // round_digests additionally preserves every round's raw text for
+    // round-by-round inspection.
     await pool.query(
       `UPDATE triage_runs
        SET completed_at       = NOW(),
@@ -236,12 +352,21 @@ export async function runTriage(options: {
            output_tokens      = $2,
            duration_ms        = $3,
            digest             = $4,
-           generation_log_id  = $5
-       WHERE id = $6`,
-      [result.inputTokens, result.outputTokens, result.durationMs, result.text, result.generationLogId, runId]
+           round_digests      = $5::jsonb,
+           generation_log_id  = $6
+       WHERE id = $7`,
+      [
+        finalResult.inputTokens,
+        finalResult.outputTokens,
+        finalResult.durationMs,
+        finalResult.text,
+        JSON.stringify(roundDigests),
+        finalResult.generationLogId,
+        runId,
+      ]
     );
 
-    // 9. Return completed run.
+    // 8. Return completed run.
     return await fetchTriageRun(pool, runId);
   } catch (err) {
     // Mark run as failed with a note if it never completed.

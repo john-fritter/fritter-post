@@ -14,6 +14,16 @@ triage:
   temperature: 0.1
   max_tokens: 65536
   reasoning_effort: "none"
+  clustering:
+    # Ordered rounds for the incremental clusterer. Each round admits items
+    # whose source_type matches one of `types`, or any not-yet-admitted item
+    # if `types` includes the catch-all "*". Round membership is evaluated
+    # in order, so a later "*" round only sees what earlier rounds didn't take.
+    rounds:
+      - name: wire
+        types: [wire]
+      - name: rest
+        types: ["*"]
 
 researcher:
   model: gemini-3-flash-preview  # placeholder
