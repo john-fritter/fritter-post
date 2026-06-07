@@ -69,7 +69,7 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
   const { rows: items } = await pool.query<PreprocessedItemRow>(
     `SELECT id, source_name, source_type, title, body_text, published_at, fetched_at
      FROM preprocessed_items
-     WHERE preprocessor_run_id = $1
+     WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY published_at ASC NULLS LAST, fetched_at ASC`,
     [preprocessorRunId]
   );

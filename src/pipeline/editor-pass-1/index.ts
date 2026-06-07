@@ -290,11 +290,13 @@ export async function runEditorPass1(
   // 4. Load bio and build the (static per run) system prompt.
   const systemPrompt = buildSystemPrompt(loadBio());
 
-  // 5. Fetch all preprocessed items for this run.
+  // 5. Fetch news-track preprocessed items for this run.
+  //    Analysis items never enter a cluster, so without this filter they would
+  //    all appear as residual singletons and receive scores — which is wrong.
   const { rows: allItems } = await pool.query<PreprocessedItemRow>(
     `SELECT id, source_name, source_type, title, body_text
      FROM preprocessed_items
-     WHERE preprocessor_run_id = $1
+     WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY id ASC`,
     [preprocessorRunId],
   );
