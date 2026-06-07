@@ -35,6 +35,7 @@ const EditorPass1StageConfigSchema = FilterStageConfigSchema.extend({
 
 const ModelsConfigSchema = z.object({
   filter: FilterStageConfigSchema,
+  prefilter: FilterStageConfigSchema,
   triage: TriageStageConfigSchema,
   researcher: StageConfigSchema,
   editor: StageConfigSchema,

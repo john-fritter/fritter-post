@@ -20,6 +20,79 @@ Entry format:
 
 ---
 
+## 2026-06-07 — New stage: bio-aware pre-cluster relevance filter (prefilter)
+
+**Decision:** Add a `prefilter` stage between the preprocessor and the
+clusterer (triage). It is batched, concurrency-capped at 3, bio-aware, and
+mirrors editor-pass-1's structure closely (per-item batches, `p-limit`,
+flat-line parsing, run+results tables, `glm-5.1`). For each `track = 'news'`
+preprocessed item it makes a binary **keep/cut** verdict — not a score — and
+the prompt is deliberately conservative: cut only what the bio makes clear
+this reader has affirmatively no interest in (routine sports/box scores,
+celebrity gossip, market-movement noise); when unsure, KEEP. A sports or
+entertainment item with a substantive labor/political/legal/cultural angle is
+explicitly a KEEP. Schema: `prefilter_runs` (per-execution counts) and
+`prefilter_results` (`run_id`, `preprocessed_item_id`, `keep BOOLEAN`,
+`reason TEXT`) — migration 016. The assembler (`getTriageItems`) applies a
+completed prefilter run's kept-set exactly the way it already applies the LLM
+filter run's kept-set (`getPrefilterKeptIds` mirrors `getFilterKeptIds`,
+including the graceful "no run → include everything" fallback); the two
+compose by simple set intersection, so order between them doesn't matter.
+Nothing is deleted from `preprocessed_items` — cut items remain in the full
+pool for a future writer stage that searches across all items; this stage
+only records a verdict.
+
+**Context:** The clusterer and editor were spending context budget on items
+the reader has no interest in at all — routine box scores, tabloid items,
+wire filler that isn't garbage (so the deterministic junk filter correctly
+keeps it) but also isn't anything this specific reader would ever want. That
+is a *relevance* judgment, not a *garbage* judgment, and it requires the bio.
+
+**Rationale:**
+
+- **Why a separate stage from the junk filter, not folded into it.**
+  Garbage-vs-not (calendars, photo galleries, house ads — see
+  `src/pipeline/preprocessor/junk-filter.ts`) and relevant-to-this-reader-vs-not
+  are different judgments with different evidence. The junk filter is
+  high-precision pattern matching that needs no bio and stays deterministic
+  and fast; the prefilter needs the bio and an LLM call per item. Conflating
+  them would force the deterministic filter's rules to start encoding
+  reader-specific taste (fragile, unreviewable) or force every garbage call
+  through an LLM (slow, costly, and a worse fit for "this regex always means
+  press-release boilerplate"). They stay separate, parallel passes that
+  compose by intersection — exactly like the LLM `filter` stage and the junk
+  filter already do today.
+
+- **Conservative keep-bias, not a percentile quota.** This is a *floor* that
+  strips obvious noise, not a relevance ranking with a target size (that's
+  editor-pass-1 and the editor's job, downstream, with full cluster context).
+  A quota-based cut here would force borderline calls before the pile is even
+  assembled, when the reader-relevance evidence is thinnest. Fail-safe
+  direction is KEEP for the same reason editor-pass-1 fail-safes toward the
+  middle of its range rather than toward zero: an over-inclusive floor costs
+  the clusterer and editor a little context; a wrongly-cut story is gone and
+  cannot be recovered by any later stage.
+
+- **Retained-pool design.** Cut verdicts are recorded, never enacted as
+  deletes. `preprocessed_items` keeps the full day's pool so a future writer
+  stage — one that can search across everything collected, not just what made
+  the paper — has the complete record to work from. This is purely a
+  "don't pass this forward to clustering" signal, not a "this didn't happen"
+  signal.
+
+- **Built to become a scorer.** The output format —
+  `id;;verdict;;reason` with `verdict` in the same column position as
+  editor-pass-1's `score` — and the `prefilter_results` schema (an additive
+  `score INT` column would let `keep` become a derived threshold) are chosen
+  so that, once the keep/cut version is validated against real daily output,
+  promoting it to an absolute-floor *scorer* is a prompt change plus one
+  additive migration — not a rebuild. If that promotion happens, it can
+  absorb editor-pass-1's bio-aware scoring entirely (collapsing the two
+  passes into one earlier, cheaper one) — deferred until the binary version
+  has run long enough to show whether a finer-grained floor is worth it.
+
+---
+
 ## 2026-06-07 — Triage clusterer: ordered group-rounds → wire seed + parallel spines + id-union merge
 
 **Decision:** Replace the single-chain ordered-rounds clusterer with three

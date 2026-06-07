@@ -9,6 +9,18 @@ filter:
   concurrency: 3
   reasoning_effort: "none"
 
+# Bio-aware relevance floor between the preprocessor and the clusterer — a
+# separate, later judgment from `filter` (garbage vs. reader-relevance; see
+# docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
+# since this stage is built to become a scorer itself with only a prompt swap.
+prefilter:
+  model: glm-5.1
+  temperature: 0.1
+  max_tokens: 4096
+  batch_size: 40
+  concurrency: 3
+  reasoning_effort: "none"
+
 triage:
   model: qwen3.5:397b
   temperature: 0.1

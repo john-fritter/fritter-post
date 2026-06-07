@@ -13,6 +13,8 @@
  *   npm run inspect -- triage
  *   npm run inspect -- triage --id 1
  *   npm run inspect -- triage --id 1 --rounds
+ *   npm run inspect -- prefilter
+ *   npm run inspect -- prefilter --id 1
  */
 
 import "dotenv/config";
@@ -98,6 +100,25 @@ interface FilterDropRow {
   id: string;
   source_name: string;
   title: string;
+  reason: string;
+}
+
+interface PrefilterRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  preprocessor_run_id: number;
+  model_used: string;
+  items_in: number;
+  items_kept: number;
+  items_cut: number;
+}
+
+interface PrefilterResultRow {
+  id: string;
+  source_name: string;
+  title: string;
+  keep: boolean;
   reason: string;
 }
 
@@ -766,6 +787,94 @@ async function main() {
         break;
       }
 
+      case "prefilter": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<PrefilterRunRow>(
+            "SELECT * FROM prefilter_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No prefilter run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Prefilter run #${run.id}`);
+          console.log(`  Started:             ${started}`);
+          console.log(`  Completed:           ${finished}`);
+          console.log(`  Preprocessor run:    #${run.preprocessor_run_id}`);
+          console.log(`  Model:               ${run.model_used}`);
+          console.log(`  Items in:            ${run.items_in}`);
+          console.log(`  Items kept:          ${run.items_kept}`);
+          console.log(`  Items cut:           ${run.items_cut}`);
+          if (run.items_in > 0) {
+            const pct = ((run.items_cut / run.items_in) * 100).toFixed(1);
+            console.log(`  Cut rate:            ${pct}%`);
+          }
+
+          // Full per-item keep/cut list with reasons.
+          const { rows: itemRows } = await pool.query<PrefilterResultRow>(
+            `SELECT pr.preprocessed_item_id AS id, pi.source_name, pi.title, pr.keep, pr.reason
+             FROM prefilter_results pr
+             JOIN preprocessed_items pi ON pi.id = pr.preprocessed_item_id
+             WHERE pr.run_id = $1
+             ORDER BY pr.keep ASC, pi.source_name, pi.title`,
+            [runId]
+          );
+
+          const cutRows = itemRows.filter((r) => !r.keep);
+          const keepRows = itemRows.filter((r) => r.keep);
+
+          if (cutRows.length > 0) {
+            console.log(`\n── CUT (${cutRows.length})`);
+            for (const row of cutRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+          if (keepRows.length > 0) {
+            console.log(`\n── KEPT (${keepRows.length})`);
+            for (const row of keepRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<PrefilterRunRow>(
+            `SELECT id, started_at, completed_at, preprocessor_run_id,
+                    model_used, items_in, items_kept, items_cut
+             FROM prefilter_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No prefilter runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Prep#".padEnd(7)} ${"Model".padEnd(26)} ${"In".padEnd(6)} ${"Kept".padEnd(6)} Cut`
+          );
+          console.log("─".repeat(82));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 24 ? run.model_used.slice(0, 23) + "…" : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.preprocessor_run_id).padEnd(7)} ${model.padEnd(26)} ${String(run.items_in).padEnd(6)} ${String(run.items_kept).padEnd(6)} ${run.items_cut}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       case "editor-pass-1": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
@@ -1076,6 +1185,8 @@ Commands:
   triage --id <n> --rounds Also show per-round cluster counts and lost-id flags
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
+  prefilter                List recent prefilter runs
+  prefilter --id <n>       Show detail and per-item keep/cut verdicts with reasons
   editor-pass-1            List recent editor-pass-1 runs
   editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
   editor                   List recent editor runs

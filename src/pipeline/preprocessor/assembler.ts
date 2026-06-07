@@ -59,10 +59,38 @@ async function getFilterKeptIds(
 }
 
 /**
+ * Returns the set of kept preprocessed_item IDs from the latest completed
+ * prefilter run for the given preprocessor run, or null if no prefilter run
+ * exists. Mirrors getFilterKeptIds — same shape, same fallback (no run means
+ * no opinion, so nothing is excluded on its account).
+ */
+async function getPrefilterKeptIds(
+  pool: import("pg").Pool,
+  preprocessorRunId: number
+): Promise<Set<number> | null> {
+  const { rows: runRows } = await pool.query<{ id: number }>(
+    `SELECT id FROM prefilter_runs
+     WHERE preprocessor_run_id = $1 AND completed_at IS NOT NULL
+     ORDER BY completed_at DESC LIMIT 1`,
+    [preprocessorRunId]
+  );
+  if (!runRows[0]) return null;
+
+  const prefilterRunId = runRows[0].id;
+  const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
+    `SELECT preprocessed_item_id FROM prefilter_results
+     WHERE run_id = $1 AND keep = true`,
+    [prefilterRunId]
+  );
+  return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));
+}
+
+/**
  * Reads preprocessed_items for a given run, applies the LLM filter run (if
- * any) and the junk filter, and returns the surviving items in chronological
- * order — the same item set `assembleTriageDocument` would format. Exposed so
- * the triage stage can group these items into rounds before formatting.
+ * any), the bio-aware prefilter run (if any), and the junk filter, and
+ * returns the surviving items in chronological order — the same item set
+ * `assembleTriageDocument` would format. Exposed so the triage stage can
+ * group these items into rounds before formatting.
  */
 export async function getTriageItems(preprocessorRunId: number): Promise<PreprocessedItemRow[]> {
   const pool = getPool();
@@ -88,9 +116,22 @@ export async function getTriageItems(preprocessorRunId: number): Promise<Preproc
     }
   }
 
+  // Apply the bio-aware prefilter run, if one exists.
+  const prefilterKeptIds = await getPrefilterKeptIds(pool, preprocessorRunId);
+  const prefilteredItems = prefilterKeptIds !== null
+    ? preFilterItems.filter((item: PreprocessedItemRow) => (prefilterKeptIds as Set<number>).has(Number(item.id)))
+    : preFilterItems;
+
+  if (prefilterKeptIds !== null) {
+    const cut = preFilterItems.length - prefilteredItems.length;
+    if (cut > 0) {
+      console.log(`[assembler] prefilter run applied: ${prefilteredItems.length} kept, ${cut} cut`);
+    }
+  }
+
   // Apply junk filter, logging every drop.
   const kept: PreprocessedItemRow[] = [];
-  for (const item of preFilterItems) {
+  for (const item of prefilteredItems) {
     const result = classifyItem({
       id: item.id,
       source_name: item.source_name,
