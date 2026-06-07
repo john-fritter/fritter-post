@@ -51,14 +51,17 @@ function normalizeTitle(t: string): string {
 export async function runPreprocessor(options: { collectorRunId?: number } = {}): Promise<PreprocessorRun> {
   const pool = getPool();
 
-  // Build source-type, source-parent, and source-track lookup from config.
+  // Build source-type, source-parent, source-track, and source-group lookup
+  // from config.
   const sourceTypeMap = new Map<string, string>();
   const parentMap = new Map<string, string>(); // source.name → parent (or source.name if no parent)
   const trackMap = new Map<string, string>(); // source.name → 'news' | 'analysis'
+  const groupMap = new Map<string, string | null>(); // source.name → clustering group (or null)
   for (const source of loadSources()) {
     sourceTypeMap.set(source.name, source.type);
     parentMap.set(source.name, source.parent ?? source.name);
     trackMap.set(source.name, source.track);
+    groupMap.set(source.name, source.group);
   }
 
   // Create the run record.
@@ -96,6 +99,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       sourceName: string;
       sourceType: string;
       track: string;
+      group: string | null;
       title: string;
       canonicalUrl: string;
       originalUrl: string;
@@ -113,6 +117,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       sourceName: row.source_name,
       sourceType: sourceTypeMap.get(row.source_name) ?? "journalism",
       track: trackMap.get(row.source_name) ?? "news",
+      group: groupMap.get(row.source_name) ?? null,
       title: row.title.trim(),
       canonicalUrl: canonicalizeUrl(row.original_url),
       originalUrl: row.original_url,
@@ -197,16 +202,17 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       for (const item of finalSurviving) {
         await client.query(
           `INSERT INTO preprocessed_items
-             (preprocessor_run_id, raw_item_id, source_name, source_type, track,
+             (preprocessor_run_id, raw_item_id, source_name, source_type, track, "group",
               title, canonical_url, original_url, body_text,
               published_at, fetched_at, also_appeared_in)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
             runId,
             item.rawItemId,
             item.sourceName,
             item.sourceType,
             item.track,
+            item.group,
             item.title,
             item.canonicalUrl,
             item.originalUrl,

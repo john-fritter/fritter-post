@@ -72,3 +72,44 @@ export function buildSystemPrompt(): string {
 export function buildUserPrompt(document: string): string {
   return `Here is today's news intake. Cluster it and output the flat cluster lines — one line per cluster.\n\n${document}`;
 }
+
+/**
+ * Builds the user prompt for round 2+ of incremental clustering: the model
+ * sees the complete cluster list built so far (verbatim, in the same flat
+ * format it must re-emit) plus a new batch of items, and is asked to fold
+ * the new batch in and re-emit the complete updated list.
+ *
+ * Adding a member, creating a cluster, and merging two clusters are all just
+ * edits to the re-emitted list — no new instruction language beyond this.
+ */
+export function buildIncrementalUserPrompt(clustersSoFar: string, newItemsBlock: string): string {
+  return `You already clustered an earlier batch of today's news intake. Below is the
+complete list of clusters built so far, in the same flat format you must use,
+followed by a new batch of items — including any items from earlier batches
+that did not cluster yet, given another chance here.
+
+Update the cluster list to account for the new batch:
+- Add a new item to an existing cluster if it covers the same specific story.
+- Merge two existing clusters if you now see they cover the same specific story.
+- Create a new cluster where new items cluster with each other but not with
+  anything existing.
+- Leave items that don't clearly belong with anything out of every cluster.
+- Apply the same clustering rules from the system prompt — including keeping
+  topically related but distinct events as separate clusters, and erring
+  toward under-merging when unsure.
+
+This is a re-emission, not a diff: every cluster that should still exist after
+this update — whether or not you changed it — must appear in your output, with
+all of its ids. Do not drop a cluster or an id from the list below unless you
+are merging its cluster into another (in which case its ids must appear in the
+merged cluster's id list).
+
+Output the complete updated list as flat cluster lines — one line per cluster,
+in the same label;;summary;;id,id,id,... format — and nothing else.
+
+CLUSTERS SO FAR
+${clustersSoFar}
+
+NEW ITEMS
+${newItemsBlock}`;
+}

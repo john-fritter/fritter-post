@@ -1,9 +1,214 @@
 import "dotenv/config";
+import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import type { Spine } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
-import { assembleTriageDocument } from "../preprocessor/assembler.js";
-import { buildSystemPrompt, buildUserPrompt } from "./prompt.js";
+import {
+  assembleTriageDocument,
+  getTriageItems,
+  formatTriageItemBlocks,
+} from "../preprocessor/assembler.js";
+import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
+import { buildSystemPrompt, buildUserPrompt, buildIncrementalUserPrompt } from "./prompt.js";
+
+export interface SpineBucket {
+  name: string;
+  items: PreprocessedItemRow[];
+}
+
+/**
+ * Splits items into a seed bucket (items whose `group` — set on
+ * preprocessed_items at preprocess time from config/sources.yaml, a
+ * structural clustering axis, not an editorial tag — appears in `seedGroups`)
+ * and an ordered list of spine buckets (items whose group appears in that
+ * spine's `groups`, claimed in config order so each item lands in exactly one
+ * bucket). Any item claimed by neither the seed nor a configured spine —
+ * including items with no group set — is swept into an implicit fallback
+ * "rest" spine appended at the end, so nothing is silently excluded.
+ */
+function bucketItemsForSpines(
+  items: PreprocessedItemRow[],
+  seedGroups: string[],
+  spines: Spine[],
+): { seedBucket: PreprocessedItemRow[]; spineBuckets: SpineBucket[] } {
+  const claimed = new Set<number>();
+  const seedSet = new Set(seedGroups);
+
+  const seedBucket: PreprocessedItemRow[] = [];
+  for (const item of items) {
+    if (item.group !== null && seedSet.has(item.group)) {
+      seedBucket.push(item);
+      claimed.add(Number(item.id));
+    }
+  }
+
+  const spineBuckets: SpineBucket[] = [];
+  for (const spine of spines) {
+    const groups = new Set(spine.groups);
+    const bucket: PreprocessedItemRow[] = [];
+    for (const item of items) {
+      const id = Number(item.id);
+      if (claimed.has(id)) continue;
+      if (item.group !== null && groups.has(item.group)) {
+        bucket.push(item);
+        claimed.add(id);
+      }
+    }
+    spineBuckets.push({ name: spine.name, items: bucket });
+  }
+
+  const rest = items.filter((item) => !claimed.has(Number(item.id)));
+  if (rest.length > 0) {
+    spineBuckets.push({ name: "rest", items: rest });
+  }
+
+  return { seedBucket, spineBuckets };
+}
+
+const TITLE_WORD_MIN_LENGTH = 3;
+const TITLE_SIMILARITY_THRESHOLD = 0.6;
+
+function titleWordSet(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= TITLE_WORD_MIN_LENGTH),
+  );
+}
+
+/**
+ * Jaccard similarity over normalized title word sets, thresholded — a cheap
+ * heuristic for flagging probable same-story clusters that the deterministic
+ * id-union merge can't catch because they share no item ids (e.g. the same
+ * story covered only by sources in two different spines). Not a merge
+ * decision — see `mergeSpineClusters`'s `possibleDuplicates`.
+ */
+function titlesAreSimilar(a: string, b: string): boolean {
+  const setA = titleWordSet(a);
+  const setB = titleWordSet(b);
+  if (setA.size === 0 || setB.size === 0) return false;
+
+  let intersection = 0;
+  for (const w of setA) if (setB.has(w)) intersection++;
+  const union = setA.size + setB.size - intersection;
+  return union > 0 && intersection / union >= TITLE_SIMILARITY_THRESHOLD;
+}
+
+export interface SpineMergeResult {
+  clusters: TriageCluster[];
+  clustersBeforeMerge: number;
+  mergedByShareCount: number;
+  possibleDuplicates: { a: string; b: string }[];
+}
+
+/**
+ * Deterministically merges every spine's re-emitted cluster list into one —
+ * software, not an LLM call. Every spine accreted onto the SAME seed cluster
+ * list, so the same major story appears in multiple spines' outputs sharing
+ * the seed's item ids: an exact, free merge key that needs no semantic
+ * matching. Any two clusters (from any spines, including different copies of
+ * the same re-emitted seed cluster) that share >= 1 id are unioned,
+ * transitively; within each merged group, ids are deduped keep-first (in
+ * gather order: spine config order, then each spine's emission order) and the
+ * largest contributing cluster's label/summary is kept as canonical.
+ *
+ * Clusters that share no id but have highly similar titles are NOT merged —
+ * that would require semantic judgment this pass doesn't make. They're
+ * surfaced via `possibleDuplicates` for inspection; see docs/decisions.md for
+ * the deferred semantic-merge pass that would resolve them.
+ */
+function mergeSpineClusters(spineOutputs: { name: string; clusters: TriageCluster[] }[]): SpineMergeResult {
+  const gathered: TriageCluster[] = [];
+  for (const spine of spineOutputs) {
+    gathered.push(...spine.clusters);
+  }
+
+  const n = gathered.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]!]!;
+      x = parent[x]!;
+    }
+    return x;
+  }
+  function union(a: number, b: number): void {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+
+  const idToIndices = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    for (const id of gathered[i]!.item_ids) {
+      const indices = idToIndices.get(id);
+      if (indices) indices.push(i);
+      else idToIndices.set(id, [i]);
+    }
+  }
+  for (const indices of idToIndices.values()) {
+    for (let k = 1; k < indices.length; k++) union(indices[0]!, indices[k]!);
+  }
+
+  const components = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    const members = components.get(root);
+    if (members) members.push(i);
+    else components.set(root, [i]);
+  }
+
+  const merged: TriageCluster[] = [];
+  let mergedByShareCount = 0;
+
+  for (const members of components.values()) {
+    if (members.length > 1) mergedByShareCount += members.length - 1;
+
+    let canonicalIdx = members[0]!;
+    for (const idx of members) {
+      if (gathered[idx]!.item_ids.length > gathered[canonicalIdx]!.item_ids.length) {
+        canonicalIdx = idx;
+      }
+    }
+    const canonical = gathered[canonicalIdx]!;
+
+    const seen = new Set<number>();
+    const ids: number[] = [];
+    for (const idx of members) {
+      for (const id of gathered[idx]!.item_ids) {
+        if (!seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
+        }
+      }
+    }
+
+    merged.push({ title: canonical.title, summary: canonical.summary, item_ids: ids, notes: null });
+  }
+
+  // Order by item count descending — "most-covered story first," the same
+  // convention the system prompt asks the model to follow. This order
+  // becomes cluster_index downstream.
+  merged.sort((a, b) => b.item_ids.length - a.item_ids.length);
+
+  const possibleDuplicates: { a: string; b: string }[] = [];
+  for (let i = 0; i < merged.length; i++) {
+    for (let j = i + 1; j < merged.length; j++) {
+      if (titlesAreSimilar(merged[i]!.title, merged[j]!.title)) {
+        possibleDuplicates.push({ a: merged[i]!.title, b: merged[j]!.title });
+      }
+    }
+  }
+
+  return { clusters: merged, clustersBeforeMerge: n, mergedByShareCount, possibleDuplicates };
+}
+
+function formatFlatClusterLines(clusters: TriageCluster[]): string {
+  return clusters.map((c) => `${c.title};;${c.summary};;${c.item_ids.join(",")}`).join("\n");
+}
 
 export interface TriageCluster {
   title: string;
@@ -193,42 +398,166 @@ export async function runTriage(options: {
   const runId = runRows[0]!.id;
 
   try {
-    // 4. Fetch input item ids for parse-time validation.
+    // 4. Fetch input item ids for parse-time validation. This is the full
+    // news-item id set for the run — broader than any single seed/spine
+    // pile, same validation set as the old whole-pile call.
     const { rows: itemIdRows } = await pool.query<{ id: string }>(
       "SELECT id FROM preprocessed_items WHERE preprocessor_run_id = $1",
       [preprocessorRunId],
     );
     const inputIds = new Set<number>(itemIdRows.map((r: { id: string }) => Number(r.id)));
 
-    // 5. Assemble the triage document from preprocessed items.
-    const document = await assembleTriageDocument(preprocessorRunId);
+    // 5. Fetch the kept items (post filter-run, post junk-filter — the same
+    // set the old whole-pile document contained) and split them into a wire
+    // seed bucket plus an ordered set of thematic spine buckets, per
+    // config/models.yaml's clustering.{seed, spines}.
+    const allItems = await getTriageItems(preprocessorRunId);
+    const clusteringConfig = modelConfig.triage.clustering;
+    const { seedBucket, spineBuckets } = bucketItemsForSpines(
+      allItems,
+      clusteringConfig.seed,
+      clusteringConfig.spines,
+    );
 
-    // 6. Call the LLM.
-    const result = await callLLM({
+    const roundDigests: { name: string; text: string }[] = [];
+    const stageStartedAt = Date.now();
+
+    // 6. SEED — cluster only the seed (wire) items in one call. This produces
+    // the day's major-story clusters; every spine accretes onto this same
+    // list independently, so its item ids become the merge key in step 8.
+    const seedBucketIds = new Set(seedBucket.map((item) => Number(item.id)));
+    const seedDocument = await assembleTriageDocument(preprocessorRunId, (item) => seedBucketIds.has(Number(item.id)));
+    const seedResult = await callLLM({
       stage: "triage",
       stageRunId: runId,
       model,
       systemPrompt: buildSystemPrompt(),
-      userPrompt: buildUserPrompt(document),
+      userPrompt: buildUserPrompt(seedDocument),
       temperature,
       maxTokens,
       reasoningEffort,
     });
-
-    // 7. Defensively parse the output. Warn on failure but do not throw.
-    const parseResult = parseFlatClusterOutput(result.text, inputIds);
-    if (parseResult !== null) {
-      const parts = [
-        `clusters=${parseResult.clusters.length}`,
-        `lines=${parseResult.parsedLineCount}`,
-      ];
-      if (parseResult.fabricatedIds.length > 0) parts.push(`fabricated=${parseResult.fabricatedIds.length}`);
-      if (parseResult.duplicateIds.length > 0) parts.push(`duplicates=${parseResult.duplicateIds.length}`);
-      if (parseResult.droppedSingletonCount > 0) parts.push(`dropped-singletons=${parseResult.droppedSingletonCount}`);
-      console.log(`[triage] run #${runId}: ${parts.join(", ")}`);
+    const seedParse = parseFlatClusterOutput(seedResult.text, inputIds);
+    const seedClusters = seedParse?.clusters ?? [];
+    const seedClusteredIds = new Set<number>();
+    for (const cluster of seedClusters) {
+      for (const id of cluster.item_ids) seedClusteredIds.add(id);
     }
 
-    // 8. Update triage_runs with results (store raw text regardless of parse outcome).
+    console.log(
+      `[triage] seed: items_in=${seedBucket.length}, clusters_out=${seedClusters.length}` +
+      (seedParse && seedParse.fabricatedIds.length > 0 ? `, fabricated=${seedParse.fabricatedIds.length}` : "") +
+      (seedParse && seedParse.duplicateIds.length > 0 ? `, duplicates=${seedParse.duplicateIds.length}` : "") +
+      (seedParse && seedParse.droppedSingletonCount > 0 ? `, dropped-singletons=${seedParse.droppedSingletonCount}` : ""),
+    );
+    roundDigests.push({ name: "seed", text: seedResult.text });
+
+    // 7. SPINES — run concurrently, capped at max_concurrent_spines. Each
+    // spine sees the seed's cluster list verbatim plus its own items as "new
+    // items," and re-emits the complete updated list — the same
+    // attach/merge/create/re-emit instruction as before, just with no
+    // carry-forward between spines: every spine starts fresh from the same
+    // seed and sees only its own group's items, so every prompt stays in the
+    // model's working range no matter how large the total pile is.
+    const spineLimit = pLimit(clusteringConfig.max_concurrent_spines);
+    const spineCalls = await Promise.all(
+      spineBuckets.map((bucket) =>
+        spineLimit(async () => {
+          const userPrompt = buildIncrementalUserPrompt(seedResult.text, formatTriageItemBlocks(bucket.items));
+          const result = await callLLM({
+            stage: "triage",
+            stageRunId: runId,
+            model,
+            systemPrompt: buildSystemPrompt(),
+            userPrompt,
+            temperature,
+            maxTokens,
+            reasoningEffort,
+          });
+          const parse = parseFlatClusterOutput(result.text, inputIds);
+          return { name: bucket.name, itemCount: bucket.items.length, result, parse };
+        }),
+      ),
+    );
+
+    const allSpineClusteredIds = new Set<number>();
+    for (const spine of spineCalls) {
+      const clusters = spine.parse?.clusters ?? [];
+      for (const cluster of clusters) {
+        for (const id of cluster.item_ids) allSpineClusteredIds.add(id);
+      }
+
+      console.log(
+        `[triage] spine="${spine.name}": items_in=${spine.itemCount}, clusters_out=${clusters.length}` +
+        (spine.parse && spine.parse.fabricatedIds.length > 0 ? `, fabricated=${spine.parse.fabricatedIds.length}` : "") +
+        (spine.parse && spine.parse.duplicateIds.length > 0 ? `, duplicates=${spine.parse.duplicateIds.length}` : "") +
+        (spine.parse && spine.parse.droppedSingletonCount > 0 ? `, dropped-singletons=${spine.parse.droppedSingletonCount}` : ""),
+      );
+      roundDigests.push({ name: `spine:${spine.name}`, text: spine.result.text });
+    }
+
+    // A spine call may silently drop a seed cluster (or one of its ids) on
+    // re-emission. As long as some other spine retains it, the id-union merge
+    // in step 8 recovers it for free. But if an id is absent from EVERY
+    // spine's output, it's gone from the final digest entirely — log it
+    // loudly so it's visible (unlike the chained-rounds design, there's no
+    // next round to give it another chance).
+    const lostFromSeed = [...seedClusteredIds].filter((id) => !allSpineClusteredIds.has(id));
+    if (lostFromSeed.length > 0) {
+      console.warn(
+        `[triage] LOST ${lostFromSeed.length} seed-cluster id(s) absent from every spine's output: ${lostFromSeed.join(", ")}`,
+      );
+    }
+
+    // 8. MERGE — deterministic software, not an LLM call. Every spine
+    // re-emitted the complete list it started from (the seed clusters) plus
+    // whatever it added, so the same major story appears in multiple spines'
+    // outputs sharing the seed's item ids — an exact, free merge key. Union
+    // any two clusters across all spine outputs that share >= 1 id,
+    // transitively, then dedupe ids keep-first within each merged group.
+    const spineOutputsForMerge = spineCalls.map((spine) => ({
+      name: spine.name,
+      clusters: spine.parse?.clusters ?? [],
+    }));
+    const mergeResult = mergeSpineClusters(spineOutputsForMerge);
+
+    console.log(
+      `[triage] merge: clusters_before=${mergeResult.clustersBeforeMerge}, ` +
+      `clusters_after=${mergeResult.clusters.length}, ` +
+      `merged_by_shared_id=${mergeResult.mergedByShareCount}, ` +
+      `possible_duplicates=${mergeResult.possibleDuplicates.length}`,
+    );
+    for (const dup of mergeResult.possibleDuplicates) {
+      console.warn(`[triage] possible unmerged duplicate (no shared ids — deferred semantic merge would catch this): "${dup.a}" ~ "${dup.b}"`);
+    }
+
+    const finalDigestText = formatFlatClusterLines(mergeResult.clusters);
+    roundDigests.push({ name: "merged", text: finalDigestText });
+
+    console.log(
+      `[triage] run #${runId}: seed=${seedBucket.length} items, ${spineBuckets.length} spines, ` +
+      `clusters=${mergeResult.clusters.length}`,
+    );
+
+    // 9. Update triage_runs with results. digest holds the final merged list
+    // in the same flat format as before — the contract with everything
+    // downstream (parseFlatClusterOutput, cluster_index, the editor,
+    // assemble-pile) is unchanged. round_digests additionally preserves the
+    // seed output, every spine's output, and the merged result, so a run is
+    // inspectable stage by stage. Token/duration figures are summed across
+    // every LLM call this run made (seed + each spine); generation_log_id
+    // points at the seed call — the one call every other call accreted onto.
+    const allCalls = [seedResult, ...spineCalls.map((s) => s.result)];
+    const totalInputTokens = allCalls.reduce<number | null>(
+      (sum, r) => (sum === null || r.inputTokens === null ? null : sum + r.inputTokens),
+      0,
+    );
+    const totalOutputTokens = allCalls.reduce<number | null>(
+      (sum, r) => (sum === null || r.outputTokens === null ? null : sum + r.outputTokens),
+      0,
+    );
+    const totalDurationMs = Date.now() - stageStartedAt;
+
     await pool.query(
       `UPDATE triage_runs
        SET completed_at       = NOW(),
@@ -236,12 +565,21 @@ export async function runTriage(options: {
            output_tokens      = $2,
            duration_ms        = $3,
            digest             = $4,
-           generation_log_id  = $5
-       WHERE id = $6`,
-      [result.inputTokens, result.outputTokens, result.durationMs, result.text, result.generationLogId, runId]
+           round_digests      = $5::jsonb,
+           generation_log_id  = $6
+       WHERE id = $7`,
+      [
+        totalInputTokens,
+        totalOutputTokens,
+        totalDurationMs,
+        finalDigestText,
+        JSON.stringify(roundDigests),
+        seedResult.generationLogId,
+        runId,
+      ]
     );
 
-    // 9. Return completed run.
+    // 10. Return completed run.
     return await fetchTriageRun(pool, runId);
   } catch (err) {
     // Mark run as failed with a note if it never completed.

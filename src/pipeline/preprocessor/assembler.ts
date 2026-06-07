@@ -2,10 +2,11 @@ import "dotenv/config";
 import { getPool } from "../../db/index.js";
 import { classifyItem } from "./junk-filter.js";
 
-interface PreprocessedItemRow {
+export interface PreprocessedItemRow {
   id: string;
   source_name: string;
   source_type: string;
+  group: string | null;
   title: string;
   body_text: string | null;
   published_at: string | null;
@@ -58,16 +59,16 @@ async function getFilterKeptIds(
 }
 
 /**
- * Reads preprocessed_items for a given run and produces a flat
- * chronological plain-text document for the triage LLM.
- * If a completed filter run exists for this preprocessor run, only the
- * items kept by that filter run are included.
+ * Reads preprocessed_items for a given run, applies the LLM filter run (if
+ * any) and the junk filter, and returns the surviving items in chronological
+ * order — the same item set `assembleTriageDocument` would format. Exposed so
+ * the triage stage can group these items into rounds before formatting.
  */
-export async function assembleTriageDocument(preprocessorRunId: number): Promise<string> {
+export async function getTriageItems(preprocessorRunId: number): Promise<PreprocessedItemRow[]> {
   const pool = getPool();
 
   const { rows: items } = await pool.query<PreprocessedItemRow>(
-    `SELECT id, source_name, source_type, title, body_text, published_at, fetched_at
+    `SELECT id, source_name, source_type, "group", title, body_text, published_at, fetched_at
      FROM preprocessed_items
      WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY published_at ASC NULLS LAST, fetched_at ASC`,
@@ -87,10 +88,6 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
     }
   }
 
-  if (preFilterItems.length === 0) {
-    return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
-  }
-
   // Apply junk filter, logging every drop.
   const kept: PreprocessedItemRow[] = [];
   for (const item of preFilterItems) {
@@ -107,17 +104,18 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
     }
   }
 
-  const sourceCount = new Set(kept.map((i) => i.source_name)).size;
-  const date = formatDate(new Date());
+  return kept;
+}
 
+/**
+ * Formats a list of preprocessed items into the per-item blocks the triage
+ * LLM reads: id, source, type, time, headline, body preview. Shared by the
+ * full triage document and by the incremental clustering rounds' item lists.
+ */
+export function formatTriageItemBlocks(items: PreprocessedItemRow[]): string {
   const lines: string[] = [];
 
-  lines.push(`FRITTER POST — TRIAGE INPUT ${date}`);
-  lines.push(`${kept.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
-  lines.push(`Reader location: Bend, Oregon`);
-  lines.push("");
-
-  for (const item of kept) {
+  for (const item of items) {
     const timeStr = formatTimestamp(item.published_at);
     lines.push(`[${item.id}] ${item.source_name} | ${item.source_type} | ${timeStr}`);
     lines.push(item.title);
@@ -127,6 +125,41 @@ export async function assembleTriageDocument(preprocessorRunId: number): Promise
     }
     lines.push("");
   }
+
+  return lines.join("\n");
+}
+
+/**
+ * Reads preprocessed_items for a given run and produces a flat
+ * chronological plain-text document for the triage LLM.
+ * If a completed filter run exists for this preprocessor run, only the
+ * items kept by that filter run are included.
+ *
+ * An optional `filter` restricts the document to a subset of the surviving
+ * items (e.g. by source_type, for clustering rounds) without re-running the
+ * filter-run/junk-filter pipeline.
+ */
+export async function assembleTriageDocument(
+  preprocessorRunId: number,
+  filter?: (item: PreprocessedItemRow) => boolean,
+): Promise<string> {
+  const allKept = await getTriageItems(preprocessorRunId);
+  const kept = filter ? allKept.filter(filter) : allKept;
+
+  if (kept.length === 0) {
+    return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
+  }
+
+  const sourceCount = new Set(kept.map((i) => i.source_name)).size;
+  const date = formatDate(new Date());
+
+  const lines: string[] = [];
+
+  lines.push(`FRITTER POST — TRIAGE INPUT ${date}`);
+  lines.push(`${kept.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
+  lines.push(`Reader location: Bend, Oregon`);
+  lines.push("");
+  lines.push(formatTriageItemBlocks(kept));
 
   return lines.join("\n");
 }

@@ -8,6 +8,7 @@ const RawSourceSchema = z.object({
   url: z.string().url(),
   type: z.enum(["wire", "journalism", "advocacy", "newsletter"]),
   track: z.string().optional(),
+  group: z.string().optional(),
   notes: z.string().optional(),
   parent: z.string().optional(),
 });
@@ -16,8 +17,9 @@ type RawSource = z.infer<typeof RawSourceSchema>;
 
 const RawSourcesSchema = z.array(RawSourceSchema);
 
-export type Source = Omit<RawSource, "track"> & {
+export type Source = Omit<RawSource, "track" | "group"> & {
   track: "news" | "analysis";
+  group: string | null;
 };
 
 const SOURCES_PATH = path.join(
@@ -43,7 +45,7 @@ export function loadSources(): Source[] {
         `[sources] unknown track "${s.track}" for source "${s.name}" — defaulting to "news"`
       );
     }
-    return { ...s, track };
+    return { ...s, track, group: s.group ?? null };
   });
   return cached;
 }

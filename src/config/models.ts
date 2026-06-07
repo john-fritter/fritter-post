@@ -16,13 +16,26 @@ const FilterStageConfigSchema = StageConfigSchema.extend({
   concurrency: z.number().int(),
 });
 
+const SpineSchema = z.object({
+  name: z.string(),
+  groups: z.array(z.string()).min(1),
+});
+
+const TriageStageConfigSchema = StageConfigSchema.extend({
+  clustering: z.object({
+    seed: z.array(z.string()).min(1),
+    spines: z.array(SpineSchema).min(1),
+    max_concurrent_spines: z.number().int(),
+  }),
+});
+
 const EditorPass1StageConfigSchema = FilterStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
 });
 
 const ModelsConfigSchema = z.object({
   filter: FilterStageConfigSchema,
-  triage: StageConfigSchema,
+  triage: TriageStageConfigSchema,
   researcher: StageConfigSchema,
   editor: StageConfigSchema,
   writers: StageConfigSchema,
@@ -31,6 +44,8 @@ const ModelsConfigSchema = z.object({
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type FilterStageConfig = z.infer<typeof FilterStageConfigSchema>;
+export type Spine = z.infer<typeof SpineSchema>;
+export type TriageStageConfig = z.infer<typeof TriageStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
