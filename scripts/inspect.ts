@@ -139,6 +139,31 @@ interface BelowLineRow {
   reason: string;
 }
 
+interface EditorRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  pile_id: number;
+  triage_run_id: number;
+  model_used: string;
+  items_in: number;
+  items_feature: number;
+  items_standard: number;
+  items_brief: number;
+  items_cut: number;
+}
+
+interface EditorStoryRow {
+  id: string;
+  item_type: "cluster" | "singleton";
+  cluster_index: number | null;
+  preprocessed_item_id: string | null;
+  tier: string;
+  rank: number;
+  reason: string;
+  resolved_title: string | null;
+}
+
 function parseClusterCount(digest: string): string {
   const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
 
@@ -892,6 +917,118 @@ async function main() {
         break;
       }
 
+      case "editor": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<EditorRunRow>(
+            "SELECT * FROM editor_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No editor run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Editor run #${run.id}`);
+          console.log(`  Started:    ${started}`);
+          console.log(`  Completed:  ${finished}`);
+          console.log(`  Pile:       #${run.pile_id}`);
+          console.log(`  Triage run: #${run.triage_run_id}`);
+          console.log(`  Model:      ${run.model_used}`);
+          console.log(`  Items in:   ${run.items_in}`);
+
+          console.log("\n── TIER COUNTS");
+          console.log(`  feature   ${run.items_feature}`);
+          console.log(`  standard  ${run.items_standard}`);
+          console.log(`  brief     ${run.items_brief}`);
+          console.log(`  cut       ${run.items_cut}`);
+
+          // Resolve cluster titles from the triage digest (indexed by line order,
+          // matching cluster_index) so the ranked list can show readable titles.
+          const { rows: triageRows } = await pool.query<{ digest: string | null }>(
+            "SELECT digest FROM triage_runs WHERE id = $1",
+            [run.triage_run_id]
+          );
+          const digest = triageRows[0]?.digest;
+          const parsedDigest = digest ? parseTriageJson(digest) : null;
+          const clusterTitles = new Map<number, string>();
+          if (parsedDigest) {
+            parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
+          }
+
+          const { rows: storyRows } = await pool.query<EditorStoryRow>(
+            `SELECT es.id, es.item_type, es.cluster_index, es.preprocessed_item_id::text AS preprocessed_item_id,
+                    es.tier, es.rank, es.reason, pi.title AS resolved_title
+             FROM editor_stories es
+             LEFT JOIN preprocessed_items pi ON pi.id = es.preprocessed_item_id
+             WHERE es.run_id = $1
+             ORDER BY es.rank ASC`,
+            [runId]
+          );
+
+          if (storyRows.length === 0) {
+            console.log("\nNo stories recorded for this run.");
+          } else {
+            console.log(`\n── RANKED LIST (${storyRows.length})`);
+            const flagged: EditorStoryRow[] = [];
+            for (const row of storyRows) {
+              const ref = row.item_type === "cluster" ? `C${row.cluster_index}` : `S${row.preprocessed_item_id}`;
+              const title =
+                row.item_type === "cluster"
+                  ? clusterTitles.get(row.cluster_index ?? -1) ?? "(cluster title unresolved)"
+                  : row.resolved_title ?? "(item title unresolved)";
+              const tier = row.tier.padEnd(8);
+              console.log(`  ${String(row.rank).padStart(3)}. [${tier}] ${ref.padEnd(7)} ${title}`);
+              console.log(`       ${row.reason}`);
+              if (row.reason.startsWith("fail-safe:")) flagged.push(row);
+            }
+
+            if (flagged.length > 0) {
+              console.log(`\n── FAIL-SAFE FLAGS (${flagged.length})`);
+              for (const row of flagged) {
+                const ref = row.item_type === "cluster" ? `C${row.cluster_index}` : `S${row.preprocessed_item_id}`;
+                console.log(`  rank ${row.rank}: ${ref} — ${row.reason}`);
+              }
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<EditorRunRow>(
+            `SELECT id, started_at, completed_at, pile_id, triage_run_id,
+                    model_used, items_in, items_feature, items_standard, items_brief, items_cut
+             FROM editor_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No editor runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Pile#".padEnd(7)} ${"Model".padEnd(18)} ${"In".padEnd(5)} ${"Feat".padEnd(5)} ${"Std".padEnd(5)} ${"Brief".padEnd(6)} Cut`
+          );
+          console.log("─".repeat(80));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 16 ? run.model_used.slice(0, 15) + "…" : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.pile_id).padEnd(7)} ${model.padEnd(18)} ${String(run.items_in).padEnd(5)} ${String(run.items_feature).padEnd(5)} ${String(run.items_standard).padEnd(5)} ${String(run.items_brief).padEnd(6)} ${run.items_cut}${status}`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -908,6 +1045,8 @@ Commands:
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
   editor-pass-1            List recent editor-pass-1 runs
   editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
+  editor                   List recent editor runs
+  editor --id <n>          Show ranked/tiered list with resolved titles and fail-safe flags
 
 Options:
   --source <name>          Filter by source name (exact match)

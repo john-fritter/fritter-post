@@ -20,6 +20,62 @@ Entry format:
 
 ---
 
+## 2026-06-07 — Editor stage: whole-pile single call, three tiers + cut, line-order ranking
+
+**Decision:** The editor stage reads the assembled `editor_pile` (clusters +
+in-pile singletons) and makes ONE whole-pile LLM call that produces a single
+ranked, tiered list — not batched. Each pile item gets one of four
+dispositions: `feature`, `standard`, `brief`, or `cut`. The model emits items
+in ranked order, best first, as flat lines `tier;;ref;;reason` (`ref` is
+`C{cluster_index}` or `S{preprocessed_item_id}`); software derives `rank` from
+line position — the model never emits a rank number. Reconciliation is
+defensive in the same spirit as pass-1: every pile item must appear exactly
+once, with unknown refs dropped+logged, duplicate refs keeping the first
+occurrence, invalid tiers fail-safed to `brief`, and — critically — pile items
+missing from the model's output fail-safed to `brief` (appended at the bottom
+of the rank order) rather than silently dropped, because an editor that drops
+items truncates the paper. New tables `editor_runs` (one row per execution,
+with per-tier counts) and `editor_stories` (one row per pile item, `rank`
+NOT NULL, full lineage to cluster or singleton) record the result.
+
+**Context:** Pass-1 batches hundreds of items through independent per-item
+scoring calls — order and relative comparison don't matter there, so batching
+and concurrency are free wins. The editor's job is the opposite: it has to
+decide which story leads, which runs second, and how the rest fall away
+relative to each other. That's an inherently relational judgment that requires
+the whole pile in view at once. The pile is sized precisely so this fits in one
+call (clusters pass through unconditionally; `singleton_pile_target` bounds the
+rest), so there's no batching problem to solve, and splitting the call would
+mean re-introducing the cross-batch consistency problems pass-1 exists to
+avoid downstream of it.
+
+**Rationale for four flat tiers over JSON:** Same reasoning as pass-1's flat
+line format — flat text is cheaper to emit, harder for the model to malform
+into invalid JSON under load, and trivially diffable in logs. Four
+dispositions (three sizes the publisher already has cards for, plus an
+explicit `cut`) map directly onto the paper's "variable register" principle
+without inventing new vocabulary; `cut` makes "this doesn't make today's paper"
+a first-class, auditable decision rather than an absence.
+
+**Rationale for deriving rank in software:** Asking the model to emit both an
+explicit rank number and a line order invites contradictions (what does rank 3
+on the 7th line mean?) that would need their own reconciliation logic. Line
+order *is* the ranking signal the model is naturally producing by writing the
+list best-first — encoding it twice would be redundant and error-prone. This
+mirrors how pass-1 lets the model emit only a score and lets software do the
+sorting and slicing.
+
+**Rationale for cluster/singleton presentation order:** Clusters (cross-source
+coverage, the strongest prominence signal available) are presented first,
+ordered by item count descending — cluster_index is parsed from the digest the
+same line-counting way `assemble-pile.ts` and pass-1's `extractClusteredIds`
+do, so it lines up with `editor_pile_items.cluster_index`. Singletons follow,
+ordered by their pass-1 score descending. This gives the model a stable,
+inspectable starting arrangement to re-rank from, the same spirit as triage's
+source-count ordering — a mechanical proxy, not a judgment call left to chance.
+
+---
+
 ## 2026-06-06 — News/analysis track split
 
 **Decision:** Added a `track` field (`news` | `analysis`, default `news`) to

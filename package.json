@@ -17,7 +17,8 @@
     "assemble": "tsx scripts/assemble.ts",
     "triage": "tsx scripts/triage.ts",
     "filter": "tsx scripts/filter.ts",
-    "editor-pass-1": "tsx scripts/editor-pass-1.ts"
+    "editor-pass-1": "tsx scripts/editor-pass-1.ts",
+    "editor": "tsx scripts/editor.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
