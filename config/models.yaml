@@ -15,49 +15,51 @@ triage:
   max_tokens: 65536
   reasoning_effort: "none"
   clustering:
-    # Ordered rounds for the incremental clusterer. Each round admits items
-    # whose preprocessed_items.group matches one of `groups`, or any
-    # not-yet-admitted item if `groups` includes the catch-all "*". Round
-    # membership is evaluated in order, so a later "*" round only sees what
-    # earlier rounds didn't take.
+    # Wire-seed + parallel-spines + deterministic-merge clusterer (replaces
+    # the single-chain ordered-rounds design — see docs/decisions.md 2026-06-07
+    # "single-chain rounds → wire seed + parallel spines + id-union merge").
     #
-    # Order is spine-first by design: wire and national-prominence groups go
-    # first so the major stories of the day already exist as clusters before
-    # the regional/topical tail (local, labor, climate, tech, ai, science...)
-    # accretes onto them or forms its own smaller clusters. This keeps every
-    # round's "new items" pile in the model's working range — see
-    # docs/decisions.md 2026-06-07 "two-round split → group-based rounds".
+    # A single accretion chain failed twice: it's sequential (one LLM call
+    # waits on the last) AND every round inherits all prior unclustered items,
+    # so the carry-forward "loose pool" re-inflates round over round (495 →
+    # 714 items by round 10) until a round's prompt blows past the model's
+    # working range and times out.
+    #
+    # The fix removes both problems at once:
+    #   1. SEED — cluster only `seed` groups (the wire) in one call. Produces
+    #      the day's major-story clusters.
+    #   2. SPINES — `spines` partition the rest of the news pile into
+    #      thematic sets of groups. Each spine gets ONE call: the seed's
+    #      cluster list verbatim + that spine's items as "new items," with
+    #      the existing incremental instruction (attach/merge/create/re-emit
+    #      complete list). No carry-forward — every spine starts fresh from
+    #      the same seed and sees only its own items, so every prompt stays
+    #      in the model's working range regardless of total pile size. Spines
+    #      run concurrently, capped at `max_concurrent_spines`.
+    #   3. MERGE — deterministic software, not an LLM call. Every spine
+    #      re-emits the complete list it started from (the seed clusters)
+    #      plus whatever it added, so the same major story appears in every
+    #      spine's output sharing the SAME seed item ids — an exact,
+    #      free merge key. Union any two clusters across spine outputs that
+    #      share >= 1 id, transitively, and dedupe ids keep-first. No
+    #      semantic matching needed for the cases this catches.
     #
     # group is set on preprocessed_items at preprocess time from each
     # source's `group` in config/sources.yaml — a structural clustering axis,
-    # not an editorial tag (see that file's schema comment).
-    rounds:
-      - name: wire
-        groups: [wire]
-      - name: national
-        groups: [national]
-      - name: intl_broad
-        groups: [intl_broad]
-      - name: accountability
-        groups: [accountability]
-      - name: legal
-        groups: [legal]
-      - name: intl_regional
-        groups: [intl_regional]
+    # not an editorial tag (see that file's schema comment). Any news group
+    # that appears in neither `seed` nor any `spines` entry is swept into an
+    # implicit fallback spine at runtime, so nothing is silently excluded.
+    seed: [wire]
+    spines:
+      - name: domestic
+        groups: [national, accountability, legal, labor]
+      - name: international
+        groups: [intl_broad, intl_regional]
       - name: local
-        groups: [local]
-      - name: labor
-        groups: [labor]
-      - name: climate
-        groups: [climate]
+        groups: [local, climate, science]
       - name: tech
-        groups: [tech]
-      - name: ai
-        groups: [ai]
-      - name: science
-        groups: [science]
-      - name: rest
-        groups: ["*"]
+        groups: [tech, ai]
+    max_concurrent_spines: 3
 
 researcher:
   model: gemini-3-flash-preview  # placeholder

@@ -20,6 +20,95 @@ Entry format:
 
 ---
 
+## 2026-06-07 — Triage clusterer: ordered group-rounds → wire seed + parallel spines + id-union merge
+
+**Decision:** Replace the single-chain ordered-rounds clusterer with three
+phases: a **seed** call that clusters only `group: wire` items, a set of
+**spines** — thematic group-sets defined in config — that each accrete onto
+the seed's cluster list independently and run *concurrently*, and a
+**deterministic software merge** that unions the spines' outputs into the
+final digest by shared item ids. No semantic-matching LLM call is needed for
+the merge.
+
+**Context:** The group-based round chain (entry directly below) also failed,
+just later: it got through `wire` → `national` → ... → `local` (round 9), but
+the carry-forward "loose pool" of unclustered items kept re-inflating round
+over round — 495 → 637 → 647 → 714 items by `tech` (round 10) — until that
+round's prompt hit the same `qwen3.5:397b` 903s wall and produced no digest.
+
+Root cause was structural, not a tuning problem: a **single accretion chain**
+is sequential (call N+1 can't start until call N returns) **and** every round
+inherits every prior round's unclustered items, so the loose pool only ever
+grows. Splitting groups into more, smaller, better-ordered rounds delays the
+blowup; it can't prevent it, because the chain's defining property — one
+shared, ever-growing carry-forward pool — is what causes it.
+
+**Rationale:** Removing the chain removes both failure modes at once:
+
+- **No sequencing.** Each spine is an independent call from the same
+  starting point (the seed's cluster list) — there is no "prior round" to
+  wait on, so spines run concurrently (capped at `max_concurrent_spines`,
+  reusing editor-pass-1's `p-limit` concurrency-limiter pattern: provider
+  caps us at 3 simultaneous connections).
+- **No shared, growing carry-forward pool.** A spine sees only its own
+  group-set's items as "new items," never another spine's leftovers. Its
+  prompt size is bounded by its own slice of the pile — config-controlled,
+  not emergent — so it stays in the model's proven working range (~130 items,
+  per the original `wire` round's clean 40s run) regardless of total pile
+  size or how clustering is going elsewhere.
+
+The seed-shared-id insight is what makes the merge deterministic and
+semantic-matching-free: every spine accretes onto the *same* seed cluster
+list and re-emits it as part of its output, so the same major story appears
+in multiple spines' outputs sharing the seed's item ids — an exact merge key.
+Any two clusters (across any spines, including re-emitted copies of the same
+seed cluster) sharing >= 1 id are unioned transitively, ids deduped
+keep-first, canonical label/summary taken from the largest contributing
+cluster. Clusters that cover the same story but share zero ids (e.g. a story
+covered only by sources split across two different spines) can't be caught
+this way — those are flagged as `possible unmerged duplicates` via a
+title-similarity heuristic (Jaccard over normalized word sets) and logged for
+inspection, not auto-merged.
+
+`config/models.yaml`'s `triage.clustering` changed from `{rounds}` to `{seed,
+spines, max_concurrent_spines}`. `seed` and each spine's `groups` are matched
+against `preprocessed_items.group` (unchanged structural axis — see the
+entries below). Any group claimed by neither `seed` nor a configured spine is
+swept into an implicit fallback `rest` spine at runtime, so nothing is
+silently excluded.
+
+The contract with everything downstream is unchanged: `triage_runs.digest`
+holds the merged list in the same flat `label;;summary;;ids` format,
+`cluster_index` is the position in that list (item-count descending, "biggest
+story first" — the same convention the system prompt already asks the model
+to follow), and `parseFlatClusterOutput`/the editor/assemble-pile required no
+changes. `round_digests` (migration 014) now stores the seed's raw output,
+each spine's raw output (`spine:<name>`), and the final merged list
+(`merged`), so a run remains inspectable stage by stage.
+
+Validation is unchanged in kind: ids are checked against the full news-item
+id set for the run, with fabricated/duplicate/sub-2-id handling exactly as
+before — applied per spine output before the merge, so the merge only ever
+combines already-validated clusters and is guaranteed to produce disjoint,
+>= 2-id, fabrication-free results. The lost-id check is adapted to the new
+shape: any id clustered by the seed but absent from *every* spine's output is
+gone from the final digest (no further round exists to give it another
+chance, unlike the old chain) — logged loudly as `LOST ... absent from every
+spine's output`.
+
+**Deferred:** A semantic merge pass over the `possible unmerged duplicates`
+list — clusters with no shared ids but highly similar titles — to fold them
+together with editorial judgment the deterministic merge can't apply. Not
+built; the title-similarity heuristic only logs candidates for inspection.
+Add this only if the flagged list shows real, recurring same-story splits
+across spines.
+
+**Supersedes:** The "ordered group-based rounds" portion of the entry
+immediately below (which itself superseded the original two-round
+`wire`/`rest` chain).
+
+---
+
 ## 2026-06-07 — Triage clusterer: two-round split → group-based rounds
 
 **Decision:** Replace the two-round `wire` / `rest` split with an ordered
