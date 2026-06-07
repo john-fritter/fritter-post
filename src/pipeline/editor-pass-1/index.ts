@@ -124,6 +124,34 @@ export function parseBatchOutput(
   };
 }
 
+/**
+ * Returns the set of kept preprocessed_item IDs from the latest completed
+ * prefilter run for the given preprocessor run, or null if no prefilter run
+ * exists. Mirrors the triage assembler's getPrefilterKeptIds — same shape,
+ * same fallback (no run means no opinion, so nothing is excluded on its
+ * account).
+ */
+async function getPrefilterKeptIds(
+  pool: import("pg").Pool,
+  preprocessorRunId: number,
+): Promise<Set<number> | null> {
+  const { rows: runRows } = await pool.query<{ id: number }>(
+    `SELECT id FROM prefilter_runs
+     WHERE preprocessor_run_id = $1 AND completed_at IS NOT NULL
+     ORDER BY completed_at DESC LIMIT 1`,
+    [preprocessorRunId],
+  );
+  if (!runRows[0]) return null;
+
+  const prefilterRunId = runRows[0].id;
+  const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
+    `SELECT preprocessed_item_id FROM prefilter_results
+     WHERE run_id = $1 AND keep = true`,
+    [prefilterRunId],
+  );
+  return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));
+}
+
 function extractClusteredIds(digest: string): Set<number> | null {
   const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
 
@@ -293,7 +321,7 @@ export async function runEditorPass1(
   // 5. Fetch news-track preprocessed items for this run.
   //    Analysis items never enter a cluster, so without this filter they would
   //    all appear as residual singletons and receive scores — which is wrong.
-  const { rows: allItems } = await pool.query<PreprocessedItemRow>(
+  const { rows: allNewsItems } = await pool.query<PreprocessedItemRow>(
     `SELECT id, source_name, source_type, title, body_text
      FROM preprocessed_items
      WHERE preprocessor_run_id = $1 AND track = 'news'
@@ -301,7 +329,23 @@ export async function runEditorPass1(
     [preprocessorRunId],
   );
 
-  // 6. Compute residual: items that appear in no cluster.
+  // 6. Apply the bio-aware prefilter run, if a completed one exists for this
+  //    preprocessor run — items it cut never reached clustering and should
+  //    not be scored either. Mirrors the triage assembler's kept-set
+  //    intersection; graceful fallback to scoring everything if no run exists.
+  const prefilterKeptIds = await getPrefilterKeptIds(pool, preprocessorRunId);
+  const allItems = prefilterKeptIds !== null
+    ? allNewsItems.filter((item: PreprocessedItemRow) => (prefilterKeptIds as Set<number>).has(Number(item.id)))
+    : allNewsItems;
+
+  if (prefilterKeptIds !== null) {
+    const cut = allNewsItems.length - allItems.length;
+    console.log(
+      `[editor-pass-1] prefilter run applied: ${allItems.length} kept, ${cut} cut`,
+    );
+  }
+
+  // 7. Compute residual: items that appear in no cluster.
   const residuals = allItems.filter((item: PreprocessedItemRow) => !clusteredIds.has(Number(item.id)));
 
   console.log(
@@ -309,7 +353,7 @@ export async function runEditorPass1(
     `${clusteredIds.size} clustered, ${residuals.length} residual singletons`,
   );
 
-  // 7. Create editor_pass_1_runs row.
+  // 8. Create editor_pass_1_runs row.
   const { rows: runRows } = await pool.query<{ id: number }>(
     `INSERT INTO editor_pass_1_runs (started_at, triage_run_id, model_used, items_in)
      VALUES (NOW(), $1, $2, $3)
@@ -319,13 +363,13 @@ export async function runEditorPass1(
   const runId = runRows[0]!.id;
 
   try {
-    // 8. Partition into batches.
+    // 9. Partition into batches.
     const batches: PreprocessedItemRow[][] = [];
     for (let i = 0; i < residuals.length; i += batchSize) {
       batches.push(residuals.slice(i, i + batchSize));
     }
 
-    // 9. Process batches concurrently — hard cap 3.
+    // 10. Process batches concurrently — hard cap 3.
     const limit = pLimit(concurrency);
 
     const batchResults = await Promise.all(
@@ -348,7 +392,7 @@ export async function runEditorPass1(
 
     const allResults = batchResults.flat();
 
-    // 10. Persist score-only results in chunks.
+    // 11. Persist score-only results in chunks.
     const INSERT_CHUNK = 500;
     for (let i = 0; i < allResults.length; i += INSERT_CHUNK) {
       const chunk = allResults.slice(i, i + INSERT_CHUNK);
@@ -368,7 +412,7 @@ export async function runEditorPass1(
       );
     }
 
-    // 11. Finalize run.
+    // 12. Finalize run.
     await pool.query(
       `UPDATE editor_pass_1_runs
        SET completed_at = NOW()

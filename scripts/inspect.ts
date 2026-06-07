@@ -19,6 +19,7 @@
 
 import "dotenv/config";
 import { Pool } from "pg";
+import { getTriageItems } from "../src/pipeline/preprocessor/assembler.js";
 
 interface RawItemRow {
   id: string;
@@ -551,15 +552,13 @@ async function main() {
             break;
           }
 
-          // Load all preprocessed items for the run so we can resolve ids.
-          const { rows: prepItems } = await pool.query<PrepItemRow>(
-            `SELECT id, source_name, title FROM preprocessed_items
-             WHERE preprocessor_run_id = $1`,
-            [run.preprocessor_run_id]
-          );
+          // Load the same kept-set the assembler fed to this triage run — LLM
+          // filter, prefilter, and junk filter all applied — so counts and
+          // lost-id checks reflect the real lineage, not the unfiltered pool.
+          const prepItems = await getTriageItems(run.preprocessor_run_id);
           const itemMap = new Map<number, PrepItemRow>();
           for (const pi of prepItems) {
-            itemMap.set(Number(pi.id), pi);
+            itemMap.set(Number(pi.id), { id: pi.id, source_name: pi.source_name, title: pi.title });
           }
 
           const runStarted = new Date(run.started_at).toISOString().slice(0, 19);
@@ -578,10 +577,16 @@ async function main() {
             for (let ri = 0; ri < run.round_digests.length; ri++) {
               const rd = run.round_digests[ri]!;
               const roundParsed = parseTriageJson(rd.text);
+              // Restrict to ids in the real kept-set (itemMap) — round digests
+              // can carry fabricated/stale ids that never belonged to this
+              // run's actual lineage, and diffing those produces noise that
+              // has nothing to do with what a round actually lost.
               const currentIds = new Set<number>();
               if (roundParsed) {
                 for (const c of roundParsed.clusters) {
-                  for (const id of c.item_ids) currentIds.add(id);
+                  for (const id of c.item_ids) {
+                    if (itemMap.has(id)) currentIds.add(id);
+                  }
                 }
               }
               let lostNote = "";
@@ -637,7 +642,7 @@ async function main() {
           }
 
           // Residual.
-          const residualItems = (prepItems as PrepItemRow[]).filter((pi) => !allClusteredIds.has(Number(pi.id)));
+          const residualItems = prepItems.filter((pi) => !allClusteredIds.has(Number(pi.id)));
           console.log(`── RESIDUAL: ${residualItems.length} unclustered item${residualItems.length !== 1 ? "s" : ""}`);
           const sample = residualItems.slice(0, 30);
           for (const pi of sample) {

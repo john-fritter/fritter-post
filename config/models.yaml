@@ -80,10 +80,10 @@ researcher:
   step_limit: 20
 
 editor:
-  model: glm-5.1
+  model: qwen3.5:397b
   temperature: 0.2
   max_tokens: 16000
-  reasoning_effort: "low"
+  reasoning_effort: "none"
 
 writers:
   model: gemini-3-flash-preview  # placeholder
