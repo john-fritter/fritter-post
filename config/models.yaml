@@ -72,6 +72,18 @@ triage:
       - name: tech
         groups: [tech, ai]
     max_concurrent_spines: 3
+    # Final clustering step: one LLM call over a SMALL input (the merged
+    # cluster list + a bounded slice of high-relevance singletons) that
+    # merges same-story clusters the deterministic id-union merge missed
+    # (no shared item ids — e.g. covered by disjoint source sets) and
+    # attaches orphaned singletons that clearly belong, including
+    # cross-language items. See docs/decisions.md.
+    semantic_merge:
+      enabled: true
+      model: qwen3.5:397b
+      max_tokens: 16000
+      reasoning_effort: "none"
+      max_singletons: 60
 
 researcher:
   model: gemini-3-flash-preview  # placeholder

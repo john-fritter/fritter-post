@@ -10,7 +10,13 @@ import {
   formatTriageItemBlocks,
 } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
-import { buildSystemPrompt, buildUserPrompt, buildIncrementalUserPrompt } from "./prompt.js";
+import {
+  buildSystemPrompt,
+  buildUserPrompt,
+  buildIncrementalUserPrompt,
+  buildSemanticMergeSystemPrompt,
+  buildSemanticMergeUserPrompt,
+} from "./prompt.js";
 
 export interface SpineBucket {
   name: string;
@@ -117,8 +123,9 @@ export interface SpineMergeResult {
  *
  * Clusters that share no id but have highly similar titles are NOT merged —
  * that would require semantic judgment this pass doesn't make. They're
- * surfaced via `possibleDuplicates` for inspection; see docs/decisions.md for
- * the deferred semantic-merge pass that would resolve them.
+ * surfaced via `possibleDuplicates` for inspection, and the semantic
+ * merge/attach pass (the final clustering step, see docs/decisions.md) gets
+ * a chance to resolve them with editorial judgment over the small merged list.
  */
 function mergeSpineClusters(spineOutputs: { name: string; clusters: TriageCluster[] }[]): SpineMergeResult {
   const gathered: TriageCluster[] = [];
@@ -528,26 +535,134 @@ export async function runTriage(options: {
       `possible_duplicates=${mergeResult.possibleDuplicates.length}`,
     );
     for (const dup of mergeResult.possibleDuplicates) {
-      console.warn(`[triage] possible unmerged duplicate (no shared ids — deferred semantic merge would catch this): "${dup.a}" ~ "${dup.b}"`);
+      console.warn(`[triage] possible unmerged duplicate (no shared ids — the semantic merge pass below may resolve this): "${dup.a}" ~ "${dup.b}"`);
     }
 
-    const finalDigestText = formatFlatClusterLines(mergeResult.clusters);
-    roundDigests.push({ name: "merged", text: finalDigestText });
+    const idUnionDigestText = formatFlatClusterLines(mergeResult.clusters);
+    roundDigests.push({ name: "merged", text: idUnionDigestText });
+
+    // 9. SEMANTIC MERGE/ATTACH — one additional LLM call, the final
+    // clustering step. The deterministic id-union merge above only fuses
+    // clusters that share an item id; it misses (a) same-story clusters
+    // covered by disjoint source sets that share no ids at all, and (b)
+    // orphaned high-relevance singletons that belong in an existing cluster —
+    // especially cross-language items and tangential angles (an explainer, a
+    // regional reaction). Both are recall failures at the edges that need
+    // editorial judgment, not id matching — exactly the gap `possibleDuplicates`
+    // above flags but can't resolve on its own. This pass operates on a SMALL
+    // input — the merged cluster list plus a bounded slice of high-relevance
+    // singletons, not the whole pile — so it stays far below the size that
+    // caused the earlier whole-pile timeouts. See docs/decisions.md.
+    let finalClusters = mergeResult.clusters;
+    const semanticConfig = clusteringConfig.semantic_merge;
+    let semanticCallResult: Awaited<ReturnType<typeof callLLM>> | null = null;
+
+    if (!semanticConfig.enabled) {
+      console.log(`[triage] semantic merge: disabled by config — using id-union merge result as final`);
+    } else {
+      const preSemanticIds = new Set<number>();
+      for (const cluster of mergeResult.clusters) {
+        for (const id of cluster.item_ids) preSemanticIds.add(id);
+      }
+      const residualSingletons = allItems.filter(
+        (item: PreprocessedItemRow) => !preSemanticIds.has(Number(item.id)),
+      );
+
+      // Pass-1 scoring hasn't run yet at triage time, so there's no relevance
+      // score to rank residuals by here. Recency is the most meaningful signal
+      // directly available — a recently-published orphan is the likeliest to
+      // be a same-day angle on, or cross-language report of, a running story:
+      // exactly the case this pass exists to catch. Bounded by count (not all
+      // ~500 residuals) — keeping the input small is the whole point.
+      const singletonCandidates = [...residualSingletons]
+        .sort((a, b) => {
+          const aTime = a.published_at ? new Date(a.published_at).getTime() : -Infinity;
+          const bTime = b.published_at ? new Date(b.published_at).getTime() : -Infinity;
+          return bTime - aTime;
+        })
+        .slice(0, semanticConfig.max_singletons);
+      const candidateIds = new Set(singletonCandidates.map((item) => Number(item.id)));
+
+      const semanticResult = await callLLM({
+        stage: "triage",
+        stageRunId: runId,
+        model: semanticConfig.model,
+        systemPrompt: buildSemanticMergeSystemPrompt(),
+        userPrompt: buildSemanticMergeUserPrompt(idUnionDigestText, formatTriageItemBlocks(singletonCandidates)),
+        temperature,
+        maxTokens: semanticConfig.max_tokens,
+        reasoningEffort: semanticConfig.reasoning_effort,
+      });
+      semanticCallResult = semanticResult;
+      roundDigests.push({ name: "semantic_merge", text: semanticResult.text });
+
+      const semanticParse = parseFlatClusterOutput(semanticResult.text, inputIds);
+      if (semanticParse === null) {
+        console.warn(
+          `[triage] semantic merge: parse failed — keeping id-union merge result as final (${mergeResult.clusters.length} clusters)`,
+        );
+      } else {
+        // Integrity: how many pre-pass clusters fused into each post-pass
+        // cluster (a "merge"), how many offered singletons made it into the
+        // final list (an "attach"), and whether any previously-clustered id
+        // vanished from the output entirely (a "loss" — same as the seed/spine
+        // LOST handling above, it falls back to residual; nothing recovers it
+        // because this is the final clustering step).
+        const idToPreIndex = new Map<number, number>();
+        mergeResult.clusters.forEach((cluster, idx) => {
+          for (const id of cluster.item_ids) idToPreIndex.set(id, idx);
+        });
+
+        let mergedCount = 0;
+        const postIds = new Set<number>();
+        for (const cluster of semanticParse.clusters) {
+          const preIndices = new Set<number>();
+          for (const id of cluster.item_ids) {
+            postIds.add(id);
+            const preIdx = idToPreIndex.get(id);
+            if (preIdx !== undefined) preIndices.add(preIdx);
+          }
+          if (preIndices.size > 1) mergedCount += preIndices.size - 1;
+        }
+        const attachedCount = [...candidateIds].filter((id) => postIds.has(id)).length;
+        const lostIds = [...preSemanticIds].filter((id) => !postIds.has(id));
+
+        console.log(
+          `[triage] semantic merge: clusters_before=${mergeResult.clusters.length}, ` +
+          `clusters_after=${semanticParse.clusters.length}, merged=${mergedCount}, ` +
+          `singletons_offered=${singletonCandidates.length}, attached=${attachedCount}`,
+        );
+        if (lostIds.length > 0) {
+          console.warn(
+            `[triage] semantic merge LOST ${lostIds.length} previously-clustered id(s) — ` +
+            `absent from its output, falling back to residual: ${lostIds.join(", ")}`,
+          );
+        }
+
+        finalClusters = semanticParse.clusters;
+      }
+    }
+
+    const finalDigestText = formatFlatClusterLines(finalClusters);
 
     console.log(
       `[triage] run #${runId}: seed=${seedBucket.length} items, ${spineBuckets.length} spines, ` +
-      `clusters=${mergeResult.clusters.length}`,
+      `clusters=${finalClusters.length}`,
     );
 
-    // 9. Update triage_runs with results. digest holds the final merged list
-    // in the same flat format as before — the contract with everything
-    // downstream (parseFlatClusterOutput, cluster_index, the editor,
-    // assemble-pile) is unchanged. round_digests additionally preserves the
-    // seed output, every spine's output, and the merged result, so a run is
-    // inspectable stage by stage. Token/duration figures are summed across
-    // every LLM call this run made (seed + each spine); generation_log_id
-    // points at the seed call — the one call every other call accreted onto.
+    // 10. Update triage_runs with results. digest holds the final cluster list
+    // — id-union merge plus the semantic merge/attach pass's edits, when
+    // enabled — in the same flat format as before, so the contract with
+    // everything downstream (parseFlatClusterOutput, cluster_index, the
+    // editor, assemble-pile) is unchanged. round_digests additionally
+    // preserves the seed output, every spine's output, the id-union merge
+    // result, and the semantic merge pass's raw output (when it ran), so a
+    // run is inspectable stage by stage. Token/duration figures are summed
+    // across every LLM call this run made (seed + each spine + the semantic
+    // merge pass, if it ran); generation_log_id points at the seed call — the
+    // one call every other call accreted onto.
     const allCalls = [seedResult, ...spineCalls.map((s) => s.result)];
+    if (semanticCallResult !== null) allCalls.push(semanticCallResult);
     const totalInputTokens = allCalls.reduce<number | null>(
       (sum, r) => (sum === null || r.inputTokens === null ? null : sum + r.inputTokens),
       0,
@@ -579,7 +694,7 @@ export async function runTriage(options: {
       ]
     );
 
-    // 10. Return completed run.
+    // 11. Return completed run.
     return await fetchTriageRun(pool, runId);
   } catch (err) {
     // Mark run as failed with a note if it never completed.

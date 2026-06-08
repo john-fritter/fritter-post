@@ -20,6 +20,121 @@ Entry format:
 
 ---
 
+## 2026-06-08 — Triage clusterer: semantic merge/attach pass added as final clustering step
+
+**Decision:** Add one more LLM call to the end of the clustering pipeline,
+after the deterministic id-union merge produces its cluster list and before
+the digest is finalized: a semantic merge/attach pass that (1) merges cluster
+pairs that are the same specific story but share no item ids, and (2) attaches
+high-relevance orphaned singletons — especially cross-language items and
+tangential angles — to a cluster they clearly belong in. Configured at
+`triage.clustering.semantic_merge` (model, `max_tokens`, `reasoning_effort`,
+`max_singletons`, and an `enabled` toggle); uses the same `qwen3.5:397b` model
+as the rest of triage, `reasoning_effort: "none"`, default `max_singletons: 60`.
+
+The pass operates on a deliberately SMALL input — the merged cluster list
+(already-formed `label;;summary;;ids` lines) plus a bounded slice of the
+highest-relevance unclustered singletons (the top `max_singletons` residuals
+by recency, since pass-1 scoring hasn't run yet at triage time and there's no
+score to rank by) — never the whole pile. It re-emits the COMPLETE updated
+cluster list in the same flat format, which is then run through the existing
+`parseFlatClusterOutput` (same fabricated/duplicate/sub-2-id validation as
+every other clustering call) and becomes the final `digest`. Editor,
+assemble-pile, and pass-1 are completely unaffected — the contract
+(`parseFlatClusterOutput`, `cluster_index` semantics, the flat line format)
+is unchanged. The raw output is stored in `round_digests` under the key
+`semantic_merge`, alongside `seed`, `spine:*`, and `merged`, so a run remains
+inspectable stage by stage. An integrity check logs clusters before vs. after,
+how many pre-pass clusters fused into each post-pass cluster ("merged"), how
+many offered singletons made it into the final list ("attached"), and any
+previously-clustered id that vanished from the output entirely (logged loudly
+as LOST — it falls back to residual, exactly like the existing seed/spine LOST
+handling, because this is now the final clustering step with no further chance
+to recover it).
+
+**Context:** Two recall failures at the edges of clustering kept showing up in
+production, both invisible to the deterministic id-union merge because it can
+only fuse clusters that share at least one seed item id:
+
+- Same-story clusters covered by disjoint source sets, sharing no ids — e.g.
+  two separate "Intel on the brink, AI revival" clusters surfaced as two
+  separate features instead of one.
+- High-relevance singletons that belonged in an existing cluster but stayed
+  orphaned — especially cross-language items (a Portuguese "Iran attacks
+  Israel" report) and tangential angles (a "War Powers Resolution on Iran"
+  explainer) — both floated up as standalone features instead of joining the
+  Iran-war cluster.
+
+The id-union merge's `possibleDuplicates` heuristic (Jaccard title similarity)
+already *flagged* the first case for inspection but explicitly couldn't
+resolve it — that requires editorial judgment a string-similarity check can't
+make. This pass is the resolution that heuristic was always meant to lead to;
+see the "Deferred: A semantic merge pass…" note in the entry below, which this
+entry fulfills.
+
+**Rationale:**
+
+- **One call, at the end, on a small input — not a redesign of clustering.**
+  Earlier whole-pile clustering attempts timed out because every round's
+  prompt carried the full item texts for hundreds of items plus an
+  ever-reinflating carry-forward pool (see the entry below: "495 → 714 items
+  by round 10"). This pass sidesteps that failure mode entirely by construction:
+  its input is the already-formed cluster list (a few dozen short lines) plus
+  at most `max_singletons` (default 60) item blocks — capped, not the ~500
+  residual singletons a typical run produces. It is structurally incapable of
+  re-creating the timeout problem, regardless of pile size, because its input
+  size is bounded by config, not by the day's news volume.
+
+- **Re-emit-the-complete-list, not a diff format.** The pass reuses the exact
+  mechanic `buildIncrementalUserPrompt` already proved out for the spine
+  rounds: show the model the current list verbatim in the format it must
+  also output, plus new material, and ask for a complete re-emission. This
+  means zero new output-format surface, zero new parsing code (the existing
+  `parseFlatClusterOutput` — with its fabricated-id, duplicate-id, and
+  sub-2-id validation — handles it unchanged), and the same robust
+  loud-logging-on-loss behavior the seed/spine merge already has. A bespoke
+  "merge cluster #3 into #7, attach singleton #4821 to #12" diff format would
+  have required new parsing, new validation, and a new failure surface for no
+  benefit — the re-emission mechanic was already battle-tested.
+
+- **Recency as the singleton ranking signal, not a score.** Pass-1 — the
+  stage that actually scores bio-relevance — runs *after* triage, so no score
+  exists yet to rank residual singletons by at this point in the pipeline.
+  Recency is the most meaningful signal directly available: a recently
+  published orphan is the likeliest candidate to be a same-day angle on, or a
+  cross-language report of, a running story — precisely the case this pass
+  exists to catch. "Source-count" was considered and rejected as a ranking
+  signal for *true singletons* — by definition, an item that didn't cluster
+  has no sibling items to count sources across, so the signal would be
+  degenerate (always 1) for exactly the population this pass is selecting from.
+
+- **Conservative threshold, with one explicit umbrella exception.** The
+  prompt keeps the existing clustering rules' bias — when unsure, don't merge,
+  because under-merging is recoverable and wrongful merging destroys structure
+  permanently. But it also explicitly carves out the one case the reader has
+  stated a preference for: a major, multi-day running story (an ongoing war,
+  an unfolding crisis) should pull its own later developments, regional
+  angles, and explainers together under one umbrella rather than fragmenting
+  across many small same-subject clusters. This is framed as "still the same
+  story, just a big one" — not license to merge genuinely distinct events that
+  happen to share a topic, actors, or region (a war's strikes and a
+  legislative vote about that war remain separate stories).
+
+- **Cross-language matching named explicitly.** The base clustering system
+  prompt already says items may be in any language, but the production miss
+  (the Portuguese Iran item) showed that guidance alone wasn't enough to make
+  the model attach across a language boundary at the edges. This pass's prompt
+  calls it out directly: match on the underlying event, not the language or
+  the wording.
+
+- **Toggleable and isolated.** `semantic_merge.enabled: false` falls back
+  cleanly to the id-union merge result with no other code path changes — the
+  pass is purely additive at the end of the pipeline, so it can be disabled
+  for cost/latency reasons, or if it proves to be a net-negative (over-merging),
+  without touching the spine/seed clustering or the deterministic merge at all.
+
+---
+
 ## 2026-06-07 — New stage: bio-aware pre-cluster relevance filter (prefilter)
 
 **Decision:** Add a `prefilter` stage between the preprocessor and the
