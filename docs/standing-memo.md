@@ -25,12 +25,19 @@ don't need a rule for every case.
 
 A tier is a story's claim on the reader, not a word count.
 
-- **Feature** — major consequence: it changes how the reader understands
-  something or bears heavily on their life, and needs explaining, not just
-  reporting. Run as many as the day warrants — no cap, no target. Never inflate
-  a story to reach the tier; never hold one back to thin it.
+- **Feature** — a development in the world that the reader needs to understand, where
+the day would feel incomplete without it. The test is consequence and necessity, not
+interest: a feature is something happening that matters enough to be explained, not
+merely something the reader would find worth reading. Run as many as the day
+genuinely warrants — there is no cap and no target — but the bar is high, and most
+days only a handful of stories clear it. When in doubt, it's a standard, not a
+feature. A non-event is not a feature: a figure refusing to rule something out,
+signaling, or being expected to act has not done anything yet — wait for the thing to
+happen.
 - **Standard** — a real development worth its own space and some context, but
   not one that reorders the day. The working body of the paper.
+  This is where most genuinely relevant stories belong, including most of what the
+reader cares about that simply isn't major enough to lead.
 - **Brief** — worth knowing happened; a sentence or two finishes it.
 
 Not a tier: **cut.** Some items reach you on coverage volume or a relevance
