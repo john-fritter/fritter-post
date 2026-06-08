@@ -99,7 +99,7 @@ researcher:
 editor:
   model: qwen3.5:397b
   temperature: 0.2
-  max_tokens: 16000
+  max_tokens: 48000
   reasoning_effort: "none"
 
 writers:

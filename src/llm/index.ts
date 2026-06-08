@@ -21,6 +21,17 @@ export interface LLMCallResult {
   generationLogId: bigint;
 }
 
+// Worst observed successful run plus headroom. The OpenAI SDK defaults to a
+// 600s timeout with 2 silent retries — run #21 hung for 903s on a single
+// "Request timed out" because of that combination, re-firing an expensive
+// multi-minute reasoning call without anyone noticing. An explicit, shorter
+// timeout with no SDK-level retries turns a provider hang into a clean,
+// fast, diagnosable failure instead of a ~15-minute zombie. App-level
+// retry-with-fallback is a deliberate later change, not a side effect of
+// this fix — see docs/decisions.md "No retry logic in V1".
+const LLM_TIMEOUT_MS = 360_000;
+const LLM_MAX_RETRIES = 0;
+
 function getClient(): OpenAI {
   const baseURL = process.env["LLM_BASE_URL"];
   const apiKey = process.env["LLM_API_KEY"];
@@ -28,7 +39,7 @@ function getClient(): OpenAI {
   if (!baseURL) throw new Error("LLM_BASE_URL environment variable is required");
   if (!apiKey) throw new Error("LLM_API_KEY environment variable is required");
 
-  return new OpenAI({ baseURL, apiKey });
+  return new OpenAI({ baseURL, apiKey, timeout: LLM_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
 }
 
 export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
@@ -69,6 +80,12 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   }
 
   const durationMs = Date.now() - startMs;
+
+  if (errorMsg !== null) {
+    console.error(
+      `[llm] ${stage} call failed: model=${model} elapsed=${durationMs}ms error=${errorMsg}`
+    );
+  }
 
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO generation_logs
