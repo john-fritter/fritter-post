@@ -13,10 +13,13 @@
  *   npm run inspect -- triage
  *   npm run inspect -- triage --id 1
  *   npm run inspect -- triage --id 1 --rounds
+ *   npm run inspect -- prefilter
+ *   npm run inspect -- prefilter --id 1
  */
 
 import "dotenv/config";
 import { Pool } from "pg";
+import { getTriageItems } from "../src/pipeline/preprocessor/assembler.js";
 
 interface RawItemRow {
   id: string;
@@ -98,6 +101,26 @@ interface FilterDropRow {
   id: string;
   source_name: string;
   title: string;
+  reason: string;
+}
+
+interface PrefilterRunRow {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  preprocessor_run_id: number;
+  model_used: string;
+  items_in: number;
+  items_kept: number;
+  items_cut: number;
+}
+
+interface PrefilterResultRow {
+  id: string;
+  source_name: string;
+  title: string;
+  keep: boolean;
+  kind: "news" | "opinion";
   reason: string;
 }
 
@@ -530,15 +553,13 @@ async function main() {
             break;
           }
 
-          // Load all preprocessed items for the run so we can resolve ids.
-          const { rows: prepItems } = await pool.query<PrepItemRow>(
-            `SELECT id, source_name, title FROM preprocessed_items
-             WHERE preprocessor_run_id = $1`,
-            [run.preprocessor_run_id]
-          );
+          // Load the same kept-set the assembler fed to this triage run — LLM
+          // filter, prefilter, and junk filter all applied — so counts and
+          // lost-id checks reflect the real lineage, not the unfiltered pool.
+          const prepItems = await getTriageItems(run.preprocessor_run_id);
           const itemMap = new Map<number, PrepItemRow>();
           for (const pi of prepItems) {
-            itemMap.set(Number(pi.id), pi);
+            itemMap.set(Number(pi.id), { id: pi.id, source_name: pi.source_name, title: pi.title });
           }
 
           const runStarted = new Date(run.started_at).toISOString().slice(0, 19);
@@ -557,10 +578,16 @@ async function main() {
             for (let ri = 0; ri < run.round_digests.length; ri++) {
               const rd = run.round_digests[ri]!;
               const roundParsed = parseTriageJson(rd.text);
+              // Restrict to ids in the real kept-set (itemMap) — round digests
+              // can carry fabricated/stale ids that never belonged to this
+              // run's actual lineage, and diffing those produces noise that
+              // has nothing to do with what a round actually lost.
               const currentIds = new Set<number>();
               if (roundParsed) {
                 for (const c of roundParsed.clusters) {
-                  for (const id of c.item_ids) currentIds.add(id);
+                  for (const id of c.item_ids) {
+                    if (itemMap.has(id)) currentIds.add(id);
+                  }
                 }
               }
               let lostNote = "";
@@ -616,7 +643,7 @@ async function main() {
           }
 
           // Residual.
-          const residualItems = (prepItems as PrepItemRow[]).filter((pi) => !allClusteredIds.has(Number(pi.id)));
+          const residualItems = prepItems.filter((pi) => !allClusteredIds.has(Number(pi.id)));
           console.log(`── RESIDUAL: ${residualItems.length} unclustered item${residualItems.length !== 1 ? "s" : ""}`);
           const sample = residualItems.slice(0, 30);
           for (const pi of sample) {
@@ -760,6 +787,104 @@ async function main() {
             const status = run.completed_at ? "" : " (running…)";
             console.log(
               `${String(run.id).padEnd(6)} ${started} ${String(run.preprocessor_run_id).padEnd(7)} ${model.padEnd(26)} ${String(run.items_in).padEnd(6)} ${String(run.items_kept).padEnd(6)} ${run.items_dropped}${status}`
+            );
+          }
+        }
+        break;
+      }
+
+      case "prefilter": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<PrefilterRunRow>(
+            "SELECT * FROM prefilter_runs WHERE id = $1",
+            [runId]
+          );
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No prefilter run with id ${runId}`);
+            break;
+          }
+
+          const started = new Date(run.started_at).toISOString().slice(0, 19);
+          const finished = run.completed_at
+            ? new Date(run.completed_at).toISOString().slice(0, 19)
+            : "in progress / crashed";
+          console.log(`Prefilter run #${run.id}`);
+          console.log(`  Started:             ${started}`);
+          console.log(`  Completed:           ${finished}`);
+          console.log(`  Preprocessor run:    #${run.preprocessor_run_id}`);
+          console.log(`  Model:               ${run.model_used}`);
+          console.log(`  Items in:            ${run.items_in}`);
+          console.log(`  Items kept:          ${run.items_kept}`);
+          console.log(`  Items cut:           ${run.items_cut}`);
+          if (run.items_in > 0) {
+            const pct = ((run.items_cut / run.items_in) * 100).toFixed(1);
+            console.log(`  Cut rate:            ${pct}%`);
+          }
+
+          // Full per-item cut/news/opinion list with reasons.
+          const { rows: itemRows } = await pool.query<PrefilterResultRow>(
+            `SELECT pr.preprocessed_item_id AS id, pi.source_name, pi.title, pr.keep, pr.kind, pr.reason
+             FROM prefilter_results pr
+             JOIN preprocessed_items pi ON pi.id = pr.preprocessed_item_id
+             WHERE pr.run_id = $1
+             ORDER BY pr.keep ASC, pr.kind, pi.source_name, pi.title`,
+            [runId]
+          );
+
+          const cutRows = itemRows.filter((r) => !r.keep);
+          const newsRows = itemRows.filter((r) => r.keep && r.kind === "news");
+          const opinionRows = itemRows.filter((r) => r.keep && r.kind === "opinion");
+
+          console.log(`  Kept — news:         ${newsRows.length}`);
+          console.log(`  Kept — opinion:      ${opinionRows.length} (routed to Longer Reads)`);
+
+          if (cutRows.length > 0) {
+            console.log(`\n── CUT (${cutRows.length})`);
+            for (const row of cutRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+          if (newsRows.length > 0) {
+            console.log(`\n── KEPT — NEWS (${newsRows.length})`);
+            for (const row of newsRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+          if (opinionRows.length > 0) {
+            console.log(`\n── KEPT — OPINION → Longer Reads (${opinionRows.length})`);
+            for (const row of opinionRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+        } else {
+          const limit = parseInt(flags["limit"] ?? "20", 10);
+          const { rows } = await pool.query<PrefilterRunRow>(
+            `SELECT id, started_at, completed_at, preprocessor_run_id,
+                    model_used, items_in, items_kept, items_cut
+             FROM prefilter_runs
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+          );
+
+          if (rows.length === 0) {
+            console.log("No prefilter runs recorded.");
+            break;
+          }
+
+          console.log(
+            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Prep#".padEnd(7)} ${"Model".padEnd(26)} ${"In".padEnd(6)} ${"Kept".padEnd(6)} Cut`
+          );
+          console.log("─".repeat(82));
+
+          for (const run of rows) {
+            const started = new Date(run.started_at).toISOString().slice(0, 19);
+            const model = run.model_used.length > 24 ? run.model_used.slice(0, 23) + "…" : run.model_used;
+            const status = run.completed_at ? "" : " (running…)";
+            console.log(
+              `${String(run.id).padEnd(6)} ${started} ${String(run.preprocessor_run_id).padEnd(7)} ${model.padEnd(26)} ${String(run.items_in).padEnd(6)} ${String(run.items_kept).padEnd(6)} ${run.items_cut}${status}`
             );
           }
         }
@@ -1076,6 +1201,8 @@ Commands:
   triage --id <n> --rounds Also show per-round cluster counts and lost-id flags
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
+  prefilter                List recent prefilter runs
+  prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
   editor-pass-1            List recent editor-pass-1 runs
   editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
   editor                   List recent editor runs

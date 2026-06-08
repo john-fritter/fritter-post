@@ -4,7 +4,7 @@
  * Usage:
  *   npm run editor
  *   npm run editor -- --pile-id 3
- *   npm run editor -- --model glm-5.1
+ *   npm run editor -- --model qwen3.5:397b
  */
 
 import "dotenv/config";

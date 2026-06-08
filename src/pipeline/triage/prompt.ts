@@ -113,3 +113,55 @@ ${clustersSoFar}
 NEW ITEMS
 ${newItemsBlock}`;
 }
+
+const SEMANTIC_MERGE_SYSTEM_PROMPT = `You are doing a final cleanup pass over a news pile that has already been clustered. Two kinds of mistakes slip through the earlier passes because they require editorial judgment, not just shared item ids:
+
+1. Two clusters that are actually the SAME specific story, covered by different, non-overlapping sets of sources — so they share no item ids and were never merged.
+2. A standalone item ("singleton") that belongs in an existing cluster but was never attached — often because it's in a different language than the cluster's other sources, or covers a tangential angle of the same specific event (an explainer, a regional reaction, a procedural follow-up).
+
+Your ONLY job is to fix these two mistakes: merge cluster pairs that are the same story, and attach singletons that clearly belong. You are not re-clustering from scratch — leave everything else exactly as it is.
+
+THE THRESHOLD
+Merge or attach only when you are confident it is the SAME SPECIFIC EVENT — not the same broader topic, conflict, region, ongoing situation, or set of actors. "Iran strikes Israeli targets" and "Israel responds to Iranian strikes" are the same event. "Iran strikes Israeli targets," "Congress debates a War Powers Resolution on Iran," and "oil prices jump on Iran tensions" are three DIFFERENT events that share a subject — keep them in three separate clusters. This is the same threshold the initial clustering pass uses; you are not loosening it, only applying it to the cases that earlier passes missed.
+
+Do not build "umbrella" or "running story" buckets that gather every development, angle, and consequence of a larger situation into one cluster. A military strike, a legislative response to it, and its economic fallout are different events — different clusters — even when they are all part of the same week's news about the same conflict. Pulling the full breadth of a running story together is the writer's job, done later by searching the full pool — not this pass's, and not the clusterer's at all.
+
+When unsure, do not merge or attach. Leaving two clusters separate, or a singleton unattached, is fully recoverable — nothing is lost. A wrongful merge destroys structure that cannot be recovered, and a bucket that conflates distinct events is far worse than a few uncaught duplicates or unattached singletons.
+
+CROSS-LANGUAGE MATCHING
+Singletons and clusters may be in any language. Match on the underlying event, not the language or the wording — a Portuguese, Korean, or French item about the same specific event as an English-language cluster should be attached to it. This is still same-event matching, with the language difference set aside — not a license to broaden what counts as "the same event."
+
+INPUT
+You will see the current cluster list — in the flat format you must also use for output, one line per cluster: label;;summary;;id,id,id,... — followed by a bounded set of high-relevance singleton items that did not cluster. Each singleton is shown as: id, source, type, time, then headline, then a body excerpt — the same per-item block format used elsewhere in this pipeline.
+
+OUTPUT
+Output the COMPLETE updated cluster list and nothing else — no JSON, no brackets, no markdown fence, no header, no prose before or after. One line per cluster, in the existing flat format:
+
+  label;;summary;;id,id,id,...
+
+This is a re-emission, not a diff: every cluster that should still exist after your edits — whether or not you changed it — must appear in your output, with all of its ids. Do not drop a cluster or an id unless you are merging it into another cluster (in which case its ids must appear in the merged cluster's id list). Singletons you attach get folded into the id list of the cluster they join. Singletons you do not attach are simply omitted from your output — do not create new clusters for them, and do not invent ids.
+
+Use only ids that appear in the input. Never invent an id. Never place the same id in more than one cluster. Order clusters by number of items, descending — most-covered story first.`;
+
+export function buildSemanticMergeSystemPrompt(): string {
+  return SEMANTIC_MERGE_SYSTEM_PROMPT;
+}
+
+/**
+ * Builds the user prompt for the final semantic merge/attach pass: the model
+ * sees the complete merged cluster list (verbatim, in the same flat format it
+ * must re-emit) plus a bounded slice of high-relevance unclustered singletons,
+ * and is asked to fold in any same-story merges and attachments it finds, then
+ * re-emit the complete updated list. Mirrors buildIncrementalUserPrompt's
+ * re-emission mechanic — the proven way to fold edits into a list without an
+ * id-referencing diff format.
+ */
+export function buildSemanticMergeUserPrompt(clusterLines: string, singletonBlocks: string): string {
+  return `Here is the current cluster list, followed by today's high-relevance singletons that did not cluster. Find any same-story merges between clusters, and any singletons that clearly belong in an existing cluster, then output the complete updated cluster list.
+
+CURRENT CLUSTERS
+${clusterLines}
+
+UNCLUSTERED SINGLETONS — high-relevance, did not cluster; attach any that clearly belong
+${singletonBlocks}`;
+}

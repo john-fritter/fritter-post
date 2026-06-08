@@ -9,6 +9,18 @@ filter:
   concurrency: 3
   reasoning_effort: "none"
 
+# Bio-aware relevance floor between the preprocessor and the clusterer — a
+# separate, later judgment from `filter` (garbage vs. reader-relevance; see
+# docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
+# since this stage is built to become a scorer itself with only a prompt swap.
+prefilter:
+  model: glm-5.1
+  temperature: 0.1
+  max_tokens: 4096
+  batch_size: 40
+  concurrency: 3
+  reasoning_effort: "none"
+
 triage:
   model: qwen3.5:397b
   temperature: 0.1
@@ -60,6 +72,23 @@ triage:
       - name: tech
         groups: [tech, ai]
     max_concurrent_spines: 3
+    # Final clustering step: one LLM call over a SMALL input (the merged
+    # cluster list + a bounded slice of high-relevance singletons) that
+    # merges same-story clusters the deterministic id-union merge missed
+    # (no shared item ids — e.g. covered by disjoint source sets) and
+    # attaches orphaned singletons that clearly belong, including
+    # cross-language items. See docs/decisions.md.
+    semantic_merge:
+      enabled: true
+      model: qwen3.5:397b
+      max_tokens: 16000
+      reasoning_effort: "none"
+      max_singletons: 60
+      # Fallback guard: if any single cluster in the pass's output holds more
+      # than this share of all clustered ids, the output is rejected as a
+      # runaway "umbrella"/"conflict blob" merge and the pre-pass (id-union
+      # merge) result is used instead. See docs/decisions.md.
+      max_cluster_share: 0.30
 
 researcher:
   model: gemini-3-flash-preview  # placeholder
@@ -68,10 +97,10 @@ researcher:
   step_limit: 20
 
 editor:
-  model: glm-5.1
+  model: qwen3.5:397b
   temperature: 0.2
   max_tokens: 16000
-  reasoning_effort: "low"
+  reasoning_effort: "none"
 
 writers:
   model: gemini-3-flash-preview  # placeholder

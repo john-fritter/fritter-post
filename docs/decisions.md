@@ -20,6 +20,320 @@ Entry format:
 
 ---
 
+## 2026-06-08 — Triage clusterer: semantic merge/attach pass added as final clustering step
+
+**Decision:** Add one more LLM call to the end of the clustering pipeline,
+after the deterministic id-union merge produces its cluster list and before
+the digest is finalized: a semantic merge/attach pass that (1) merges cluster
+pairs that are the same specific EVENT but share no item ids, and (2) attaches
+high-relevance orphaned singletons — especially cross-language items and
+tangential angles of the same specific event — to a cluster they clearly
+belong in. The threshold is strictly same-specific-event — identical to the
+base clustering prompt's — with no broader "umbrella" or "running story"
+grouping exception (see the **Update** below for why that exception was
+removed before this pass shipped). Configured at
+`triage.clustering.semantic_merge` (model, `max_tokens`, `reasoning_effort`,
+`max_singletons`, `max_cluster_share`, and an `enabled` toggle); uses the same
+`qwen3.5:397b` model as the rest of triage, `reasoning_effort: "none"`,
+default `max_singletons: 60`, default `max_cluster_share: 0.30`.
+
+The pass operates on a deliberately SMALL input — the merged cluster list
+(already-formed `label;;summary;;ids` lines) plus a bounded slice of the
+highest-relevance unclustered singletons (the top `max_singletons` residuals
+by recency, since pass-1 scoring hasn't run yet at triage time and there's no
+score to rank by) — never the whole pile. It re-emits the COMPLETE updated
+cluster list in the same flat format, which is then run through the existing
+`parseFlatClusterOutput` (same fabricated/duplicate/sub-2-id validation as
+every other clustering call) and becomes the final `digest`. Editor,
+assemble-pile, and pass-1 are completely unaffected — the contract
+(`parseFlatClusterOutput`, `cluster_index` semantics, the flat line format)
+is unchanged. The raw output is stored in `round_digests` under the key
+`semantic_merge`, alongside `seed`, `spine:*`, and `merged`, so a run remains
+inspectable stage by stage. An integrity check logs clusters before vs. after,
+how many pre-pass clusters fused into each post-pass cluster ("merged"), how
+many offered singletons made it into the final list ("attached"), and any
+previously-clustered id that vanished from the output entirely (logged loudly
+as LOST — it falls back to residual, exactly like the existing seed/spine LOST
+handling, because this is now the final clustering step with no further chance
+to recover it). A runaway guard rejects the pass's entire output — falling
+back to the pre-pass id-union merge result — if any single cluster ends up
+holding more than `max_cluster_share` (default 30%) of all clustered ids; see
+the **Update** below for why this exists.
+
+**Context:** Two recall failures at the edges of clustering kept showing up in
+production, both invisible to the deterministic id-union merge because it can
+only fuse clusters that share at least one seed item id:
+
+- Same-story clusters covered by disjoint source sets, sharing no ids — e.g.
+  two separate "Intel on the brink, AI revival" clusters surfaced as two
+  separate features instead of one.
+- High-relevance singletons that belonged in an existing cluster but stayed
+  orphaned — especially cross-language items (a Portuguese "Iran attacks
+  Israel" report) and tangential angles (a "War Powers Resolution on Iran"
+  explainer) — both floated up as standalone features instead of joining the
+  Iran-war cluster.
+
+The id-union merge's `possibleDuplicates` heuristic (Jaccard title similarity)
+already *flagged* the first case for inspection but explicitly couldn't
+resolve it — that requires editorial judgment a string-similarity check can't
+make. This pass is the resolution that heuristic was always meant to lead to;
+see the "Deferred: A semantic merge pass…" note in the entry below, which this
+entry fulfills.
+
+**Rationale:**
+
+- **One call, at the end, on a small input — not a redesign of clustering.**
+  Earlier whole-pile clustering attempts timed out because every round's
+  prompt carried the full item texts for hundreds of items plus an
+  ever-reinflating carry-forward pool (see the entry below: "495 → 714 items
+  by round 10"). This pass sidesteps that failure mode entirely by construction:
+  its input is the already-formed cluster list (a few dozen short lines) plus
+  at most `max_singletons` (default 60) item blocks — capped, not the ~500
+  residual singletons a typical run produces. It is structurally incapable of
+  re-creating the timeout problem, regardless of pile size, because its input
+  size is bounded by config, not by the day's news volume.
+
+- **Re-emit-the-complete-list, not a diff format.** The pass reuses the exact
+  mechanic `buildIncrementalUserPrompt` already proved out for the spine
+  rounds: show the model the current list verbatim in the format it must
+  also output, plus new material, and ask for a complete re-emission. This
+  means zero new output-format surface, zero new parsing code (the existing
+  `parseFlatClusterOutput` — with its fabricated-id, duplicate-id, and
+  sub-2-id validation — handles it unchanged), and the same robust
+  loud-logging-on-loss behavior the seed/spine merge already has. A bespoke
+  "merge cluster #3 into #7, attach singleton #4821 to #12" diff format would
+  have required new parsing, new validation, and a new failure surface for no
+  benefit — the re-emission mechanic was already battle-tested.
+
+- **Recency as the singleton ranking signal, not a score.** Pass-1 — the
+  stage that actually scores bio-relevance — runs *after* triage, so no score
+  exists yet to rank residual singletons by at this point in the pipeline.
+  Recency is the most meaningful signal directly available: a recently
+  published orphan is the likeliest candidate to be a same-day angle on, or a
+  cross-language report of, a running story — precisely the case this pass
+  exists to catch. "Source-count" was considered and rejected as a ranking
+  signal for *true singletons* — by definition, an item that didn't cluster
+  has no sibling items to count sources across, so the signal would be
+  degenerate (always 1) for exactly the population this pass is selecting from.
+
+- **Strictly same-specific-event threshold — identical to the base
+  clustering prompt's, no broader exception.** The prompt keeps the existing
+  clustering rules' bias in full: merge or attach only on confidence that two
+  things are the SAME SPECIFIC EVENT, and when unsure, don't — under-merging
+  is recoverable, a wrongful merge destroys structure permanently. Breadth
+  across a running story (gathering a conflict's strikes, legislative
+  responses, and economic fallout into one place) is the writer's job, done
+  later by searching the full pool — not the clusterer's, at any stage. See
+  the **Update** below for why an "umbrella" exception was tried and removed
+  before this pass ever shipped.
+
+- **`max_cluster_share` runaway guard — defense in depth against an unstable
+  prompt resolution.** Even with a strictly same-event threshold, an LLM pass
+  making merge/attach judgments can occasionally over-merge in a way that
+  produces a single oversized cluster — the unmistakable shape of an
+  "umbrella"/"conflict blob" mistake (a tight same-event cluster should never
+  hold a large share of a day's clustered ids). Rather than rely on the
+  prompt alone to prevent this, the pass validates its own output's shape: if
+  the largest cluster exceeds `max_cluster_share` (default 30%) of all
+  clustered ids, the entire output is discarded — not trimmed or
+  partially salvaged, since a blob's membership can't be un-mixed after the
+  fact — and the pre-pass id-union merge result is used as the final digest
+  instead. This is the same "validate the shape, fall back cleanly on failure"
+  posture the pass already takes for unparseable output; a magnitude check is
+  just as mechanical and just as safe to automate as a syntax check.
+
+- **Cross-language matching named explicitly.** The base clustering system
+  prompt already says items may be in any language, but the production miss
+  (the Portuguese Iran item) showed that guidance alone wasn't enough to make
+  the model attach across a language boundary at the edges. This pass's prompt
+  calls it out directly: match on the underlying event, not the language or
+  the wording.
+
+- **Toggleable and isolated.** `semantic_merge.enabled: false` falls back
+  cleanly to the id-union merge result with no other code path changes — the
+  pass is purely additive at the end of the pipeline, so it can be disabled
+  for cost/latency reasons, or if it proves to be a net-negative (over-merging),
+  without touching the spine/seed clustering or the deterministic merge at all.
+
+**Update (2026-06-08, before deploy):** The first version of this prompt
+included an explicit "umbrella" exception — fold a major running story's later
+developments, regional angles, and explainers into one cluster, framed as
+"still the same story, just a big one." Across three test runs on identical
+input, that exception produced two distinct modes: restrained/correct (4–7
+singletons attached, the genuine Intel duplicate fused, the cross-language
+Iran item attached — exactly the recall fixes this pass exists for) and
+runaway (one run attached 45 singletons, producing a 183-item "South Korea
+Ballot Shortage" mega-bucket and an Iran "conflict blob" that swallowed
+missile-exchange coverage, fuel-shock reporting, inflation stories, and Trump's
+messaging about the war as if they were one event).
+
+The cause: the prompt simultaneously told the model "merge only the same
+specific event" AND "but also gather a running story's breadth into one
+bucket" — two instructions in tension, which the model resolved
+unpredictably from run to run on identical input. The fix removes the
+contradiction rather than tuning around it: the umbrella exception is gone
+entirely, the threshold is now identical to the base clustering prompt's
+(same specific event, full stop), and the rationale for *why* breadth doesn't
+belong here is now explicit in the prompt itself — it's the writer's job,
+done later via the full-pool search, not the clusterer's at any stage. A
+`max_cluster_share` fallback guard (see Rationale above) was added as a second
+line of defense — not a substitute for the prompt fix, but a backstop in case
+a future prompt change (or this model's quirks) reintroduces a similar
+instability, so a runaway result can never reach the digest even if the prompt
+momentarily produces one.
+
+---
+
+## 2026-06-07 — New stage: bio-aware pre-cluster relevance filter (prefilter)
+
+**Decision:** Add a `prefilter` stage between the preprocessor and the
+clusterer (triage). It is batched, concurrency-capped at 3, bio-aware, and
+mirrors editor-pass-1's structure closely (per-item batches, `p-limit`,
+flat-line parsing, run+results tables, `glm-5.1`). For each `track = 'news'`
+preprocessed item it makes a binary **keep/cut** verdict — not a score — and
+the prompt is deliberately conservative: cut only what the bio makes clear
+this reader has affirmatively no interest in (routine sports/box scores,
+celebrity gossip, market-movement noise); when unsure, KEEP. A sports or
+entertainment item with a substantive labor/political/legal/cultural angle is
+explicitly a KEEP. Schema: `prefilter_runs` (per-execution counts) and
+`prefilter_results` (`run_id`, `preprocessed_item_id`, `keep BOOLEAN`,
+`reason TEXT`) — migration 016. The assembler (`getTriageItems`) applies a
+completed prefilter run's kept-set exactly the way it already applies the LLM
+filter run's kept-set (`getPrefilterKeptIds` mirrors `getFilterKeptIds`,
+including the graceful "no run → include everything" fallback); the two
+compose by simple set intersection, so order between them doesn't matter.
+Nothing is deleted from `preprocessed_items` — cut items remain in the full
+pool for a future writer stage that searches across all items; this stage
+only records a verdict.
+
+**Context:** The clusterer and editor were spending context budget on items
+the reader has no interest in at all — routine box scores, tabloid items,
+wire filler that isn't garbage (so the deterministic junk filter correctly
+keeps it) but also isn't anything this specific reader would ever want. That
+is a *relevance* judgment, not a *garbage* judgment, and it requires the bio.
+
+**Rationale:**
+
+- **Why a separate stage from the junk filter, not folded into it.**
+  Garbage-vs-not (calendars, photo galleries, house ads — see
+  `src/pipeline/preprocessor/junk-filter.ts`) and relevant-to-this-reader-vs-not
+  are different judgments with different evidence. The junk filter is
+  high-precision pattern matching that needs no bio and stays deterministic
+  and fast; the prefilter needs the bio and an LLM call per item. Conflating
+  them would force the deterministic filter's rules to start encoding
+  reader-specific taste (fragile, unreviewable) or force every garbage call
+  through an LLM (slow, costly, and a worse fit for "this regex always means
+  press-release boilerplate"). They stay separate, parallel passes that
+  compose by intersection — exactly like the LLM `filter` stage and the junk
+  filter already do today.
+
+- **Conservative keep-bias, not a percentile quota.** This is a *floor* that
+  strips obvious noise, not a relevance ranking with a target size (that's
+  editor-pass-1 and the editor's job, downstream, with full cluster context).
+  A quota-based cut here would force borderline calls before the pile is even
+  assembled, when the reader-relevance evidence is thinnest. Fail-safe
+  direction is KEEP for the same reason editor-pass-1 fail-safes toward the
+  middle of its range rather than toward zero: an over-inclusive floor costs
+  the clusterer and editor a little context; a wrongly-cut story is gone and
+  cannot be recovered by any later stage.
+
+- **Retained-pool design.** Cut verdicts are recorded, never enacted as
+  deletes. `preprocessed_items` keeps the full day's pool so a future writer
+  stage — one that can search across everything collected, not just what made
+  the paper — has the complete record to work from. This is purely a
+  "don't pass this forward to clustering" signal, not a "this didn't happen"
+  signal.
+
+- **Built to become a scorer.** The output format —
+  `id;;verdict;;reason` with `verdict` in the same column position as
+  editor-pass-1's `score` — and the `prefilter_results` schema (an additive
+  `score INT` column would let `keep` become a derived threshold) are chosen
+  so that, once the keep/cut version is validated against real daily output,
+  promoting it to an absolute-floor *scorer* is a prompt change plus one
+  additive migration — not a rebuild. If that promotion happens, it can
+  absorb editor-pass-1's bio-aware scoring entirely (collapsing the two
+  passes into one earlier, cheaper one) — deferred until the binary version
+  has run long enough to show whether a finer-grained floor is worth it.
+
+---
+
+## 2026-06-08 — Prefilter now classifies kept items as news vs opinion, routing opinion to Longer Reads
+
+**Decision:** Extend the prefilter's per-item judgment from a binary
+keep/cut verdict to a three-way verdict: `cut`, `news`, or `opinion`. The
+output line shape is unchanged (`id;;verdict;;reason`, same delimiter, same
+column position) — only the vocabulary in the middle column widens. `cut`
+keeps its meaning; `news` and `opinion` both map to `keep = true` but split
+on a new `kind` column. Items the prefilter keeps as `news` flow into
+clustering exactly as `keep` did before; items it keeps as `opinion` are
+excluded from clustering and pool for the Longer Reads section — the same
+destination `track = 'analysis'` items already accumulate in. Schema:
+additive migration 017 adds `kind TEXT NOT NULL DEFAULT 'news' CHECK (kind
+IN ('news', 'opinion'))` to `prefilter_results`. Both consumers of the
+prefilter's kept-set — the triage assembler's `getPrefilterKeptIds` (backing
+`getTriageItems`) and editor-pass-1's `getPrefilterKeptIds` (backing its
+residual-singleton query) — now additionally filter `AND kind = 'news'`, so
+an item reaches the clusterer or gets scored only if it is `track = 'news'`
+AND prefilter-kept AND `kind = 'news'`. No Longer Reads consumer is built
+yet; opinion-kept items simply accumulate, unconsumed, alongside analysis
+items until that stage exists.
+
+**Context:** Opinion and commentary pieces — a blog post arguing "LLMs are
+eroding my career," a column making the case for or against the Iran
+war — were flowing into clustering alongside reporting. They don't cluster
+(each is a one-off argument, not a recurring story other sources also
+cover), they score high on bio-relevance (the topics are exactly what this
+reader cares about), and so they surfaced as residual singletons that
+floated up through editor-pass-1 and the editor as bogus "features" — a
+single columnist's opinion presented with the weight of a major story. That
+is a routing problem, not a quality problem: these pieces have real value,
+just not as news-pile candidates.
+
+**Rationale:**
+
+- **Fix it upstream, at the prefilter, not in the clusterer or editor.**
+  The clusterer and editor only ever see what the assembler hands them; by
+  the time an opinion piece reaches either, the damage (a bogus feature
+  slot, wasted context) is already done. The prefilter is the single choke
+  point between the preprocessor and clustering where every `track = 'news'`
+  item already gets one bio-aware LLM judgment — adding a second axis to
+  that same judgment (rather than a new pass) is the cheapest place to catch
+  this, and it composes naturally with the existing keep/cut floor: an item
+  must first clear the relevance bar before its news-vs-opinion character
+  even matters.
+
+- **Same routing primitive as `track = 'analysis'`.** The pipeline already
+  has a clean mechanism for "this is valuable to the reader but is not a
+  news-pile candidate" — the `track` field set at preprocess time routes
+  analysis pieces out of clustering into the (future) Longer Reads pool.
+  Opinion pieces need exactly the same treatment, just decided later (the
+  prefilter has the bio; the preprocessor's `track` assignment does not).
+  Reusing the destination — rather than inventing a new pool or a new
+  status — keeps "things that aren't news-pile candidates" a single concept
+  with two on-ramps (structural at preprocess time, judgment-based at
+  prefilter time).
+
+- **Conservative news-default, mirroring the keep-bias.** When genuinely
+  unsure between news and opinion, the prompt instructs NEWS. This mirrors
+  the prefilter's existing keep-over-cut bias for the same reason: a
+  wrongly-opinion-routed story never reaches the daily paper (it's gone, the
+  same as a wrongly-cut one), while a wrongly-news-routed opinion piece is
+  merely a minor miscategorization the clusterer and editor can absorb —
+  recoverable, not fatal. The fail-safe direction for unparseable lines and
+  unknown verdict tokens is therefore `keep = true, kind = 'news'`, the
+  single safest combination of the three-way space.
+
+- **One token, same line shape — no format churn.** Widening the verdict
+  vocabulary from two values to three, in the same delimited column, keeps
+  `parseBatchOutput`'s structure (split on first two `;;`, defensive
+  reconciliation, fail-safe-by-id) untouched apart from the mapping itself.
+  This preserves the parser's kinship with editor-pass-1's, and keeps intact
+  the design noted in the prefilter's original entry above — that promoting
+  this stage to a numeric scorer later remains a prompt-plus-migration
+  change, not a rebuild.
+
+---
+
 ## 2026-06-07 — Triage clusterer: ordered group-rounds → wire seed + parallel spines + id-union merge
 
 **Decision:** Replace the single-chain ordered-rounds clusterer with three

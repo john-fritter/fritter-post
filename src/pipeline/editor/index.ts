@@ -38,6 +38,15 @@ function loadTextFile(filePath: string, fallback: string): string {
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
 const VALID_TIERS = new Set<EditorTier>(["feature", "standard", "brief", "cut"]);
 
+/**
+ * Pass-1 relevance score at/above which a missing singleton fails safe to
+ * 'standard' rather than 'brief'. ~70 is where the editor's own standard/brief
+ * placements cluster — close enough to use as the fail-safe line. Fail-safe
+ * is deliberately capped at 'standard': promoting a dropped item to 'feature'
+ * requires the editor's actual judgment, not a heuristic.
+ */
+const SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD = 70;
+
 interface DigestCluster {
   index: number;
   title: string;
@@ -100,6 +109,25 @@ interface EditorPileItem {
   itemType: "cluster" | "singleton";
   clusterIndex: number | null;
   preprocessedItemId: number | null;
+  // Singleton-only: pass-1 relevance score, used to pick a sensible fail-safe
+  // tier if the editor drops the item from its output. Null for clusters.
+  pass1Score: number | null;
+}
+
+/**
+ * Picks the tier a pile item fails safe to when the editor's output omits it.
+ * Clusters reach the pile on multi-source pickup alone — inherently
+ * higher-signal than a residual singleton — so they fail safe to 'standard'.
+ * Singletons fail safe based on the one piece of relevance signal we already
+ * have (the pass-1 score): high-scoring drops land at 'standard', everything
+ * else at 'brief'. Never 'feature' — that tier is the editor's call alone.
+ */
+function failSafeTierForMissingItem(item: EditorPileItem): EditorTier {
+  if (item.itemType === "cluster") return "standard";
+  if (item.pass1Score !== null && item.pass1Score >= SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD) {
+    return "standard";
+  }
+  return "brief";
 }
 
 export interface EditorStoryResult extends EditorPileItem {
@@ -125,8 +153,13 @@ export interface EditorParseResult {
  * - Unknown refs are dropped and logged.
  * - Duplicate refs keep the first occurrence; later ones are dropped and logged.
  * - Invalid tier values fail-safe to 'brief'.
- * - Pile items absent from the output are appended at the end, fail-safed to
- *   'brief' with a flagged reason — an editor that drops items truncates the paper.
+ * - Pile items absent from the output are appended at the end with a flagged
+ *   reason — an editor that drops items truncates the paper. Their fail-safe
+ *   tier is derived from the best signal available rather than a flat
+ *   'brief': clusters (inherently higher-signal — multi-source pickup got
+ *   them into the pile) fail safe to 'standard'; singletons fail safe to
+ *   'standard' or 'brief' based on their pass-1 relevance score (see
+ *   failSafeTierForMissingItem). Never 'feature' — see that function.
  */
 export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): EditorParseResult {
   const byRef = new Map<string, EditorPileItem>();
@@ -183,9 +216,10 @@ export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): Ed
   let missingCount = 0;
   for (const item of pileItems) {
     if (seen.has(item.ref)) continue;
-    console.warn(`[editor] pile item missing from output — fail-safe to brief: ${item.ref}`);
+    const tier = failSafeTierForMissingItem(item);
+    console.warn(`[editor] pile item missing from output — fail-safe to ${tier}: ${item.ref}`);
     missingCount++;
-    ordered.push({ ...item, tier: "brief", reason: "fail-safe: missing from editor output" });
+    ordered.push({ ...item, tier, reason: "fail-safe: missing from editor output" });
   }
 
   return {
@@ -332,12 +366,14 @@ export async function runEditor(
       itemType: "cluster" as const,
       clusterIndex: c.clusterIndex,
       preprocessedItemId: null,
+      pass1Score: null,
     })),
     ...singletonItems.map((s) => ({
       ref: s.ref,
       itemType: "singleton" as const,
       clusterIndex: null,
       preprocessedItemId: s.preprocessedItemId,
+      pass1Score: s.pass1Score,
     })),
   ];
 
