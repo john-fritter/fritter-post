@@ -388,6 +388,8 @@ export async function runEditor(
   const temperature = stageConfig.temperature;
   const maxTokens = stageConfig.max_tokens;
   const reasoningEffort = stageConfig.reasoning_effort;
+  const provider = stageConfig.provider;
+  const timeoutMs = stageConfig.timeout_ms;
 
   const standingMemo = loadTextFile(STANDING_MEMO_PATH, STANDING_MEMO_FALLBACK);
   const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
@@ -419,6 +421,8 @@ export async function runEditor(
       temperature,
       maxTokens,
       reasoningEffort,
+      provider,
+      timeoutMs,
     });
 
     const parsed = parseEditorOutput(llmResult.text, pileItems);

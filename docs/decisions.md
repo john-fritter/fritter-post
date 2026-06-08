@@ -20,6 +20,49 @@ Entry format:
 
 ---
 
+## 2026-06-08 — NanoGPT added as alternate LLM provider
+
+**Decision:** Added `nanogpt` as a second selectable provider alongside the
+existing `ollama-cloud` default. Provider is now a per-stage config field
+(`provider: ollama-cloud | nanogpt`) in `config/models.yaml`. When set to
+`nanogpt`, `callLLM` uses `NANOGPT_BASE_URL` + `NANOGPT_API_KEY` instead of
+`LLM_BASE_URL` + `LLM_API_KEY`. The editor stage is the first to expose this
+— override with `provider: nanogpt`, `model: deepseek/deepseek-v4-pro:thinking`,
+`reasoning_effort: "high"` to run it through NanoGPT. All other stages continue
+to use ollama-cloud by default (no change to any other stage's config or code).
+
+A `timeout_ms` per-stage config field was added at the same time, so stages
+that need a longer or shorter deadline can set it explicitly. The default
+remains 360s for all providers.
+
+**Context:** Ollama Cloud imposes a 182s hard gateway timeout per request.
+Reasoning models — particularly `deepseek/deepseek-v4-pro:thinking` on a
+whole-pile editor call — routinely exceed this ceiling. The editor's
+whole-pile call is intentionally a single large call (see "Editor stage:
+whole-pile single call" entry); it cannot be batched or shortened without
+losing the relational ranking judgment that is the editor's entire purpose.
+NanoGPT is OpenAI-compatible and has no equivalent per-request cap, making
+it a viable host for long-running reasoning calls.
+
+**Rationale:**
+- **Provider as config, not code.** Any stage can target either provider with
+  a one-line yaml change and the right env vars present — no stage-specific
+  code branches, no hardcoded URLs. The LLM client selects credentials and
+  constructs the OpenAI client based on the `provider` field, the same way
+  it already selects model, temperature, and token budget from config.
+- **NanoGPT's reasoning parameter matches the existing code path.** NanoGPT
+  uses `reasoning_effort` (values: `none`/`minimal`/`low`/`medium`/`high`/
+  `xhigh`) passed directly in the request body — exactly the same double-cast
+  approach the client already uses for Ollama Cloud. No new parameter wiring
+  was needed.
+- **Committed default unchanged.** The editor's committed config stays
+  `provider: ollama-cloud` (implicit default), `model: qwen3.5:397b`,
+  `reasoning_effort: "none"`. The NanoGPT setting is applied as a runtime
+  override; no production run is affected until the operator explicitly changes
+  the config or passes an override.
+
+---
+
 ## 2026-06-08 — Triage clusterer: semantic merge/attach pass added as final clustering step
 
 **Decision:** Add one more LLM call to the end of the clustering pipeline,

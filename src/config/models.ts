@@ -9,6 +9,8 @@ const StageConfigSchema = z.object({
   max_tokens: z.number().int(),
   step_limit: z.number().int().optional(),
   reasoning_effort: z.string().optional(),
+  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  timeout_ms: z.number().int().optional(),
 });
 
 const FilterStageConfigSchema = StageConfigSchema.extend({
