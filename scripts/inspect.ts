@@ -120,6 +120,7 @@ interface PrefilterResultRow {
   source_name: string;
   title: string;
   keep: boolean;
+  kind: "news" | "opinion";
   reason: string;
 }
 
@@ -822,18 +823,22 @@ async function main() {
             console.log(`  Cut rate:            ${pct}%`);
           }
 
-          // Full per-item keep/cut list with reasons.
+          // Full per-item cut/news/opinion list with reasons.
           const { rows: itemRows } = await pool.query<PrefilterResultRow>(
-            `SELECT pr.preprocessed_item_id AS id, pi.source_name, pi.title, pr.keep, pr.reason
+            `SELECT pr.preprocessed_item_id AS id, pi.source_name, pi.title, pr.keep, pr.kind, pr.reason
              FROM prefilter_results pr
              JOIN preprocessed_items pi ON pi.id = pr.preprocessed_item_id
              WHERE pr.run_id = $1
-             ORDER BY pr.keep ASC, pi.source_name, pi.title`,
+             ORDER BY pr.keep ASC, pr.kind, pi.source_name, pi.title`,
             [runId]
           );
 
           const cutRows = itemRows.filter((r) => !r.keep);
-          const keepRows = itemRows.filter((r) => r.keep);
+          const newsRows = itemRows.filter((r) => r.keep && r.kind === "news");
+          const opinionRows = itemRows.filter((r) => r.keep && r.kind === "opinion");
+
+          console.log(`  Kept — news:         ${newsRows.length}`);
+          console.log(`  Kept — opinion:      ${opinionRows.length} (routed to Longer Reads)`);
 
           if (cutRows.length > 0) {
             console.log(`\n── CUT (${cutRows.length})`);
@@ -841,9 +846,15 @@ async function main() {
               console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
             }
           }
-          if (keepRows.length > 0) {
-            console.log(`\n── KEPT (${keepRows.length})`);
-            for (const row of keepRows) {
+          if (newsRows.length > 0) {
+            console.log(`\n── KEPT — NEWS (${newsRows.length})`);
+            for (const row of newsRows) {
+              console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
+            }
+          }
+          if (opinionRows.length > 0) {
+            console.log(`\n── KEPT — OPINION → Longer Reads (${opinionRows.length})`);
+            for (const row of opinionRows) {
               console.log(`  [${row.id}] ${row.source_name} | ${row.reason} | ${row.title}`);
             }
           }
@@ -1191,7 +1202,7 @@ Commands:
   filter                   List recent filter runs
   filter --id <n>          Show detail, drop reasons, and dropped titles for one filter run
   prefilter                List recent prefilter runs
-  prefilter --id <n>       Show detail and per-item keep/cut verdicts with reasons
+  prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
   editor-pass-1            List recent editor-pass-1 runs
   editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
   editor                   List recent editor runs

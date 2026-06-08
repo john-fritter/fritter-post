@@ -125,11 +125,16 @@ export function parseBatchOutput(
 }
 
 /**
- * Returns the set of kept preprocessed_item IDs from the latest completed
- * prefilter run for the given preprocessor run, or null if no prefilter run
- * exists. Mirrors the triage assembler's getPrefilterKeptIds — same shape,
- * same fallback (no run means no opinion, so nothing is excluded on its
- * account).
+ * Returns the set of news-routable preprocessed_item IDs from the latest
+ * completed prefilter run for the given preprocessor run, or null if no
+ * prefilter run exists. Mirrors the triage assembler's getPrefilterKeptIds —
+ * same shape, same fallback (no run means no opinion, so nothing is excluded
+ * on its account).
+ *
+ * Restricted to kind = 'news': opinion-kept items route to the Longer Reads
+ * pool, not into clustering, so they must never be scored or ranked here
+ * either — pass-1 only scores residual singletons from the news track. See
+ * docs/decisions.md.
  */
 async function getPrefilterKeptIds(
   pool: import("pg").Pool,
@@ -146,7 +151,7 @@ async function getPrefilterKeptIds(
   const prefilterRunId = runRows[0].id;
   const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
     `SELECT preprocessed_item_id FROM prefilter_results
-     WHERE run_id = $1 AND keep = true`,
+     WHERE run_id = $1 AND keep = true AND kind = 'news'`,
     [prefilterRunId],
   );
   return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));

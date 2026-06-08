@@ -59,10 +59,16 @@ async function getFilterKeptIds(
 }
 
 /**
- * Returns the set of kept preprocessed_item IDs from the latest completed
- * prefilter run for the given preprocessor run, or null if no prefilter run
- * exists. Mirrors getFilterKeptIds — same shape, same fallback (no run means
- * no opinion, so nothing is excluded on its account).
+ * Returns the set of news-routable preprocessed_item IDs from the latest
+ * completed prefilter run for the given preprocessor run, or null if no
+ * prefilter run exists. Mirrors getFilterKeptIds — same shape, same fallback
+ * (no run means no opinion, so nothing is excluded on its account).
+ *
+ * Restricted to kind = 'news': the prefilter also classifies kept items as
+ * news or opinion, and opinion-kept items route to the Longer Reads pool —
+ * the same destination as track='analysis' items — rather than into
+ * clustering. This function backs the clustering document, so it must
+ * exclude them. See docs/decisions.md.
  */
 async function getPrefilterKeptIds(
   pool: import("pg").Pool,
@@ -79,7 +85,7 @@ async function getPrefilterKeptIds(
   const prefilterRunId = runRows[0].id;
   const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
     `SELECT preprocessed_item_id FROM prefilter_results
-     WHERE run_id = $1 AND keep = true`,
+     WHERE run_id = $1 AND keep = true AND kind = 'news'`,
     [prefilterRunId]
   );
   return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));

@@ -29,11 +29,14 @@ function loadBio(): string {
   }
 }
 
-export type PrefilterVerdict = "keep" | "cut";
+export type PrefilterVerdict = "cut" | "news" | "opinion";
+
+export type PrefilterKind = "news" | "opinion";
 
 export interface PrefilterItemResult {
   id: number;
   keep: boolean;
+  kind: PrefilterKind;
   reason: string;
 }
 
@@ -79,12 +82,14 @@ interface PrefilterRunRow {
  * column order, same per-item reconciliation — so the future score-swap only
  * has to change the middle column's meaning, not this parser's structure.
  *
- * Fail-safe direction is KEEP (never CUT): an over-inclusive floor is
- * recoverable downstream; a wrongly-cut story is gone for good.
- * - Unparseable/missing lines fail-safe to keep.
+ * Fail-safe direction is KEEP, and within keep, NEWS (never CUT, never
+ * OPINION): an over-inclusive floor is recoverable downstream; a wrongly-cut
+ * story is gone for good, and a wrongly-opinion-routed story never reaches
+ * the daily paper at all. News is the safer of the two keep outcomes.
+ * - Unparseable/missing lines fail-safe to keep as news.
  * - Unknown ids are dropped and logged.
  * - Duplicate ids keep the first occurrence.
- * - Invalid verdict values fail-safe to keep.
+ * - Invalid verdict values fail-safe to keep as news.
  */
 export function parseBatchOutput(
   text: string,
@@ -113,22 +118,30 @@ export function parseBatchOutput(
     if (!expected.has(id) || parsed.has(id)) continue;
 
     let keep: boolean;
-    if (verdictField === "keep") {
+    let kind: PrefilterKind;
+    if (verdictField === "news") {
       keep = true;
+      kind = "news";
+    } else if (verdictField === "opinion") {
+      keep = true;
+      kind = "opinion";
     } else if (verdictField === "cut") {
       keep = false;
+      kind = "news";
     } else {
-      console.warn(`[prefilter] invalid verdict "${verdictField}" for ${id} — fail-safe to keep`);
+      console.warn(`[prefilter] invalid verdict "${verdictField}" for ${id} — fail-safe to keep as news`);
       keep = true;
+      kind = "news";
     }
 
-    parsed.set(id, { id, keep, reason });
+    parsed.set(id, { id, keep, kind, reason });
   }
 
   const results = expectedIds.map((id) =>
     parsed.get(id) ?? {
       id,
       keep: true,
+      kind: "news" as const,
       reason: "fail-safe: missing/invalid line",
     },
   );
@@ -188,11 +201,12 @@ async function processBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[prefilter] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — keeping all ${batch.length} items`,
+      `[prefilter] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — keeping all ${batch.length} items as news`,
     );
     return batch.map((item) => ({
       id: Number(item.id),
       keep: true,
+      kind: "news" as const,
       reason: "fail-safe: LLM error",
     }));
   }
@@ -281,11 +295,16 @@ export async function runPrefilter(
 
     const allResults = batchResults.flat();
 
-    // 8. Log every CUT to stdout for audit.
+    // 8. Log every CUT to stdout for audit, and tally the news/opinion split.
+    //    Opinion-kept items route to the Longer Reads pool (same destination
+    //    as track='analysis' items) — they never reach clustering. See
+    //    docs/decisions.md.
     const itemMap = new Map<number, PreprocessedItemRow>(
       items.map((item: PreprocessedItemRow) => [Number(item.id), item]),
     );
     let itemsCut = 0;
+    let itemsNews = 0;
+    let itemsOpinion = 0;
     for (const result of allResults) {
       if (!result.keep) {
         const item = itemMap.get(result.id);
@@ -293,9 +312,17 @@ export async function runPrefilter(
           `[prefilter] CUT [${result.id}] ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
         );
         itemsCut++;
+      } else if (result.kind === "opinion") {
+        itemsOpinion++;
+      } else {
+        itemsNews++;
       }
     }
     const itemsKept = allResults.length - itemsCut;
+    console.log(
+      `[prefilter] split: ${allResults.length} in, ${itemsCut} cut, ` +
+      `${itemsNews} kept-news, ${itemsOpinion} kept-opinion`,
+    );
 
     // 9. Persist prefilter_results in chunks.
     const INSERT_CHUNK = 500;
@@ -303,16 +330,16 @@ export async function runPrefilter(
       const chunk = allResults.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_item: PrefilterItemResult, j: number) => {
-          const base = j * 4;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
+          const base = j * 5;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
         })
         .join(", ");
       const params: Array<number | boolean | string> = [];
       for (const r of chunk) {
-        params.push(runId, r.id, r.keep, r.reason);
+        params.push(runId, r.id, r.keep, r.kind, r.reason);
       }
       await pool.query(
-        `INSERT INTO prefilter_results (run_id, preprocessed_item_id, keep, reason) VALUES ${placeholders}`,
+        `INSERT INTO prefilter_results (run_id, preprocessed_item_id, keep, kind, reason) VALUES ${placeholders}`,
         params,
       );
     }

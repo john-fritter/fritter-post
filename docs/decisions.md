@@ -93,6 +93,83 @@ is a *relevance* judgment, not a *garbage* judgment, and it requires the bio.
 
 ---
 
+## 2026-06-08 — Prefilter now classifies kept items as news vs opinion, routing opinion to Longer Reads
+
+**Decision:** Extend the prefilter's per-item judgment from a binary
+keep/cut verdict to a three-way verdict: `cut`, `news`, or `opinion`. The
+output line shape is unchanged (`id;;verdict;;reason`, same delimiter, same
+column position) — only the vocabulary in the middle column widens. `cut`
+keeps its meaning; `news` and `opinion` both map to `keep = true` but split
+on a new `kind` column. Items the prefilter keeps as `news` flow into
+clustering exactly as `keep` did before; items it keeps as `opinion` are
+excluded from clustering and pool for the Longer Reads section — the same
+destination `track = 'analysis'` items already accumulate in. Schema:
+additive migration 017 adds `kind TEXT NOT NULL DEFAULT 'news' CHECK (kind
+IN ('news', 'opinion'))` to `prefilter_results`. Both consumers of the
+prefilter's kept-set — the triage assembler's `getPrefilterKeptIds` (backing
+`getTriageItems`) and editor-pass-1's `getPrefilterKeptIds` (backing its
+residual-singleton query) — now additionally filter `AND kind = 'news'`, so
+an item reaches the clusterer or gets scored only if it is `track = 'news'`
+AND prefilter-kept AND `kind = 'news'`. No Longer Reads consumer is built
+yet; opinion-kept items simply accumulate, unconsumed, alongside analysis
+items until that stage exists.
+
+**Context:** Opinion and commentary pieces — a blog post arguing "LLMs are
+eroding my career," a column making the case for or against the Iran
+war — were flowing into clustering alongside reporting. They don't cluster
+(each is a one-off argument, not a recurring story other sources also
+cover), they score high on bio-relevance (the topics are exactly what this
+reader cares about), and so they surfaced as residual singletons that
+floated up through editor-pass-1 and the editor as bogus "features" — a
+single columnist's opinion presented with the weight of a major story. That
+is a routing problem, not a quality problem: these pieces have real value,
+just not as news-pile candidates.
+
+**Rationale:**
+
+- **Fix it upstream, at the prefilter, not in the clusterer or editor.**
+  The clusterer and editor only ever see what the assembler hands them; by
+  the time an opinion piece reaches either, the damage (a bogus feature
+  slot, wasted context) is already done. The prefilter is the single choke
+  point between the preprocessor and clustering where every `track = 'news'`
+  item already gets one bio-aware LLM judgment — adding a second axis to
+  that same judgment (rather than a new pass) is the cheapest place to catch
+  this, and it composes naturally with the existing keep/cut floor: an item
+  must first clear the relevance bar before its news-vs-opinion character
+  even matters.
+
+- **Same routing primitive as `track = 'analysis'`.** The pipeline already
+  has a clean mechanism for "this is valuable to the reader but is not a
+  news-pile candidate" — the `track` field set at preprocess time routes
+  analysis pieces out of clustering into the (future) Longer Reads pool.
+  Opinion pieces need exactly the same treatment, just decided later (the
+  prefilter has the bio; the preprocessor's `track` assignment does not).
+  Reusing the destination — rather than inventing a new pool or a new
+  status — keeps "things that aren't news-pile candidates" a single concept
+  with two on-ramps (structural at preprocess time, judgment-based at
+  prefilter time).
+
+- **Conservative news-default, mirroring the keep-bias.** When genuinely
+  unsure between news and opinion, the prompt instructs NEWS. This mirrors
+  the prefilter's existing keep-over-cut bias for the same reason: a
+  wrongly-opinion-routed story never reaches the daily paper (it's gone, the
+  same as a wrongly-cut one), while a wrongly-news-routed opinion piece is
+  merely a minor miscategorization the clusterer and editor can absorb —
+  recoverable, not fatal. The fail-safe direction for unparseable lines and
+  unknown verdict tokens is therefore `keep = true, kind = 'news'`, the
+  single safest combination of the three-way space.
+
+- **One token, same line shape — no format churn.** Widening the verdict
+  vocabulary from two values to three, in the same delimited column, keeps
+  `parseBatchOutput`'s structure (split on first two `;;`, defensive
+  reconciliation, fail-safe-by-id) untouched apart from the mapping itself.
+  This preserves the parser's kinship with editor-pass-1's, and keeps intact
+  the design noted in the prefilter's original entry above — that promoting
+  this stage to a numeric scorer later remains a prompt-plus-migration
+  change, not a rebuild.
+
+---
+
 ## 2026-06-07 — Triage clusterer: ordered group-rounds → wire seed + parallel spines + id-union merge
 
 **Decision:** Replace the single-chain ordered-rounds clusterer with three
