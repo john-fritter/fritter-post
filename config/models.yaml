@@ -84,6 +84,11 @@ triage:
       max_tokens: 16000
       reasoning_effort: "none"
       max_singletons: 60
+      # Fallback guard: if any single cluster in the pass's output holds more
+      # than this share of all clustered ids, the output is rejected as a
+      # runaway "umbrella"/"conflict blob" merge and the pre-pass (id-union
+      # merge) result is used instead. See docs/decisions.md.
+      max_cluster_share: 0.30
 
 researcher:
   model: gemini-3-flash-preview  # placeholder

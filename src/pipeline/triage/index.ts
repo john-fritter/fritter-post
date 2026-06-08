@@ -639,7 +639,35 @@ export async function runTriage(options: {
           );
         }
 
-        finalClusters = semanticParse.clusters;
+        // Runaway guard: a strictly same-event threshold should never produce
+        // one cluster holding a large share of the day's clustered ids — that
+        // shape is the signature of an "umbrella"/"conflict blob" merge (seen
+        // in production: a 183-item mega-bucket, an Iran cluster swallowing
+        // missile-exchange + fuel-shock + inflation + messaging coverage as if
+        // they were one event). Reject the whole output and fall back to the
+        // pre-pass id-union merge result rather than risk keeping a blob — see
+        // docs/decisions.md.
+        let largestCluster: TriageCluster | null = null;
+        for (const cluster of semanticParse.clusters) {
+          if (largestCluster === null || cluster.item_ids.length > largestCluster.item_ids.length) {
+            largestCluster = cluster;
+          }
+        }
+        const share = largestCluster !== null && postIds.size > 0
+          ? largestCluster.item_ids.length / postIds.size
+          : 0;
+
+        if (largestCluster !== null && share > semanticConfig.max_cluster_share) {
+          console.warn(
+            `[triage] semantic merge REJECTED: cluster "${largestCluster.title}" holds ` +
+            `${largestCluster.item_ids.length}/${postIds.size} clustered ids ` +
+            `(${(share * 100).toFixed(1)}% > ${(semanticConfig.max_cluster_share * 100).toFixed(0)}% limit) — ` +
+            `discarding output as a likely runaway merge, falling back to id-union merge result ` +
+            `(${mergeResult.clusters.length} clusters)`,
+          );
+        } else {
+          finalClusters = semanticParse.clusters;
+        }
       }
     }
 

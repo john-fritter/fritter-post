@@ -25,12 +25,17 @@ Entry format:
 **Decision:** Add one more LLM call to the end of the clustering pipeline,
 after the deterministic id-union merge produces its cluster list and before
 the digest is finalized: a semantic merge/attach pass that (1) merges cluster
-pairs that are the same specific story but share no item ids, and (2) attaches
+pairs that are the same specific EVENT but share no item ids, and (2) attaches
 high-relevance orphaned singletons — especially cross-language items and
-tangential angles — to a cluster they clearly belong in. Configured at
+tangential angles of the same specific event — to a cluster they clearly
+belong in. The threshold is strictly same-specific-event — identical to the
+base clustering prompt's — with no broader "umbrella" or "running story"
+grouping exception (see the **Update** below for why that exception was
+removed before this pass shipped). Configured at
 `triage.clustering.semantic_merge` (model, `max_tokens`, `reasoning_effort`,
-`max_singletons`, and an `enabled` toggle); uses the same `qwen3.5:397b` model
-as the rest of triage, `reasoning_effort: "none"`, default `max_singletons: 60`.
+`max_singletons`, `max_cluster_share`, and an `enabled` toggle); uses the same
+`qwen3.5:397b` model as the rest of triage, `reasoning_effort: "none"`,
+default `max_singletons: 60`, default `max_cluster_share: 0.30`.
 
 The pass operates on a deliberately SMALL input — the merged cluster list
 (already-formed `label;;summary;;ids` lines) plus a bounded slice of the
@@ -50,7 +55,10 @@ many offered singletons made it into the final list ("attached"), and any
 previously-clustered id that vanished from the output entirely (logged loudly
 as LOST — it falls back to residual, exactly like the existing seed/spine LOST
 handling, because this is now the final clustering step with no further chance
-to recover it).
+to recover it). A runaway guard rejects the pass's entire output — falling
+back to the pre-pass id-union merge result — if any single cluster ends up
+holding more than `max_cluster_share` (default 30%) of all clustered ids; see
+the **Update** below for why this exists.
 
 **Context:** Two recall failures at the edges of clustering kept showing up in
 production, both invisible to the deterministic id-union merge because it can
@@ -108,17 +116,31 @@ entry fulfills.
   has no sibling items to count sources across, so the signal would be
   degenerate (always 1) for exactly the population this pass is selecting from.
 
-- **Conservative threshold, with one explicit umbrella exception.** The
-  prompt keeps the existing clustering rules' bias — when unsure, don't merge,
-  because under-merging is recoverable and wrongful merging destroys structure
-  permanently. But it also explicitly carves out the one case the reader has
-  stated a preference for: a major, multi-day running story (an ongoing war,
-  an unfolding crisis) should pull its own later developments, regional
-  angles, and explainers together under one umbrella rather than fragmenting
-  across many small same-subject clusters. This is framed as "still the same
-  story, just a big one" — not license to merge genuinely distinct events that
-  happen to share a topic, actors, or region (a war's strikes and a
-  legislative vote about that war remain separate stories).
+- **Strictly same-specific-event threshold — identical to the base
+  clustering prompt's, no broader exception.** The prompt keeps the existing
+  clustering rules' bias in full: merge or attach only on confidence that two
+  things are the SAME SPECIFIC EVENT, and when unsure, don't — under-merging
+  is recoverable, a wrongful merge destroys structure permanently. Breadth
+  across a running story (gathering a conflict's strikes, legislative
+  responses, and economic fallout into one place) is the writer's job, done
+  later by searching the full pool — not the clusterer's, at any stage. See
+  the **Update** below for why an "umbrella" exception was tried and removed
+  before this pass ever shipped.
+
+- **`max_cluster_share` runaway guard — defense in depth against an unstable
+  prompt resolution.** Even with a strictly same-event threshold, an LLM pass
+  making merge/attach judgments can occasionally over-merge in a way that
+  produces a single oversized cluster — the unmistakable shape of an
+  "umbrella"/"conflict blob" mistake (a tight same-event cluster should never
+  hold a large share of a day's clustered ids). Rather than rely on the
+  prompt alone to prevent this, the pass validates its own output's shape: if
+  the largest cluster exceeds `max_cluster_share` (default 30%) of all
+  clustered ids, the entire output is discarded — not trimmed or
+  partially salvaged, since a blob's membership can't be un-mixed after the
+  fact — and the pre-pass id-union merge result is used as the final digest
+  instead. This is the same "validate the shape, fall back cleanly on failure"
+  posture the pass already takes for unparseable output; a magnitude check is
+  just as mechanical and just as safe to automate as a syntax check.
 
 - **Cross-language matching named explicitly.** The base clustering system
   prompt already says items may be in any language, but the production miss
@@ -132,6 +154,33 @@ entry fulfills.
   pass is purely additive at the end of the pipeline, so it can be disabled
   for cost/latency reasons, or if it proves to be a net-negative (over-merging),
   without touching the spine/seed clustering or the deterministic merge at all.
+
+**Update (2026-06-08, before deploy):** The first version of this prompt
+included an explicit "umbrella" exception — fold a major running story's later
+developments, regional angles, and explainers into one cluster, framed as
+"still the same story, just a big one." Across three test runs on identical
+input, that exception produced two distinct modes: restrained/correct (4–7
+singletons attached, the genuine Intel duplicate fused, the cross-language
+Iran item attached — exactly the recall fixes this pass exists for) and
+runaway (one run attached 45 singletons, producing a 183-item "South Korea
+Ballot Shortage" mega-bucket and an Iran "conflict blob" that swallowed
+missile-exchange coverage, fuel-shock reporting, inflation stories, and Trump's
+messaging about the war as if they were one event).
+
+The cause: the prompt simultaneously told the model "merge only the same
+specific event" AND "but also gather a running story's breadth into one
+bucket" — two instructions in tension, which the model resolved
+unpredictably from run to run on identical input. The fix removes the
+contradiction rather than tuning around it: the umbrella exception is gone
+entirely, the threshold is now identical to the base clustering prompt's
+(same specific event, full stop), and the rationale for *why* breadth doesn't
+belong here is now explicit in the prompt itself — it's the writer's job,
+done later via the full-pool search, not the clusterer's at any stage. A
+`max_cluster_share` fallback guard (see Rationale above) was added as a second
+line of defense — not a substitute for the prompt fix, but a backstop in case
+a future prompt change (or this model's quirks) reintroduces a similar
+instability, so a runaway result can never reach the digest even if the prompt
+momentarily produces one.
 
 ---
 

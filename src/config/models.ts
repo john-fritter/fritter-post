@@ -27,6 +27,7 @@ const SemanticMergeConfigSchema = z.object({
   max_tokens: z.number().int(),
   reasoning_effort: z.string().optional(),
   max_singletons: z.number().int(),
+  max_cluster_share: z.number().min(0).max(1),
 });
 
 const TriageStageConfigSchema = StageConfigSchema.extend({
