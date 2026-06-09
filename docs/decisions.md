@@ -20,6 +20,58 @@ Entry format:
 
 ---
 
+## 2026-06-09 — Editor model: kimi-k2.6:thinking primary, glm-5.1:thinking fallback, retry-once-then-fallback resilience
+
+**Decision:** The editor stage's production model is `moonshotai/kimi-k2.6:thinking`
+on NanoGPT (`provider: nanogpt`, `reasoning_effort: "medium"`). A fallback model
+`zai-org/glm-5.1:thinking` (also NanoGPT, `reasoning_effort: "medium"`) is
+configured in a new optional `editor.fallback` block in `config/models.yaml`.
+`StageConfigSchema` is not touched; a new `EditorStageConfigSchema` extends it
+with the optional fallback sub-config — editor-specific only, not generalized to
+all stages.
+
+Resilience logic lives in `src/pipeline/editor/index.ts` (not in `callLLM`):
+attempt the primary model → retry the primary once on failure → invoke the fallback
+once. A failure is: `callLLM` throws (timeout, stream break, empty response) OR the
+parse collapses (fewer than 50% of pile items produce valid output lines). A paper
+that parses with fail-safed missing items but ≥ 50% lines is a success — do not
+fall back on a merely-imperfect-but-parsed paper. If the fallback also fails, the
+run throws loudly; no silent all-fail-safe paper is produced and presented as a
+success. Each transition is logged explicitly (primary attempt 1, retry, fallback
+invocation). The `model_used` column of `editor_runs` is updated to the fallback
+model's ID if the fallback produced the accepted output, so inspection logs show
+whether any given day's paper came from kimi or glm.
+
+**Context:** A bake-off over multiple runs on identical input evaluated several
+NanoGPT reasoning models. `kimi-k2.6:thinking` ranked best overall and was the
+most stable across runs (consistent tier assignments, minimal collapse, clean line
+format). `glm-5.1:thinking` produced clean papers and failed predictably on
+difficult inputs — no silent garbage, just clean errors — making it the safest
+fallback choice. Primary model failures have been intermittent, not deterministic,
+so a single clean retry is cheap and often sufficient before reaching for the
+fallback.
+
+**Rationale:**
+- **Retry-once-then-fallback, not retry-forever.** The bake-off showed that primary
+  failures are transient (network hiccup, stream break), not systematic. One retry
+  is cheap; more would mask real problems. Reaching the fallback is a signal the
+  operator should notice (via `model_used` in `editor_runs`), not suppress.
+- **Collapse threshold at 50% of pile items.** A collapse is operationally
+  distinguishable from a merely-imperfect paper: a reasoning model that is working
+  produces output for most items even if the tier assignments are imperfect; a
+  collapsed call produces almost nothing. 50% is a clear, generous threshold — far
+  below any normal run's output — that avoids false positives on legitimate papers
+  while reliably catching empty-or-near-empty responses.
+- **model_used reflects the real producer.** The `editor_runs` row is created with
+  the primary model as `model_used` and updated on fallback use. This makes fallback
+  frequency observable over time in the DB without any separate tracking column.
+- **Fallback is editor-specific, not generalized.** Other stages have different
+  failure modes and different costs; adding fallback to all stages without failure
+  data to design from would be speculative. The `EditorStageConfigSchema` extension
+  keeps the change local to the editor.
+
+---
+
 ## 2026-06-09 — Editor LLM call switched to streaming to bypass undici headers timeout
 
 **Decision:** The editor stage's `callLLM` call now uses `stream: true`. The

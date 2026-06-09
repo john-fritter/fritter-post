@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import { callLLM } from "../../llm/index.js";
+import { callLLM, type LLMCallOptions } from "../../llm/index.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -128,6 +128,47 @@ function failSafeTierForMissingItem(item: EditorPileItem): EditorTier {
     return "standard";
   }
   return "brief";
+}
+
+/**
+ * Single call attempt: invokes callLLM, parses the result, and checks whether
+ * the parse collapsed (< 50% of pile items produced valid output lines).
+ * Returns the EditorParseResult on success, null on any failure including
+ * thrown exceptions and collapse. A paper with fail-safed missing items but
+ * >= 50% parsed lines is a success — do not retry a merely-imperfect paper.
+ */
+async function attemptEditorCall(
+  runId: number,
+  callOptions: LLMCallOptions,
+  pileItems: EditorPileItem[],
+  label: string,
+): Promise<EditorParseResult | null> {
+  console.log(
+    `[editor] run #${runId}: ${label} — model=${callOptions.model} provider=${callOptions.provider ?? "ollama-cloud"}`,
+  );
+  try {
+    const llmResult = await callLLM(callOptions);
+    const parsed = parseEditorOutput(llmResult.text, pileItems);
+
+    const collapseThreshold = Math.floor(pileItems.length * 0.5);
+    if (pileItems.length > 0 && parsed.parsedLineCount < collapseThreshold) {
+      console.warn(
+        `[editor] run #${runId}: ${label} — COLLAPSE: ` +
+          `parsed ${parsed.parsedLineCount}/${pileItems.length} lines (< 50% threshold)`,
+      );
+      return null;
+    }
+
+    console.log(
+      `[editor] run #${runId}: ${label} — SUCCESS: ` +
+        `parsed ${parsed.parsedLineCount}/${pileItems.length}, missing=${parsed.missingCount}`,
+    );
+    return parsed;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[editor] run #${runId}: ${label} — FAILED: ${msg}`);
+    return null;
+  }
 }
 
 export interface EditorStoryResult extends EditorPileItem {
@@ -412,10 +453,13 @@ export async function runEditor(
   const runId = runRows[0]!.id;
 
   try {
-    // 7. The one whole-pile call. Ranking is relational, so this cannot be batched.
+    // 7. Whole-pile call with primary-retry + fallback resilience.
     //    stream: true keeps the HTTP connection alive past undici's ~300s headers
     //    timeout — non-streaming calls don't send headers until the model finishes.
-    const llmResult = await callLLM({
+    //    Retry + fallback logic: attempt primary → retry primary once → fallback once.
+    //    A parse collapse (< 50% lines) counts as failure; an imperfect-but-parsed
+    //    paper does not. The fallback model is only invoked on genuine failure.
+    const primaryCallOptions: LLMCallOptions = {
       stage: "editor",
       stageRunId: runId,
       model,
@@ -427,10 +471,53 @@ export async function runEditor(
       provider,
       timeoutMs,
       stream,
-    });
+    };
 
-    const parsed = parseEditorOutput(llmResult.text, pileItems);
+    const fallbackConfig = stageConfig.fallback;
+    let actualModelUsed = model;
+
+    let parsed = await attemptEditorCall(runId, primaryCallOptions, pileItems, "primary attempt 1/2");
+
+    if (parsed === null) {
+      console.warn(`[editor] run #${runId}: primary attempt 1/2 failed — retrying primary`);
+      parsed = await attemptEditorCall(runId, primaryCallOptions, pileItems, "primary attempt 2/2 (retry)");
+    }
+
+    if (parsed === null) {
+      if (!fallbackConfig) {
+        throw new Error(`primary model failed twice and no fallback is configured`);
+      }
+      const fallbackCallOptions: LLMCallOptions = {
+        ...primaryCallOptions,
+        model: fallbackConfig.model,
+        provider: fallbackConfig.provider,
+        reasoningEffort: fallbackConfig.reasoning_effort,
+      };
+      console.warn(
+        `[editor] run #${runId}: primary model failed twice — invoking fallback model "${fallbackConfig.model}"`,
+      );
+      parsed = await attemptEditorCall(runId, fallbackCallOptions, pileItems, "fallback attempt");
+      if (parsed !== null) {
+        actualModelUsed = fallbackConfig.model;
+      }
+    }
+
+    if (parsed === null) {
+      throw new Error(`all attempts failed (primary ×2 + fallback ×1) — no acceptable paper produced`);
+    }
+
+    // Record which model actually produced the accepted output.
+    if (actualModelUsed !== model) {
+      await pool.query(`UPDATE editor_runs SET model_used = $1 WHERE id = $2`, [actualModelUsed, runId]);
+      console.log(
+        `[editor] run #${runId}: fallback model "${actualModelUsed}" produced accepted output — model_used updated`,
+      );
+    } else {
+      console.log(`[editor] run #${runId}: primary model "${actualModelUsed}" produced accepted output`);
+    }
+
     const logParts = [
+      `model=${actualModelUsed}`,
       `parsed-lines=${parsed.parsedLineCount}/${pileItems.length}`,
       `missing=${parsed.missingCount}`,
       `unknown-refs=${parsed.unknownRefCount}`,

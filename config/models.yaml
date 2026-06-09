@@ -97,23 +97,21 @@ researcher:
   step_limit: 20
 
 editor:
-  model: qwen3.5:397b
+  model: moonshotai/kimi-k2.6:thinking
+  provider: nanogpt
   temperature: 0.2
   max_tokens: 48000
-  reasoning_effort: "none"
+  reasoning_effort: "medium"
   stream: true
   timeout_ms: 600000
-  # stream: true — the editor call can exceed undici's ~300s headers timeout
-  # when a reasoning model thinks for a long time before emitting the first
-  # token. Streaming sidesteps it: headers arrive within seconds, keeping the
-  # connection alive while the model reasons. See docs/decisions.md.
+  # stream: true — keeps the HTTP connection alive past undici's ~300s headers
+  # timeout when a reasoning model thinks before emitting the first token.
   # timeout_ms: 600000 — generous body/stream timeout for long reasoning calls.
-  # provider defaults to ollama-cloud (LLM_BASE_URL / LLM_API_KEY).
-  # To run via NanoGPT instead (bypasses Ollama Cloud's 182s gateway cap):
-  #   provider: nanogpt
-  #   model: deepseek/deepseek-v4-pro:thinking
-  #   reasoning_effort: "high"   # NanoGPT values: none/minimal/low/medium/high/xhigh
-  # Requires NANOGPT_BASE_URL=https://nano-gpt.com/api/v1 and NANOGPT_API_KEY in env.
+  # provider: nanogpt — uses NANOGPT_BASE_URL / NANOGPT_API_KEY.
+  fallback:
+    model: zai-org/glm-5.1:thinking
+    provider: nanogpt
+    reasoning_effort: "medium"
 
 writers:
   model: gemini-3-flash-preview  # placeholder
