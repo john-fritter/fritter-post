@@ -15,6 +15,7 @@ export interface LLMCallOptions {
   reasoningEffort?: string;
   provider?: LLMProvider;
   timeoutMs?: number;
+  stream?: boolean;
 }
 
 export interface LLMCallResult {
@@ -55,7 +56,7 @@ function getClient(provider: LLMProvider = "ollama-cloud", timeoutMs: number = D
 }
 
 export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
-  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort, provider, timeoutMs } = options;
+  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort, provider, timeoutMs, stream } = options;
   const pool = getPool();
   const startMs = Date.now();
 
@@ -67,11 +68,11 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   try {
     const client = getClient(provider ?? "ollama-cloud", timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-    const completionParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+    const baseParams = {
       model,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "system" as const, content: systemPrompt },
+        { role: "user" as const, content: userPrompt },
       ],
       ...(temperature !== undefined ? { temperature } : {}),
       ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
@@ -79,14 +80,57 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
     if (reasoningEffort !== undefined) {
       // reasoning_effort is not in OpenAI SDK types but is forwarded verbatim
       // to OpenAI-compatible endpoints. Double-cast narrowly — only this assignment.
-      (completionParams as unknown as Record<string, unknown>)["reasoning_effort"] = reasoningEffort;
+      (baseParams as unknown as Record<string, unknown>)["reasoning_effort"] = reasoningEffort;
     }
 
-    const completion = await client.chat.completions.create(completionParams);
+    if (stream) {
+      // Streaming path: headers arrive within seconds of the request, keeping
+      // the HTTP connection alive past undici's ~300s headers timeout. Chunks
+      // are accumulated into the same string the non-streaming path produces.
+      const streamParams: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
+        ...baseParams,
+        stream: true,
+        stream_options: { include_usage: true },
+      };
 
-    responseText = completion.choices[0]?.message?.content ?? null;
-    inputTokens = completion.usage?.prompt_tokens ?? null;
-    outputTokens = completion.usage?.completion_tokens ?? null;
+      const streamResult = await client.chat.completions.create(streamParams);
+
+      let accumulated = "";
+      let bytesReceived = 0;
+
+      try {
+        for await (const chunk of streamResult) {
+          const delta = chunk.choices[0]?.delta?.content ?? "";
+          if (delta) {
+            accumulated += delta;
+            bytesReceived += Buffer.byteLength(delta, "utf8");
+          }
+          if (chunk.usage) {
+            inputTokens = chunk.usage.prompt_tokens ?? null;
+            outputTokens = chunk.usage.completion_tokens ?? null;
+          }
+        }
+      } catch (streamErr) {
+        const elapsed = Date.now() - startMs;
+        const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+        throw new Error(
+          `Stream broke at ${elapsed}ms after ${bytesReceived} bytes — stage=${stage} model=${model}: ${msg}`,
+        );
+      }
+
+      responseText = accumulated.length > 0 ? accumulated : null;
+    } else {
+      const completionParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+        ...baseParams,
+        stream: false,
+      };
+
+      const completion = await client.chat.completions.create(completionParams);
+
+      responseText = completion.choices[0]?.message?.content ?? null;
+      inputTokens = completion.usage?.prompt_tokens ?? null;
+      outputTokens = completion.usage?.completion_tokens ?? null;
+    }
   } catch (err) {
     errorMsg = err instanceof Error ? err.message : String(err);
   }

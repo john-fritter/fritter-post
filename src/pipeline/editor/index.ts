@@ -390,6 +390,7 @@ export async function runEditor(
   const reasoningEffort = stageConfig.reasoning_effort;
   const provider = stageConfig.provider;
   const timeoutMs = stageConfig.timeout_ms;
+  const stream = stageConfig.stream;
 
   const standingMemo = loadTextFile(STANDING_MEMO_PATH, STANDING_MEMO_FALLBACK);
   const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
@@ -412,6 +413,8 @@ export async function runEditor(
 
   try {
     // 7. The one whole-pile call. Ranking is relational, so this cannot be batched.
+    //    stream: true keeps the HTTP connection alive past undici's ~300s headers
+    //    timeout — non-streaming calls don't send headers until the model finishes.
     const llmResult = await callLLM({
       stage: "editor",
       stageRunId: runId,
@@ -423,6 +426,7 @@ export async function runEditor(
       reasoningEffort,
       provider,
       timeoutMs,
+      stream,
     });
 
     const parsed = parseEditorOutput(llmResult.text, pileItems);
