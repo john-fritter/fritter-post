@@ -2,6 +2,8 @@ import "dotenv/config";
 import OpenAI from "openai";
 import { getPool } from "../db/index.js";
 
+export type LLMProvider = "ollama-cloud" | "nanogpt";
+
 export interface LLMCallOptions {
   stage: string;
   stageRunId?: number;
@@ -11,6 +13,8 @@ export interface LLMCallOptions {
   temperature?: number;
   maxTokens?: number;
   reasoningEffort?: string;
+  provider?: LLMProvider;
+  timeoutMs?: number;
 }
 
 export interface LLMCallResult {
@@ -21,29 +25,37 @@ export interface LLMCallResult {
   generationLogId: bigint;
 }
 
-// Worst observed successful run plus headroom. The OpenAI SDK defaults to a
-// 600s timeout with 2 silent retries — run #21 hung for 903s on a single
-// "Request timed out" because of that combination, re-firing an expensive
-// multi-minute reasoning call without anyone noticing. An explicit, shorter
-// timeout with no SDK-level retries turns a provider hang into a clean,
-// fast, diagnosable failure instead of a ~15-minute zombie. App-level
-// retry-with-fallback is a deliberate later change, not a side effect of
-// this fix — see docs/decisions.md "No retry logic in V1".
-const LLM_TIMEOUT_MS = 360_000;
+// Default timeout. The OpenAI SDK defaults to a 600s timeout with 2 silent
+// retries — run #21 hung for 903s on a single "Request timed out" because of
+// that combination, re-firing an expensive multi-minute reasoning call without
+// anyone noticing. An explicit timeout with no SDK-level retries turns a
+// provider hang into a clean, fast, diagnosable failure. The default 360s is
+// generous enough for long reasoning calls; stages can override via timeout_ms
+// in models.yaml. See docs/decisions.md "No retry logic in V1".
+const DEFAULT_TIMEOUT_MS = 360_000;
 const LLM_MAX_RETRIES = 0;
 
-function getClient(): OpenAI {
-  const baseURL = process.env["LLM_BASE_URL"];
-  const apiKey = process.env["LLM_API_KEY"];
+function getClient(provider: LLMProvider = "ollama-cloud", timeoutMs: number = DEFAULT_TIMEOUT_MS): OpenAI {
+  let baseURL: string | undefined;
+  let apiKey: string | undefined;
 
-  if (!baseURL) throw new Error("LLM_BASE_URL environment variable is required");
-  if (!apiKey) throw new Error("LLM_API_KEY environment variable is required");
+  if (provider === "nanogpt") {
+    baseURL = process.env["NANOGPT_BASE_URL"];
+    apiKey = process.env["NANOGPT_API_KEY"];
+    if (!baseURL) throw new Error("NANOGPT_BASE_URL environment variable is required for nanogpt provider");
+    if (!apiKey) throw new Error("NANOGPT_API_KEY environment variable is required for nanogpt provider");
+  } else {
+    baseURL = process.env["LLM_BASE_URL"];
+    apiKey = process.env["LLM_API_KEY"];
+    if (!baseURL) throw new Error("LLM_BASE_URL environment variable is required");
+    if (!apiKey) throw new Error("LLM_API_KEY environment variable is required");
+  }
 
-  return new OpenAI({ baseURL, apiKey, timeout: LLM_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
+  return new OpenAI({ baseURL, apiKey, timeout: timeoutMs, maxRetries: LLM_MAX_RETRIES });
 }
 
 export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
-  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort } = options;
+  const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort, provider, timeoutMs } = options;
   const pool = getPool();
   const startMs = Date.now();
 
@@ -53,7 +65,7 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   let errorMsg: string | null = null;
 
   try {
-    const client = getClient();
+    const client = getClient(provider ?? "ollama-cloud", timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     const completionParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
       model,

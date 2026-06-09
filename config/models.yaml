@@ -101,6 +101,13 @@ editor:
   temperature: 0.2
   max_tokens: 48000
   reasoning_effort: "none"
+  # provider defaults to ollama-cloud (LLM_BASE_URL / LLM_API_KEY).
+  # To run via NanoGPT instead (bypasses Ollama Cloud's 182s gateway cap):
+  #   provider: nanogpt
+  #   model: deepseek/deepseek-v4-pro:thinking
+  #   reasoning_effort: "high"   # NanoGPT values: none/minimal/low/medium/high/xhigh
+  #   timeout_ms: 360000         # generous — the point is letting reasoning finish
+  # Requires NANOGPT_BASE_URL=https://nano-gpt.com/api/v1 and NANOGPT_API_KEY in env.
 
 writers:
   model: gemini-3-flash-preview  # placeholder
