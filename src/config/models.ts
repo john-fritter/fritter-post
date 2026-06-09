@@ -46,12 +46,22 @@ const EditorPass1StageConfigSchema = FilterStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
 });
 
+const EditorFallbackConfigSchema = z.object({
+  model: z.string(),
+  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  reasoning_effort: z.string().optional(),
+});
+
+const EditorStageConfigSchema = StageConfigSchema.extend({
+  fallback: EditorFallbackConfigSchema.optional(),
+});
+
 const ModelsConfigSchema = z.object({
   filter: FilterStageConfigSchema,
   prefilter: FilterStageConfigSchema,
   triage: TriageStageConfigSchema,
   researcher: StageConfigSchema,
-  editor: StageConfigSchema,
+  editor: EditorStageConfigSchema,
   writers: StageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
 });
@@ -62,6 +72,8 @@ export type Spine = z.infer<typeof SpineSchema>;
 export type SemanticMergeConfig = z.infer<typeof SemanticMergeConfigSchema>;
 export type TriageStageConfig = z.infer<typeof TriageStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
+export type EditorFallbackConfig = z.infer<typeof EditorFallbackConfigSchema>;
+export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(
