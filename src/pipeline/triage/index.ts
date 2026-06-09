@@ -394,6 +394,9 @@ export async function runTriage(options: {
   const temperature = modelConfig.triage.temperature;
   const maxTokens = modelConfig.triage.max_tokens;
   const reasoningEffort = modelConfig.triage.reasoning_effort;
+  const provider = modelConfig.triage.provider;
+  const timeoutMs = modelConfig.triage.timeout_ms;
+  const stream = modelConfig.triage.stream;
 
   // 3. Create triage_runs row.
   const { rows: runRows } = await pool.query<{ id: number }>(
@@ -443,6 +446,9 @@ export async function runTriage(options: {
       temperature,
       maxTokens,
       reasoningEffort,
+      provider,
+      timeoutMs,
+      stream,
     });
     const seedParse = parseFlatClusterOutput(seedResult.text, inputIds);
     const seedClusters = seedParse?.clusters ?? [];
@@ -480,6 +486,9 @@ export async function runTriage(options: {
             temperature,
             maxTokens,
             reasoningEffort,
+            provider,
+            timeoutMs,
+            stream,
           });
           const parse = parseFlatClusterOutput(result.text, inputIds);
           return { name: bucket.name, itemCount: bucket.items.length, result, parse };
@@ -583,15 +592,19 @@ export async function runTriage(options: {
         .slice(0, semanticConfig.max_singletons);
       const candidateIds = new Set(singletonCandidates.map((item) => Number(item.id)));
 
+      const semanticModel = options.modelOverride ?? semanticConfig.model;
       const semanticResult = await callLLM({
         stage: "triage",
         stageRunId: runId,
-        model: semanticConfig.model,
+        model: semanticModel,
         systemPrompt: buildSemanticMergeSystemPrompt(),
         userPrompt: buildSemanticMergeUserPrompt(idUnionDigestText, formatTriageItemBlocks(singletonCandidates)),
         temperature,
         maxTokens: semanticConfig.max_tokens,
         reasoningEffort: semanticConfig.reasoning_effort,
+        provider,
+        timeoutMs,
+        stream,
       });
       semanticCallResult = semanticResult;
       roundDigests.push({ name: "semantic_merge", text: semanticResult.text });

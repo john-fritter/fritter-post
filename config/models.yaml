@@ -23,9 +23,12 @@ prefilter:
 
 triage:
   model: qwen3.5:397b
+  provider: nanogpt
   temperature: 0.1
   max_tokens: 65536
   reasoning_effort: "none"
+  stream: true
+  timeout_ms: 600000
   clustering:
     # Wire-seed + parallel-spines + deterministic-merge clusterer (replaces
     # the single-chain ordered-rounds design — see docs/decisions.md 2026-06-07
