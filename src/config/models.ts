@@ -11,6 +11,7 @@ const StageConfigSchema = z.object({
   reasoning_effort: z.string().optional(),
   provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
   timeout_ms: z.number().int().optional(),
+  stream: z.boolean().optional(),
 });
 
 const FilterStageConfigSchema = StageConfigSchema.extend({

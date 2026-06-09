@@ -20,6 +20,41 @@ Entry format:
 
 ---
 
+## 2026-06-09 — Editor LLM call switched to streaming to bypass undici headers timeout
+
+**Decision:** The editor stage's `callLLM` call now uses `stream: true`. The
+OpenAI SDK's streaming path accumulates all `delta.content` chunks into one
+string and passes that to the existing `parseEditorOutput` parser, which is
+completely unchanged. `stream` is a per-stage boolean in `models.yaml`
+(`StageConfigSchema`); other stages continue to use non-streaming. The editor
+config is also set to `timeout_ms: 600000` as a generous body/stream timeout.
+
+**Context:** Non-streaming reasoning calls against NanoGPT (and any other
+provider) were dying at exactly ~300 seconds — regardless of model, regardless
+of the provider's own timeout — with `UND_ERR_HEADERS_TIMEOUT`. The root cause
+was diagnosed by sending a raw fetch to a deliberately-slow LOCAL server inside
+the app container: the connection died at 300.893s with the same
+`UND_ERR_HEADERS_TIMEOUT`. This is Node's undici HTTP client enforcing its
+default `headersTimeout` of ~300s. A non-streaming LLM call does not send HTTP
+response headers until the model finishes generating — so any model that thinks
+for more than ~300s before producing output is killed by our own HTTP client,
+not by the provider. A streaming version of the identical deepseek call received
+headers at 2.8s and completed successfully at 248s.
+
+**Rationale:** Streaming sidesteps the headers-timeout problem at its root: the
+provider sends HTTP response headers (and the first SSE chunk) within seconds of
+receiving the request, keeping the connection alive while the model reasons. The
+assembled string from accumulated chunks is byte-identical in structure to what
+the non-streaming path produces (same lines, same format), so the parser and all
+downstream logic are unaffected. Error handling mid-stream is explicit: if the
+stream breaks partway, the call fails cleanly with a logged message that includes
+stage, model, bytes received, and elapsed time — a broken stream is treated as a
+failure, not a partial parse. `stream: true` is a flag in `LLMCallOptions` and
+`StageConfigSchema` rather than hardcoded to the editor, so other stages can opt
+in when they face the same constraint.
+
+---
+
 ## 2026-06-08 — NanoGPT added as alternate LLM provider
 
 **Decision:** Added `nanogpt` as a second selectable provider alongside the
