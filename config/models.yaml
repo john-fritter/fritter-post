@@ -68,13 +68,17 @@ triage:
     spines:
       - name: domestic
         groups: [national, accountability, legal, labor]
-      - name: international
-        groups: [intl_broad, intl_regional]
+      - name: intl_broad
+        groups: [intl_broad]
+      - name: intl_asia
+        groups: [intl_asia]
+      - name: intl_americas
+        groups: [intl_americas]
       - name: local
         groups: [local, climate, science]
       - name: tech
         groups: [tech, ai]
-    max_concurrent_spines: 3
+    max_concurrent_spines: 10
     # Final clustering step: one LLM call over a SMALL input (the merged
     # cluster list + a bounded slice of high-relevance singletons) that
     # merges same-story clusters the deterministic id-union merge missed
