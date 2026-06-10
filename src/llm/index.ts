@@ -36,7 +36,7 @@ export interface LLMCallResult {
 const DEFAULT_TIMEOUT_MS = 360_000;
 const LLM_MAX_RETRIES = 0;
 
-function getClient(provider: LLMProvider = "ollama-cloud", timeoutMs: number = DEFAULT_TIMEOUT_MS): OpenAI {
+function getClient(provider: LLMProvider = "nanogpt", timeoutMs: number = DEFAULT_TIMEOUT_MS): OpenAI {
   let baseURL: string | undefined;
   let apiKey: string | undefined;
 
@@ -66,7 +66,7 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   let errorMsg: string | null = null;
 
   try {
-    const client = getClient(provider ?? "ollama-cloud", timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const client = getClient(provider ?? "nanogpt", timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     const baseParams = {
       model,
