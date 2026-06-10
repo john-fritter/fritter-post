@@ -7,7 +7,7 @@ filter:
   temperature: 0.1
   max_tokens: 4096
   batch_size: 100
-  concurrency: 3
+  concurrency: 10
   reasoning_effort: "none"
   stream: true
   timeout_ms: 600000
@@ -22,7 +22,7 @@ prefilter:
   temperature: 0.1
   max_tokens: 4096
   batch_size: 40
-  concurrency: 3
+  concurrency: 10
   reasoning_effort: "none"
   stream: true
   timeout_ms: 600000
@@ -139,7 +139,7 @@ editor_pass_1:
   temperature: 0.1
   max_tokens: 4096
   batch_size: 40
-  concurrency: 3
+  concurrency: 10
   reasoning_effort: "none"
   singleton_pile_target: 100
   stream: true
