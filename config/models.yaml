@@ -28,7 +28,7 @@ prefilter:
   timeout_ms: 600000
 
 triage:
-  model: qwen3.5:397b
+  model: alibaba/qwen3.6-27b:thinking
   provider: nanogpt
   temperature: 0.1
   max_tokens: 65536
@@ -93,7 +93,7 @@ triage:
     # cross-language items. See docs/decisions.md.
     semantic_merge:
       enabled: true
-      model: qwen3.5:397b
+      model: alibaba/qwen3.6-27b:thinking
       max_tokens: 16000
       reasoning_effort: "none"
       max_singletons: 60
@@ -134,7 +134,7 @@ writers:
   max_tokens: 2000
 
 editor_pass_1:
-  model: zai-org/glm-5.1
+  model: zai-org/glm-5.1:thinking
   provider: nanogpt
   temperature: 0.1
   max_tokens: 4096

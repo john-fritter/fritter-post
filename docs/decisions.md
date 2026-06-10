@@ -20,6 +20,44 @@ Entry format:
 
 ---
 
+## 2026-06-10 — Model bake-off picks: triage clusterer and editor_pass_1 scorer
+
+**Decision:** Two model selections from bake-offs run on identical pipeline input:
+
+- **Triage clusterer:** `alibaba/qwen3.6-27b:thinking` (`provider: nanogpt`, replacing
+  `qwen3.5:397b`). Used for both the seed/spine calls and the semantic_merge pass
+  (pinned together in the `--model` override path; they must match).
+
+- **editor_pass_1 scorer:** `zai-org/glm-5.1:thinking` (`provider: nanogpt`, replacing
+  plain `zai-org/glm-5.1`).
+
+**Context:**
+
+*Clusterer bake-off:* qwen3.6-27b:thinking was stable across runs, consolidated the
+regression item pairs reliably, and handled the region-split international spines
+cleanly. (The spine split itself is logged in the entry immediately below; this entry
+records only the model selection.)
+
+*Scorer bake-off:* Three candidates — `moonshotai/kimi-k2.6:thinking` (the editor's
+whole-pile winner), plain `zai-org/glm-5.1`, and `zai-org/glm-5.1:thinking`. kimi is
+a poor scorer for pass-1 despite being the best editor: pass-1 is high-volume per-item
+batch work, and kimi silently defaults un-engaged items to a flat score of 50 in that
+regime — confirmed in the bake-off on bio-relevant items that should have scored 80+.
+Plain glm-5.1 showed a milder version of the same flat-score behavior. glm-5.1:thinking
+engages per-item and avoids it.
+
+**Rationale:** The flat-50 failure mode is specifically a batch-scoring regime problem:
+a model that reasons well over a single whole pile (the editor's task) can still
+disengage when asked to score hundreds of individual items in parallel batches (pass-1's
+task). The `:thinking` variant of glm-5.1 applies per-item reasoning that prevents the
+disengagement without the latency hit of a model sized for whole-pile relational work.
+
+**Operational note:** A high count of exactly-50 scores in an editor_pass_1 run is a
+smell — model not engaging items, possibly batch_size too large — not a neutral middle.
+Worth checking when it appears; the fix is smaller batches, never a second pass.
+
+---
+
 ## 2026-06-10 — Triage: split international spine into three region spines
 
 **Decision:** Replace the single `international` triage spine (groups `[intl_broad,
