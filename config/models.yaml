@@ -2,24 +2,30 @@
 # All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
 
 filter:
-  model: deepseek-v4-flash
+  model: deepseek/deepseek-v4-flash  # NanoGPT model id (confirmed nano-gpt.com/models)
+  provider: nanogpt
   temperature: 0.1
   max_tokens: 4096
   batch_size: 100
   concurrency: 3
   reasoning_effort: "none"
+  stream: true
+  timeout_ms: 600000
 
 # Bio-aware relevance floor between the preprocessor and the clusterer — a
 # separate, later judgment from `filter` (garbage vs. reader-relevance; see
 # docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
 # since this stage is built to become a scorer itself with only a prompt swap.
 prefilter:
-  model: glm-5.1
+  model: zai-org/glm-5.1
+  provider: nanogpt
   temperature: 0.1
   max_tokens: 4096
   batch_size: 40
   concurrency: 3
   reasoning_effort: "none"
+  stream: true
+  timeout_ms: 600000
 
 triage:
   model: qwen3.5:397b
@@ -97,6 +103,7 @@ triage:
       # merge) result is used instead. See docs/decisions.md.
       max_cluster_share: 0.30
 
+# Unbuilt placeholder — stage not yet implemented; model id is not real.
 researcher:
   model: gemini-3-flash-preview  # placeholder
   temperature: 0.4
@@ -120,16 +127,20 @@ editor:
     provider: nanogpt
     reasoning_effort: "medium"
 
+# Unbuilt placeholder — stage not yet implemented; model id is not real.
 writers:
   model: gemini-3-flash-preview  # placeholder
   temperature: 0.6
   max_tokens: 2000
 
 editor_pass_1:
-  model: glm-5.1
+  model: zai-org/glm-5.1
+  provider: nanogpt
   temperature: 0.1
   max_tokens: 4096
   batch_size: 40
   concurrency: 3
   reasoning_effort: "none"
   singleton_pile_target: 100
+  stream: true
+  timeout_ms: 600000
