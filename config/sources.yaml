@@ -20,7 +20,7 @@
 #           story-by-story judgment — that's why it's set on the source, not
 #           derived per item.
 #   group — wire | national | accountability | local | intl_broad |
-#           intl_regional | tech | ai | climate | labor | legal | science
+#           intl_asia | intl_americas | tech | ai | climate | labor | legal | science
 #           A THIRD axis, separate from both type and track. It exists for
 #           exactly one purpose: telling the triage clusterer which round an
 #           item enters (config/models.yaml triage.clustering.rounds groups
@@ -521,27 +521,27 @@
 - name: Rappler
   url: https://www.rappler.com/feed/
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Maria Ressa's outlet, Nobel Peace Prize 2021 for accountability journalism
     under Duterte. Editorial DNA aligned with this paper. Top Philippine source.
 
 - name: Inquirer.net
   url: https://www.inquirer.net/fullfeed
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Philippine Daily Inquirer. Mainstream complement to Rappler. [VERIFY]
 
 - name: Sinocism
   url: https://sinocism.com/feed
   type: newsletter
-  group: intl_regional
+  group: intl_asia
   notes: Bill Bishop. Best English-language synthesis of what's happening in China.
     Daily/near-daily. May be paywalled abstracts only — verify yield. [VERIFY]
 
 - name: South China Morning Post
   url: https://www.scmp.com/rss/91/feed
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Hong Kong, English. Owned by Alibaba — coverage of stories directly
     touching CCP interests is constrained. Best English daily coverage of China
     and Asia generally on stories outside that constraint.
@@ -556,7 +556,7 @@
 - name: Xinhua English
   url: http://www.xinhuanet.com/english/rss/chinarss.xml
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Chinese state news agency. Represents the Chinese government's official
     positions and framing on domestic and international issues. Read as primary
     source for what Beijing is officially saying, not as independent reporting.
@@ -566,7 +566,7 @@
 - name: The Diplomat
   url: https://thediplomat.com/feed/
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Asia-Pacific geopolitics, English, independent. Complement to SCMP.
 
 # DROPPED — three runs with persistent malformed XML.
@@ -578,13 +578,13 @@
 - name: "+972 Magazine"
   url: https://www.972mag.com/feed/
   type: journalism
-  group: intl_regional
+  group: intl_broad
   notes: Israeli-founded, Israeli-Palestinian critical journalism.
 
 - name: Mail & Guardian
   url: https://mg.co.za/feed/
   type: journalism
-  group: intl_regional
+  group: intl_broad
   notes: South African independent. Helps close the Africa gap.
 
 # DROPPED — repeated 404; publication/feed may be defunct.
@@ -597,7 +597,7 @@
 - name: Americas Quarterly
   url: https://www.americasquarterly.org/feed/
   type: journalism
-  group: intl_regional
+  group: intl_americas
   notes: Latin America policy and politics, English.
 
 # ─────────────────────────────────────────────
@@ -929,7 +929,7 @@
 - name: Initium Media / 端傳媒
   url: https://theinitium.com/feed/
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Independent Chinese-language journalism founded in Hong Kong, now in
     diaspora. Accountability-focused, no CCP constraint. Closest editorial DNA
     to this paper in the Chinese-language space. High priority. [VERIFY]
@@ -952,7 +952,7 @@
 - name: NHK Web News
   url: https://www3.nhk.or.jp/rss/news/cat0.xml
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Japanese public broadcaster. General news category feed.
 
 # French
@@ -975,7 +975,7 @@
 - name: Animal Político
   url: https://news.google.com/rss/search?q=when:24h+allinurl:animalpolitico.com&ceid=MX:es&hl=es-419&gl=MX
   type: journalism
-  group: intl_regional
+  group: intl_americas
   notes: Mexican nonprofit investigative journalism. Excellent on Mexican
     politics, corruption, cartel violence and its political dimensions.
     Genuinely strong accountability operation. Direct feed at /feed/ returns 404;
@@ -984,7 +984,7 @@
 - name: La Nación (Argentina)
   url: https://www.lanacion.com.ar/arc/outboundfeeds/rss/
   type: journalism
-  group: intl_regional
+  group: intl_americas
   notes: Major Argentine daily. Latin American breadth. [VERIFY]
 
 # DROPPED — candidate RSS URLs returned 404; dropping until a working feed is found.
@@ -999,7 +999,7 @@
 - name: Agência Pública
   url: https://apublica.org/feed/
   type: journalism
-  group: intl_regional
+  group: intl_americas
   notes: Brazilian nonprofit investigative journalism — essentially the
     Brazilian ProPublica. Strong on corruption, environmental destruction,
     human rights. High priority. [VERIFY]
@@ -1007,7 +1007,7 @@
 - name: Folha de São Paulo
   url: https://feeds.folha.uol.com.br/emcimadahora/rss091.xml
   type: journalism
-  group: intl_regional
+  group: intl_americas
   notes: Largest Brazilian paper. General news breadth. [VERIFY]
 
 # Korean
@@ -1015,7 +1015,7 @@
 - name: Hankyoreh / 한겨레
   url: https://www.hani.co.kr/rss/
   type: journalism
-  group: intl_regional
+  group: intl_asia
   notes: Independent progressive Korean daily. The Korean paper most aligned
     with this paper's editorial perspective. [VERIFY]
 
@@ -1034,7 +1034,7 @@
 - name: Meduza
   url: https://meduza.io/rss/all
   type: journalism
-  group: intl_regional
+  group: intl_broad
   notes: Independent Russian journalism in exile, based in Latvia. Not war
     coverage specifically — covers Russia broadly. One of the stronger
     investigative operations that survived the post-2022 crackdown. [VERIFY]

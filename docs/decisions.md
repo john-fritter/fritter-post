@@ -20,6 +20,61 @@ Entry format:
 
 ---
 
+## 2026-06-10 — Triage: split international spine into three region spines
+
+**Decision:** Replace the single `international` triage spine (groups `[intl_broad,
+intl_regional]`, ~528 items) with three narrower region spines: `intl_broad`
+(`[intl_broad]`), `intl_asia` (`[intl_asia]`), and `intl_americas`
+(`[intl_americas]`). Sources previously carrying `group: intl_regional` are
+retagged to the appropriate region group in `config/sources.yaml`; the spine
+map in `config/models.yaml` is updated to match; `max_concurrent_spines` raised
+from 3 to 10. `intl_regional` is retired and removed from the group schema
+comment.
+
+**Context:** The international spine was producing two symptoms from one cause:
+
+- **Transcribing instead of clustering.** ~480 of ~528 items fell as singletons
+  — the model was re-emitting items individually rather than grouping them.
+  Output ballooned to ~16k tokens; healthy clustering calls are far smaller than
+  their input.
+- **Timeout risk.** 400–600s per spine run, the same wall that prompted the
+  ordered-rounds → seed + parallel spines redesign (see 2026-06-07 entry).
+
+Both symptoms have one cause: the bucket was past the output-token runaway
+threshold. A model clustering N items produces O(clusters) output tokens if it
+is actually clustering. Past some bucket-size ceiling it flips to transcribing
+— producing O(N) output tokens, one trivial single-item "cluster" per item. The
+~528-item international bucket had crossed that threshold; the spike in
+singletons and the spike in output tokens appeared together, confirming the
+diagnosis.
+
+**Rationale:**
+
+- **Spine size is bounded by output-token behavior, not input item count.**
+  The transcription flip is the operative signal: output proportional to input
+  means the model isn't clustering. Input item count matters only insofar as it
+  drives the model past the flip point. Splitting the bucket into three
+  thematically narrower region spines brings each one back into the clustering
+  regime. Result on preprocessor run #12: singletons 1 / 40 / 0 across the three
+  spines, output tokens in the hundreds-to-low-thousands per spine, slowest spine
+  ~110–130s.
+
+- **Regional coherence is a secondary benefit.** Keeping all international items
+  in one bucket asks the model to hold Middle East, Africa, Europe, Asia, and
+  Latin America simultaneously — a pile where intra-region same-event pairs are
+  diluted by unrelated cross-region noise. Narrower buckets give the model a
+  smaller, more coherent slice to reason over, making the genuine same-event
+  pairs easier to find.
+
+- **max_concurrent_spines raised to 10.** Six spines vs. four; a cap of 3 would
+  serialise the run. Raising to 10 effectively uncaps concurrency at the current
+  spine count and keeps the parallel structure intact.
+
+**Supersedes:** The `international` spine entry in "Triage clusterer: ordered
+group-rounds → wire seed + parallel spines + id-union merge" (2026-06-07).
+
+---
+
 ## 2026-06-09 — Editor model: kimi-k2.6:thinking primary, glm-5.1:thinking fallback, retry-once-then-fallback resilience
 
 **Decision:** The editor stage's production model is `moonshotai/kimi-k2.6:thinking`
