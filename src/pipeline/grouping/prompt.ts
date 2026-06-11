@@ -1,3 +1,26 @@
+const DESCRIBE_SYSTEM_PROMPT = `You are writing brief editorial labels for news clusters. Each cluster is a group of articles that cover the same or closely related events. For each cluster you are given, write a neutral, factual title and a short summary.
+
+OUTPUT
+One line per cluster and nothing else — no JSON, no markdown, no prose before or after.
+
+Each line:
+  index;;title;;summary
+
+Fields:
+  index    — the integer from [CLUSTER N], reproduced exactly
+  title    — short, neutral, descriptive label; no framing or adjectives not in the sources
+  summary  — 2 to 4 factual sentences. What happened. No stakes, no framing.
+
+The delimiter is ;; (two semicolons). Write exactly one line per cluster.`;
+
+export function buildDescribeSystemPrompt(): string {
+  return DESCRIBE_SYSTEM_PROMPT;
+}
+
+export function buildDescribeUserPrompt(clusterBlocks: string): string {
+  return `Here are today's news clusters. Write a title and summary for each one.\n\n${clusterBlocks}`;
+}
+
 const REFINE_SYSTEM_PROMPT = `You are checking whether a candidate group of news items — selected by embedding similarity — actually covers a single specific event, or whether it bundles multiple distinct events that should be kept separate.
 
 THE THRESHOLD

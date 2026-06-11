@@ -2,12 +2,18 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import type { GroupingDescribeConfig } from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
 import { getTriageItems, formatTriageItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
 import { parseFlatClusterOutput } from "../triage/index.js";
 import type { TriageCluster } from "../triage/index.js";
-import { buildRefineSystemPrompt, buildRefineUserPrompt } from "./prompt.js";
+import {
+  buildRefineSystemPrompt,
+  buildRefineUserPrompt,
+  buildDescribeSystemPrompt,
+  buildDescribeUserPrompt,
+} from "./prompt.js";
 
 export interface GroupingRun {
   id: number;
@@ -41,9 +47,7 @@ function formatFlatClusterLines(clusters: TriageCluster[]): string {
   return clusters.map((c) => `${c.title};;${c.summary};;${c.item_ids.join(",")}`).join("\n");
 }
 
-// Build a cluster entry for a group that bypasses LLM refinement.
-// Uses the first item's title as label and all titles joined as summary,
-// which gives the editor enough orientation without an LLM call.
+// Fallback label for a group that has no LLM description yet.
 function buildAutoCluster(groupItems: PreprocessedItemRow[]): TriageCluster {
   const label = groupItems[0]!.title.slice(0, 80);
   const summary = groupItems.map((i) => i.title).join(" | ");
@@ -54,6 +58,166 @@ function buildAutoCluster(groupItems: PreprocessedItemRow[]): TriageCluster {
     notes: null,
   };
 }
+
+// --- DESCRIBE PASS ---
+
+interface DescribeParseResult {
+  localIndex: number;
+  title: string;
+  summary: string;
+}
+
+function parseDescribeOutput(text: string, batchSize: number): Map<number, DescribeParseResult> {
+  const results = new Map<number, DescribeParseResult>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    const last = line.lastIndexOf(";;");
+    if (last === first) continue;
+    const idxStr = line.slice(0, first).trim();
+    if (!/^\d+$/.test(idxStr)) continue;
+    const localIndex = parseInt(idxStr, 10);
+    if (localIndex < 0 || localIndex >= batchSize) continue;
+    const title = line.slice(first + 2, last).trim();
+    const summary = line.slice(last + 2).trim();
+    if (!title || !summary) continue;
+    if (!results.has(localIndex)) results.set(localIndex, { localIndex, title, summary });
+  }
+  return results;
+}
+
+interface DescribePassResult {
+  clusters: TriageCluster[];
+  inputTokens: number | null;
+  outputTokens: number | null;
+  firstGenerationLogId: bigint | null;
+}
+
+async function describeGroups(
+  clusters: TriageCluster[],
+  itemById: Map<number, PreprocessedItemRow>,
+  config: GroupingDescribeConfig,
+  runId: number,
+): Promise<DescribePassResult> {
+  if (clusters.length === 0) {
+    return { clusters: [], inputTokens: 0, outputTokens: 0, firstGenerationLogId: null };
+  }
+
+  const limit = pLimit(config.concurrency);
+
+  const batches: TriageCluster[][] = [];
+  for (let i = 0; i < clusters.length; i += config.batch_size) {
+    batches.push(clusters.slice(i, i + config.batch_size));
+  }
+
+  type BatchResult = {
+    descriptions: Map<number, { title: string; summary: string }>;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    generationLogId: bigint | null;
+  };
+
+  const batchResults = await Promise.all(
+    batches.map((batch, batchIdx) =>
+      limit(async (): Promise<BatchResult> => {
+        // For each cluster in the batch, show its member items under [CLUSTER N].
+        const clusterBlocks = batch
+          .map((cluster, localIdx) => {
+            const items = cluster.item_ids
+              .map((id) => itemById.get(id))
+              .filter((i): i is PreprocessedItemRow => i !== undefined);
+            return `[CLUSTER ${localIdx}]\n${formatTriageItemBlocks(items)}`;
+          })
+          .join("\n");
+
+        try {
+          const result = await callLLM({
+            stage: "grouping",
+            stageRunId: runId,
+            model: config.model,
+            systemPrompt: buildDescribeSystemPrompt(),
+            userPrompt: buildDescribeUserPrompt(clusterBlocks),
+            temperature: config.temperature,
+            maxTokens: config.max_tokens,
+            reasoningEffort: config.reasoning_effort,
+            provider: config.provider,
+            timeoutMs: config.timeout_ms,
+            stream: config.stream,
+          });
+
+          const parsed = parseDescribeOutput(result.text, batch.length);
+          const descriptions = new Map<number, { title: string; summary: string }>();
+          for (const [localIdx, r] of parsed) {
+            descriptions.set(localIdx, { title: r.title, summary: r.summary });
+          }
+
+          const missing = batch.length - parsed.size;
+          if (missing > 0) {
+            console.warn(
+              `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
+                `${missing} cluster(s) missing from output — keeping fallback label`,
+            );
+          } else {
+            console.log(
+              `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
+                `parsed ${parsed.size}/${batch.length}`,
+            );
+          }
+
+          return {
+            descriptions,
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+            generationLogId: result.generationLogId,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
+              `LLM failed — keeping fallback labels for all ${batch.length}: ${msg}`,
+          );
+          return { descriptions: new Map(), inputTokens: null, outputTokens: null, generationLogId: null };
+        }
+      }),
+    ),
+  );
+
+  const described: TriageCluster[] = [];
+  let totalInputTokens: number | null = 0;
+  let totalOutputTokens: number | null = 0;
+  let firstGenerationLogId: bigint | null = null;
+
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx]!;
+    const result = batchResults[batchIdx]!;
+
+    for (let localIdx = 0; localIdx < batch.length; localIdx++) {
+      const cluster = batch[localIdx]!;
+      const desc = result.descriptions.get(localIdx);
+      described.push(desc ? { ...cluster, title: desc.title, summary: desc.summary } : cluster);
+    }
+
+    if (result.inputTokens !== null) {
+      totalInputTokens = totalInputTokens !== null ? totalInputTokens + result.inputTokens : null;
+    } else if (result.generationLogId !== null) {
+      totalInputTokens = null;
+    }
+    if (result.outputTokens !== null) {
+      totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + result.outputTokens : null;
+    } else if (result.generationLogId !== null) {
+      totalOutputTokens = null;
+    }
+    if (result.generationLogId !== null && firstGenerationLogId === null) {
+      firstGenerationLogId = result.generationLogId;
+    }
+  }
+
+  return { clusters: described, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, firstGenerationLogId };
+}
+
+// --- MAIN EXPORT ---
 
 export async function runGrouping(
   options: { preprocessorRunId?: number; modelOverride?: string } = {},
@@ -79,7 +243,6 @@ export async function runGrouping(
   const bodyCap = groupingConfig.embedding.body_cap;
   const threshold = groupingConfig.embedding.similarity_threshold;
   const topK = groupingConfig.embedding.top_k;
-  const minGroupSize = groupingConfig.refine.min_group_size;
 
   // 2. Create grouping_runs row.
   const { rows: runRows } = await pool.query<{ id: number }>(
@@ -89,24 +252,23 @@ export async function runGrouping(
   );
   const runId = runRows[0]!.id;
   console.log(`[grouping] run #${runId}: preprocessor_run_id=${preprocessorRunId}, model=${model}`);
-  console.log(`[grouping] config: similarity_threshold=${threshold}, top_k=${topK}, min_group_size=${minGroupSize}`);
+  console.log(
+    `[grouping] config: similarity_threshold=${threshold}, top_k=${topK}, ` +
+      `refine=${groupingConfig.refine.enabled}`,
+  );
 
   try {
     const stageStartedAt = Date.now();
 
     // --- STEP 1: EMBED ---
-    // Fetch the same item set as triage (post-filter, post-prefilter, news track only).
     const items = await getTriageItems(preprocessorRunId);
     console.log(`[grouping] step 1 embed: ${items.length} items to embed`);
 
-    // Build embed text: title + capped body. The body_cap keeps each input
-    // bounded so a single very long article doesn't dominate the vector.
     const embedTexts = items.map((item) => {
       const body = item.body_text?.replace(/\s+/g, " ").trim() ?? "";
       return body.length > 0 ? `${item.title}\n${body.slice(0, bodyCap)}` : item.title;
     });
 
-    // Embed in batches, upsert results into item_embeddings.
     const batchSize = embConfig.batch_size;
     let embeddedCount = 0;
     for (let offset = 0; offset < items.length; offset += batchSize) {
@@ -121,8 +283,6 @@ export async function runGrouping(
         timeoutMs: embConfig.timeout_ms,
       });
 
-      // Upsert one row per item. ON CONFLICT updates the vector so re-runs
-      // with a different model or config don't leave stale embeddings.
       for (let i = 0; i < batch.length; i++) {
         const itemId = Number(batch[i]!.id);
         const vec = vectors[i]!;
@@ -142,11 +302,6 @@ export async function runGrouping(
     }
 
     // --- STEP 2: CANDIDATE GROUPS ---
-    // Fetch stored embeddings for all items in this run in one query,
-    // then compute cosine similarities in memory. For the pipeline's expected
-    // N (100–1000 items), the O(N²) comparison is fast (~200ms at N=1000).
-    // The top_k limit per item controls graph density — same intent as
-    // pgvector's nearest-neighbor LIMIT, just done in JS to avoid N round-trips.
     const itemIds = items.map((i) => Number(i.id));
 
     const { rows: embRows } = await pool.query<{
@@ -165,7 +320,6 @@ export async function runGrouping(
       );
     }
 
-    // Build normalized vector map for cosine similarity via dot product.
     const normalizedVectors = new Map<number, number[]>();
     for (const row of embRows) {
       const id = Number(row.preprocessed_item_id);
@@ -178,8 +332,6 @@ export async function runGrouping(
     const edges = new Map<number, Set<number>>();
     for (const id of embeddedIds) edges.set(id, new Set());
 
-    // For each item i, find its top-K neighbors above the threshold (among items j > i
-    // to avoid double-counting), then add undirected edges in both directions.
     for (let i = 0; i < embeddedIds.length; i++) {
       const idA = embeddedIds[i]!;
       const vA = normalizedVectors.get(idA)!;
@@ -189,7 +341,6 @@ export async function runGrouping(
         const sim = dotProduct(vA, normalizedVectors.get(idB)!);
         if (sim >= threshold) aboveThreshold.push([idB, sim]);
       }
-      // Take only the top-K neighbors to limit graph density.
       aboveThreshold.sort((a, b) => b[1] - a[1]);
       for (const [idB] of aboveThreshold.slice(0, topK)) {
         edges.get(idA)!.add(idB);
@@ -197,7 +348,6 @@ export async function runGrouping(
       }
     }
 
-    // Union-find connected components — same shape as mergeSpineClusters.
     const parent = new Map<number, number>();
     for (const id of embeddedIds) parent.set(id, id);
 
@@ -228,16 +378,13 @@ export async function runGrouping(
       else components.set(root, [id]);
     }
 
-    // Build item lookup for auto-cluster label generation.
     const itemById = new Map<number, PreprocessedItemRow>();
     for (const item of items) itemById.set(Number(item.id), item);
 
-    // Separate multi-item candidate groups from singletons.
     const candidateGroups: PreprocessedItemRow[][] = [];
     let singletonCount = 0;
     for (const members of components.values()) {
       if (members.length >= 2) {
-        // Sort by original item order so output is deterministic.
         const sorted = members
           .map((id) => itemById.get(id)!)
           .sort((a, b) => Number(a.id) - Number(b.id));
@@ -246,7 +393,6 @@ export async function runGrouping(
         singletonCount++;
       }
     }
-    // Items with no embeddings are implicitly singletons.
     singletonCount += itemIds.length - embRows.length;
 
     const sizeDistribution = new Map<number, number>();
@@ -263,109 +409,149 @@ export async function runGrouping(
         (distStr.length > 0 ? `, size_distribution=[${distStr}]` : ""),
     );
 
-    // --- STEP 3: BOUNDARY REFINE ---
-    // Large candidate groups go to LLM for a "same event or split?" judgment.
-    // Small groups and singletons pass through unchanged.
-    const inputIds = new Set<number>(itemIds);
-    const refineLimit = pLimit(groupingConfig.refine.concurrency);
+    // --- STEP 3 (optional): BOUNDARY REFINE ---
+    // When disabled, connected-component groups ARE the final groups.
+    // Code is kept intact behind the flag for future re-enabling.
+    let finalClusters: TriageCluster[];
+    let totalInputTokens: number | null = 0;
+    let totalOutputTokens: number | null = 0;
+    let firstGenerationLogId: bigint | null = null;
 
-    type RefineResult = {
-      clusters: TriageCluster[];
-      inputTokens: number | null;
-      outputTokens: number | null;
-      generationLogId: bigint | null;
-    };
+    if (!groupingConfig.refine.enabled) {
+      console.log(
+        `[grouping] step 3 refine: disabled — ${candidateGroups.length} candidate groups pass through as-is`,
+      );
+      finalClusters = candidateGroups.map(buildAutoCluster);
+    } else {
+      const minGroupSize = groupingConfig.refine.min_group_size;
+      const inputIds = new Set<number>(itemIds);
+      const refineLimit = pLimit(groupingConfig.refine.concurrency);
 
-    const refineResults = await Promise.all(
-      candidateGroups.map((groupItems) =>
-        refineLimit(async (): Promise<RefineResult> => {
-          if (groupItems.length < minGroupSize) {
-            return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
-          }
+      type RefineResult = {
+        clusters: TriageCluster[];
+        inputTokens: number | null;
+        outputTokens: number | null;
+        generationLogId: bigint | null;
+      };
 
-          const itemBlocks = formatTriageItemBlocks(groupItems);
-          try {
-            const result = await callLLM({
-              stage: "grouping",
-              stageRunId: runId,
-              model,
-              systemPrompt: buildRefineSystemPrompt(),
-              userPrompt: buildRefineUserPrompt(itemBlocks),
-              temperature: groupingConfig.temperature,
-              maxTokens: groupingConfig.max_tokens,
-              reasoningEffort: groupingConfig.reasoning_effort,
-              provider: groupingConfig.provider,
-              timeoutMs: groupingConfig.timeout_ms,
-              stream: groupingConfig.stream,
-            });
+      const refineResults = await Promise.all(
+        candidateGroups.map((groupItems) =>
+          refineLimit(async (): Promise<RefineResult> => {
+            if (groupItems.length < minGroupSize) {
+              return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
+            }
 
-            const parsed = parseFlatClusterOutput(result.text, inputIds);
-            if (parsed === null || parsed.clusters.length === 0) {
-              console.warn(
-                `[grouping] refine parse failed for group of ${groupItems.length} items — keeping intact`,
-              );
+            const itemBlocks = formatTriageItemBlocks(groupItems);
+            try {
+              const result = await callLLM({
+                stage: "grouping",
+                stageRunId: runId,
+                model,
+                systemPrompt: buildRefineSystemPrompt(),
+                userPrompt: buildRefineUserPrompt(itemBlocks),
+                temperature: groupingConfig.temperature,
+                maxTokens: groupingConfig.max_tokens,
+                reasoningEffort: groupingConfig.reasoning_effort,
+                provider: groupingConfig.provider,
+                timeoutMs: groupingConfig.timeout_ms,
+                stream: groupingConfig.stream,
+              });
+
+              const parsed = parseFlatClusterOutput(result.text, inputIds);
+              if (parsed === null || parsed.clusters.length === 0) {
+                console.warn(
+                  `[grouping] refine parse failed for group of ${groupItems.length} items — keeping intact`,
+                );
+                return {
+                  clusters: [buildAutoCluster(groupItems)],
+                  inputTokens: result.inputTokens,
+                  outputTokens: result.outputTokens,
+                  generationLogId: result.generationLogId,
+                };
+              }
+
               return {
-                clusters: [buildAutoCluster(groupItems)],
+                clusters: parsed.clusters,
                 inputTokens: result.inputTokens,
                 outputTokens: result.outputTokens,
                 generationLogId: result.generationLogId,
               };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[grouping] refine call failed for group of ${groupItems.length} items — keeping intact: ${msg}`,
+              );
+              return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
             }
+          }),
+        ),
+      );
 
-            return {
-              clusters: parsed.clusters,
-              inputTokens: result.inputTokens,
-              outputTokens: result.outputTokens,
-              generationLogId: result.generationLogId,
-            };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[grouping] refine call failed for group of ${groupItems.length} items — keeping intact: ${msg}`,
-            );
-            return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
-          }
-        }),
-      ),
+      finalClusters = [];
+      let refinedGroupCount = 0;
+      let passedThroughCount = 0;
+
+      for (let i = 0; i < candidateGroups.length; i++) {
+        const r = refineResults[i]!;
+        finalClusters.push(...r.clusters);
+
+        if (candidateGroups[i]!.length >= minGroupSize) {
+          refinedGroupCount++;
+        } else {
+          passedThroughCount++;
+        }
+
+        if (r.inputTokens !== null) {
+          totalInputTokens = totalInputTokens !== null ? totalInputTokens + r.inputTokens : null;
+        } else if (r.generationLogId !== null) {
+          totalInputTokens = null;
+        }
+        if (r.outputTokens !== null) {
+          totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + r.outputTokens : null;
+        } else if (r.generationLogId !== null) {
+          totalOutputTokens = null;
+        }
+        if (r.generationLogId !== null && firstGenerationLogId === null) {
+          firstGenerationLogId = r.generationLogId;
+        }
+      }
+
+      console.log(
+        `[grouping] step 3 refine: refined=${refinedGroupCount}, passed_through=${passedThroughCount}, ` +
+          `final_clusters=${finalClusters.length}`,
+      );
+    }
+
+    // --- STEP 4: DESCRIBE ---
+    // Batch LLM pass that writes a neutral title + short summary for every
+    // multi-item cluster. Singletons skip this pass — they keep their own
+    // title and body text as-is.
+    const describeResult = await describeGroups(
+      finalClusters,
+      itemById,
+      groupingConfig.describe,
+      runId,
     );
+    finalClusters = describeResult.clusters;
 
-    // Collect final clusters and aggregate token counts.
-    const finalClusters: TriageCluster[] = [];
-    let totalInputTokens: number | null = 0;
-    let totalOutputTokens: number | null = 0;
-    let firstGenerationLogId: bigint | null = null;
-    let refinedGroupCount = 0;
-    let passedThroughCount = 0;
-
-    for (let i = 0; i < candidateGroups.length; i++) {
-      const r = refineResults[i]!;
-      finalClusters.push(...r.clusters);
-
-      if (candidateGroups[i]!.length >= minGroupSize) {
-        refinedGroupCount++;
-      } else {
-        passedThroughCount++;
-      }
-
-      if (r.inputTokens !== null) {
-        totalInputTokens = totalInputTokens !== null ? totalInputTokens + r.inputTokens : null;
-      } else if (r.generationLogId !== null) {
-        // LLM call happened but tokens were null — mark total unknown.
-        totalInputTokens = null;
-      }
-      if (r.outputTokens !== null) {
-        totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + r.outputTokens : null;
-      } else if (r.generationLogId !== null) {
-        totalOutputTokens = null;
-      }
-      if (r.generationLogId !== null && firstGenerationLogId === null) {
-        firstGenerationLogId = r.generationLogId;
-      }
+    // Accumulate describe-pass tokens.
+    if (describeResult.inputTokens !== null) {
+      totalInputTokens = totalInputTokens !== null ? totalInputTokens + describeResult.inputTokens : null;
+    } else if (describeResult.firstGenerationLogId !== null) {
+      totalInputTokens = null;
+    }
+    if (describeResult.outputTokens !== null) {
+      totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + describeResult.outputTokens : null;
+    } else if (describeResult.firstGenerationLogId !== null) {
+      totalOutputTokens = null;
+    }
+    if (describeResult.firstGenerationLogId !== null && firstGenerationLogId === null) {
+      firstGenerationLogId = describeResult.firstGenerationLogId;
     }
 
     console.log(
-      `[grouping] step 3 refine: refined=${refinedGroupCount}, passed_through=${passedThroughCount}, ` +
-        `final_clusters=${finalClusters.length}`,
+      `[grouping] step 4 describe: ${finalClusters.length} clusters described, ` +
+        `${singletonCount} singletons pass through unchanged`,
     );
 
     const digestText = formatFlatClusterLines(finalClusters);
