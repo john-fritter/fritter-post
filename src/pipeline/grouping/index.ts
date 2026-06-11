@@ -2,7 +2,7 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import type { GroupingDescribeConfig } from "../../config/models.js";
+import type { GroupingDescribeConfig, GroupingAttachConfig } from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
 import { getTriageItems, formatTriageItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
@@ -13,6 +13,8 @@ import {
   buildRefineUserPrompt,
   buildDescribeSystemPrompt,
   buildDescribeUserPrompt,
+  buildAttachSystemPrompt,
+  buildAttachUserPrompt,
 } from "./prompt.js";
 
 export interface GroupingRun {
@@ -56,6 +58,244 @@ function buildAutoCluster(groupItems: PreprocessedItemRow[]): TriageCluster {
     item_ids: groupItems.map((i) => Number(i.id)),
     summary,
     notes: null,
+  };
+}
+
+// --- ATTACH PASS ---
+
+function formatAttachCandidateBlocks(
+  candidates: Array<{ id: number }>,
+  itemById: Map<number, PreprocessedItemRow>,
+): string {
+  return candidates
+    .map(({ id }, idx) => {
+      const item = itemById.get(id);
+      if (!item) return `(${idx + 1}) [item ${id} not found]`;
+      const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
+      return body.length > 0
+        ? `(${idx + 1}) ${item.title}\n    ${body}`
+        : `(${idx + 1}) ${item.title}`;
+    })
+    .join("\n");
+}
+
+function parseAttachOutput(text: string, candidateCount: number): Set<number> {
+  const trimmed = text.trim();
+  if (!trimmed || /^none$/i.test(trimmed)) return new Set();
+  const result = new Set<number>();
+  for (const part of trimmed.split(/[\s,]+/)) {
+    const n = parseInt(part.trim(), 10);
+    if (!isNaN(n) && n >= 1 && n <= candidateCount) result.add(n);
+  }
+  return result;
+}
+
+interface AttachPassResult {
+  clusters: TriageCluster[];
+  remainingSingletonIds: Set<number>;
+  clustersWithCandidates: number;
+  candidatesOffered: number;
+  attached: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  firstGenerationLogId: bigint | null;
+}
+
+async function attachSingletons(
+  clusters: TriageCluster[],
+  singletonIds: Set<number>,
+  normalizedVectors: Map<number, number[]>,
+  itemById: Map<number, PreprocessedItemRow>,
+  config: GroupingAttachConfig,
+  threshold: number,
+  runId: number,
+): Promise<AttachPassResult> {
+  if (clusters.length === 0 || singletonIds.size === 0) {
+    return {
+      clusters,
+      remainingSingletonIds: new Set(singletonIds),
+      clustersWithCandidates: 0,
+      candidatesOffered: 0,
+      attached: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      firstGenerationLogId: null,
+    };
+  }
+
+  // For each cluster, find singletons whose max cosine sim to any cluster member
+  // falls in [attach_floor, threshold) — the near-miss band.
+  const clusterCandidates: Array<Array<{ id: number; maxSim: number }>> = clusters.map(
+    (cluster) => {
+      const candidates: Array<{ id: number; maxSim: number }> = [];
+      for (const sId of singletonIds) {
+        const sVec = normalizedVectors.get(sId);
+        if (!sVec) continue;
+        let maxSim = 0;
+        for (const cId of cluster.item_ids) {
+          const cVec = normalizedVectors.get(cId);
+          if (!cVec) continue;
+          const sim = dotProduct(sVec, cVec);
+          if (sim > maxSim) maxSim = sim;
+        }
+        if (maxSim >= config.attach_floor && maxSim < threshold) {
+          candidates.push({ id: sId, maxSim });
+        }
+      }
+      candidates.sort((a, b) => b.maxSim - a.maxSim);
+      return candidates;
+    },
+  );
+
+  const clustersWithCandidates = clusterCandidates.filter((c) => c.length > 0).length;
+  const totalCandidatesOffered = clusterCandidates.reduce((acc, c) => acc + c.length, 0);
+
+  if (clustersWithCandidates === 0) {
+    return {
+      clusters,
+      remainingSingletonIds: new Set(singletonIds),
+      clustersWithCandidates: 0,
+      candidatesOffered: 0,
+      attached: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      firstGenerationLogId: null,
+    };
+  }
+
+  const limit = pLimit(config.concurrency);
+
+  type AttachLLMResult = {
+    clusterIdx: number;
+    attachedIds: Set<number>;
+    candidateMaxSims: Map<number, number>;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    generationLogId: bigint | null;
+  };
+
+  const llmResults = await Promise.all(
+    clusters.map((cluster, clusterIdx) =>
+      limit(async (): Promise<AttachLLMResult> => {
+        const candidates = clusterCandidates[clusterIdx]!;
+        const candidateMaxSims = new Map(candidates.map((c) => [c.id, c.maxSim]));
+
+        if (candidates.length === 0) {
+          return {
+            clusterIdx,
+            attachedIds: new Set(),
+            candidateMaxSims,
+            inputTokens: null,
+            outputTokens: null,
+            generationLogId: null,
+          };
+        }
+
+        const clusterItems = cluster.item_ids
+          .map((id) => itemById.get(id))
+          .filter((i): i is PreprocessedItemRow => i !== undefined);
+        const clusterBlocks = formatTriageItemBlocks(clusterItems);
+        const candidateBlocks = formatAttachCandidateBlocks(candidates, itemById);
+
+        try {
+          const result = await callLLM({
+            stage: "grouping",
+            stageRunId: runId,
+            model: config.model,
+            systemPrompt: buildAttachSystemPrompt(),
+            userPrompt: buildAttachUserPrompt(clusterBlocks, candidateBlocks),
+            temperature: config.temperature,
+            maxTokens: config.max_tokens,
+            reasoningEffort: config.reasoning_effort,
+            provider: config.provider,
+            timeoutMs: config.timeout_ms,
+            stream: config.stream,
+          });
+
+          const confirmedIndices = parseAttachOutput(result.text, candidates.length);
+          const attachedIds = new Set(
+            [...confirmedIndices].map((i) => candidates[i - 1]!.id),
+          );
+
+          return {
+            clusterIdx,
+            attachedIds,
+            candidateMaxSims,
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+            generationLogId: result.generationLogId,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[grouping] attach: cluster ${clusterIdx} LLM call failed — no attachments: ${msg}`,
+          );
+          return {
+            clusterIdx,
+            attachedIds: new Set(),
+            candidateMaxSims,
+            inputTokens: null,
+            outputTokens: null,
+            generationLogId: null,
+          };
+        }
+      }),
+    ),
+  );
+
+  // Dedup: if a singleton was claimed by multiple clusters, assign to the one
+  // with the highest max cosine similarity.
+  const singletonWinner = new Map<number, { clusterIdx: number; maxSim: number }>();
+  for (const r of llmResults) {
+    for (const sId of r.attachedIds) {
+      const maxSim = r.candidateMaxSims.get(sId) ?? 0;
+      const current = singletonWinner.get(sId);
+      if (current === undefined || maxSim > current.maxSim) {
+        singletonWinner.set(sId, { clusterIdx: r.clusterIdx, maxSim });
+      }
+    }
+  }
+
+  const updatedClusters = clusters.map((cluster, clusterIdx) => {
+    const toAttach = [...singletonWinner.entries()]
+      .filter(([, v]) => v.clusterIdx === clusterIdx)
+      .map(([sId]) => sId);
+    if (toAttach.length === 0) return cluster;
+    return { ...cluster, item_ids: [...cluster.item_ids, ...toAttach] };
+  });
+
+  const remainingSingletonIds = new Set(singletonIds);
+  for (const sId of singletonWinner.keys()) remainingSingletonIds.delete(sId);
+
+  let attachInputTokens: number | null = 0;
+  let attachOutputTokens: number | null = 0;
+  let attachFirstLogId: bigint | null = null;
+  for (const r of llmResults) {
+    if (r.inputTokens !== null) {
+      attachInputTokens = attachInputTokens !== null ? attachInputTokens + r.inputTokens : null;
+    } else if (r.generationLogId !== null) {
+      attachInputTokens = null;
+    }
+    if (r.outputTokens !== null) {
+      attachOutputTokens =
+        attachOutputTokens !== null ? attachOutputTokens + r.outputTokens : null;
+    } else if (r.generationLogId !== null) {
+      attachOutputTokens = null;
+    }
+    if (r.generationLogId !== null && attachFirstLogId === null) {
+      attachFirstLogId = r.generationLogId;
+    }
+  }
+
+  return {
+    clusters: updatedClusters,
+    remainingSingletonIds,
+    clustersWithCandidates,
+    candidatesOffered: totalCandidatesOffered,
+    attached: singletonWinner.size,
+    inputTokens: attachInputTokens,
+    outputTokens: attachOutputTokens,
+    firstGenerationLogId: attachFirstLogId,
   };
 }
 
@@ -122,7 +362,6 @@ async function describeGroups(
   const batchResults = await Promise.all(
     batches.map((batch, batchIdx) =>
       limit(async (): Promise<BatchResult> => {
-        // For each cluster in the batch, show its member items under [CLUSTER N].
         const clusterBlocks = batch
           .map((cluster, localIdx) => {
             const items = cluster.item_ids
@@ -178,7 +417,12 @@ async function describeGroups(
             `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
               `LLM failed — keeping fallback labels for all ${batch.length}: ${msg}`,
           );
-          return { descriptions: new Map(), inputTokens: null, outputTokens: null, generationLogId: null };
+          return {
+            descriptions: new Map(),
+            inputTokens: null,
+            outputTokens: null,
+            generationLogId: null,
+          };
         }
       }),
     ),
@@ -205,7 +449,8 @@ async function describeGroups(
       totalInputTokens = null;
     }
     if (result.outputTokens !== null) {
-      totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + result.outputTokens : null;
+      totalOutputTokens =
+        totalOutputTokens !== null ? totalOutputTokens + result.outputTokens : null;
     } else if (result.generationLogId !== null) {
       totalOutputTokens = null;
     }
@@ -214,7 +459,12 @@ async function describeGroups(
     }
   }
 
-  return { clusters: described, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, firstGenerationLogId };
+  return {
+    clusters: described,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    firstGenerationLogId,
+  };
 }
 
 // --- MAIN EXPORT ---
@@ -254,7 +504,7 @@ export async function runGrouping(
   console.log(`[grouping] run #${runId}: preprocessor_run_id=${preprocessorRunId}, model=${model}`);
   console.log(
     `[grouping] config: similarity_threshold=${threshold}, top_k=${topK}, ` +
-      `refine=${groupingConfig.refine.enabled}`,
+      `attach=${groupingConfig.attach.enabled}, refine=${groupingConfig.refine.enabled}`,
   );
 
   try {
@@ -382,18 +632,21 @@ export async function runGrouping(
     for (const item of items) itemById.set(Number(item.id), item);
 
     const candidateGroups: PreprocessedItemRow[][] = [];
-    let singletonCount = 0;
+    const clusteredIds = new Set<number>();
     for (const members of components.values()) {
       if (members.length >= 2) {
         const sorted = members
           .map((id) => itemById.get(id)!)
           .sort((a, b) => Number(a.id) - Number(b.id));
         candidateGroups.push(sorted);
-      } else {
-        singletonCount++;
+        for (const item of sorted) clusteredIds.add(Number(item.id));
       }
     }
-    singletonCount += itemIds.length - embRows.length;
+
+    const singletonIds = new Set<number>();
+    for (const id of itemIds) {
+      if (!clusteredIds.has(id)) singletonIds.add(id);
+    }
 
     const sizeDistribution = new Map<number, number>();
     for (const g of candidateGroups) {
@@ -405,23 +658,81 @@ export async function runGrouping(
       .join(", ");
     console.log(
       `[grouping] step 2 candidate groups: items=${embeddedIds.length}, ` +
-        `groups=${candidateGroups.length}, singletons=${singletonCount}` +
+        `groups=${candidateGroups.length}, singletons=${singletonIds.size}` +
         (distStr.length > 0 ? `, size_distribution=[${distStr}]` : ""),
     );
 
-    // --- STEP 3 (optional): BOUNDARY REFINE ---
-    // When disabled, connected-component groups ARE the final groups.
-    // Code is kept intact behind the flag for future re-enabling.
-    let finalClusters: TriageCluster[];
     let totalInputTokens: number | null = 0;
     let totalOutputTokens: number | null = 0;
     let firstGenerationLogId: bigint | null = null;
 
+    function accumulateTokens(
+      inputTokens: number | null,
+      outputTokens: number | null,
+      generationLogId: bigint | null,
+    ): void {
+      if (inputTokens !== null) {
+        totalInputTokens = totalInputTokens !== null ? totalInputTokens + inputTokens : null;
+      } else if (generationLogId !== null) {
+        totalInputTokens = null;
+      }
+      if (outputTokens !== null) {
+        totalOutputTokens =
+          totalOutputTokens !== null ? totalOutputTokens + outputTokens : null;
+      } else if (generationLogId !== null) {
+        totalOutputTokens = null;
+      }
+      if (generationLogId !== null && firstGenerationLogId === null) {
+        firstGenerationLogId = generationLogId;
+      }
+    }
+
+    // --- STEP 3: ATTACH ---
+    // For each multi-item cluster, offer near-miss singletons ([attach_floor, threshold))
+    // to a cheap LLM call. Confirmed singletons are absorbed; others remain isolated.
+    let preClusters: TriageCluster[];
+    let remainingSingletonIds: Set<number>;
+
+    if (!groupingConfig.attach.enabled) {
+      console.log(
+        `[grouping] step 3 attach: disabled — ${singletonIds.size} singletons unchanged`,
+      );
+      preClusters = candidateGroups.map(buildAutoCluster);
+      remainingSingletonIds = new Set(singletonIds);
+    } else {
+      const initialClusters = candidateGroups.map(buildAutoCluster);
+      const attachResult = await attachSingletons(
+        initialClusters,
+        singletonIds,
+        normalizedVectors,
+        itemById,
+        groupingConfig.attach,
+        threshold,
+        runId,
+      );
+      preClusters = attachResult.clusters;
+      remainingSingletonIds = attachResult.remainingSingletonIds;
+      accumulateTokens(
+        attachResult.inputTokens,
+        attachResult.outputTokens,
+        attachResult.firstGenerationLogId,
+      );
+      console.log(
+        `[grouping] step 3 attach: clusters_with_candidates=${attachResult.clustersWithCandidates}, ` +
+          `candidates_offered=${attachResult.candidatesOffered}, attached=${attachResult.attached}, ` +
+          `singletons=${singletonIds.size}→${remainingSingletonIds.size}`,
+      );
+    }
+
+    // --- STEP 4 (optional): BOUNDARY REFINE ---
+    // When disabled, clusters from step 3 pass through as-is.
+    let finalClusters: TriageCluster[];
+
     if (!groupingConfig.refine.enabled) {
       console.log(
-        `[grouping] step 3 refine: disabled — ${candidateGroups.length} candidate groups pass through as-is`,
+        `[grouping] step 4 refine: disabled — ${preClusters.length} clusters pass through as-is`,
       );
-      finalClusters = candidateGroups.map(buildAutoCluster);
+      finalClusters = preClusters;
     } else {
       const minGroupSize = groupingConfig.refine.min_group_size;
       const inputIds = new Set<number>(itemIds);
@@ -435,13 +746,22 @@ export async function runGrouping(
       };
 
       const refineResults = await Promise.all(
-        candidateGroups.map((groupItems) =>
+        preClusters.map((cluster) =>
           refineLimit(async (): Promise<RefineResult> => {
-            if (groupItems.length < minGroupSize) {
-              return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
+            if (cluster.item_ids.length < minGroupSize) {
+              return {
+                clusters: [cluster],
+                inputTokens: null,
+                outputTokens: null,
+                generationLogId: null,
+              };
             }
 
+            const groupItems = cluster.item_ids
+              .map((id) => itemById.get(id))
+              .filter((i): i is PreprocessedItemRow => i !== undefined);
             const itemBlocks = formatTriageItemBlocks(groupItems);
+
             try {
               const result = await callLLM({
                 stage: "grouping",
@@ -460,10 +780,10 @@ export async function runGrouping(
               const parsed = parseFlatClusterOutput(result.text, inputIds);
               if (parsed === null || parsed.clusters.length === 0) {
                 console.warn(
-                  `[grouping] refine parse failed for group of ${groupItems.length} items — keeping intact`,
+                  `[grouping] refine parse failed for cluster of ${cluster.item_ids.length} items — keeping intact`,
                 );
                 return {
-                  clusters: [buildAutoCluster(groupItems)],
+                  clusters: [cluster],
                   inputTokens: result.inputTokens,
                   outputTokens: result.outputTokens,
                   generationLogId: result.generationLogId,
@@ -479,9 +799,14 @@ export async function runGrouping(
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               console.warn(
-                `[grouping] refine call failed for group of ${groupItems.length} items — keeping intact: ${msg}`,
+                `[grouping] refine call failed for cluster of ${cluster.item_ids.length} items — keeping intact: ${msg}`,
               );
-              return { clusters: [buildAutoCluster(groupItems)], inputTokens: null, outputTokens: null, generationLogId: null };
+              return {
+                clusters: [cluster],
+                inputTokens: null,
+                outputTokens: null,
+                generationLogId: null,
+              };
             }
           }),
         ),
@@ -491,41 +816,28 @@ export async function runGrouping(
       let refinedGroupCount = 0;
       let passedThroughCount = 0;
 
-      for (let i = 0; i < candidateGroups.length; i++) {
+      for (let i = 0; i < preClusters.length; i++) {
         const r = refineResults[i]!;
         finalClusters.push(...r.clusters);
 
-        if (candidateGroups[i]!.length >= minGroupSize) {
+        if (preClusters[i]!.item_ids.length >= minGroupSize) {
           refinedGroupCount++;
         } else {
           passedThroughCount++;
         }
 
-        if (r.inputTokens !== null) {
-          totalInputTokens = totalInputTokens !== null ? totalInputTokens + r.inputTokens : null;
-        } else if (r.generationLogId !== null) {
-          totalInputTokens = null;
-        }
-        if (r.outputTokens !== null) {
-          totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + r.outputTokens : null;
-        } else if (r.generationLogId !== null) {
-          totalOutputTokens = null;
-        }
-        if (r.generationLogId !== null && firstGenerationLogId === null) {
-          firstGenerationLogId = r.generationLogId;
-        }
+        accumulateTokens(r.inputTokens, r.outputTokens, r.generationLogId);
       }
 
       console.log(
-        `[grouping] step 3 refine: refined=${refinedGroupCount}, passed_through=${passedThroughCount}, ` +
+        `[grouping] step 4 refine: refined=${refinedGroupCount}, passed_through=${passedThroughCount}, ` +
           `final_clusters=${finalClusters.length}`,
       );
     }
 
-    // --- STEP 4: DESCRIBE ---
+    // --- STEP 5: DESCRIBE ---
     // Batch LLM pass that writes a neutral title + short summary for every
-    // multi-item cluster. Singletons skip this pass — they keep their own
-    // title and body text as-is.
+    // multi-item cluster. Singletons skip this pass.
     const describeResult = await describeGroups(
       finalClusters,
       itemById,
@@ -534,24 +846,15 @@ export async function runGrouping(
     );
     finalClusters = describeResult.clusters;
 
-    // Accumulate describe-pass tokens.
-    if (describeResult.inputTokens !== null) {
-      totalInputTokens = totalInputTokens !== null ? totalInputTokens + describeResult.inputTokens : null;
-    } else if (describeResult.firstGenerationLogId !== null) {
-      totalInputTokens = null;
-    }
-    if (describeResult.outputTokens !== null) {
-      totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + describeResult.outputTokens : null;
-    } else if (describeResult.firstGenerationLogId !== null) {
-      totalOutputTokens = null;
-    }
-    if (describeResult.firstGenerationLogId !== null && firstGenerationLogId === null) {
-      firstGenerationLogId = describeResult.firstGenerationLogId;
-    }
+    accumulateTokens(
+      describeResult.inputTokens,
+      describeResult.outputTokens,
+      describeResult.firstGenerationLogId,
+    );
 
     console.log(
-      `[grouping] step 4 describe: ${finalClusters.length} clusters described, ` +
-        `${singletonCount} singletons pass through unchanged`,
+      `[grouping] step 5 describe: ${finalClusters.length} clusters described, ` +
+        `${remainingSingletonIds.size} singletons pass through unchanged`,
     );
 
     const digestText = formatFlatClusterLines(finalClusters);
@@ -571,7 +874,7 @@ export async function runGrouping(
 
     console.log(
       `[grouping] run #${runId} complete: ${finalClusters.length} clusters, ` +
-        `${singletonCount} singletons, duration=${totalDurationMs}ms`,
+        `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms`,
     );
 
     return await fetchGroupingRun(pool, runId);

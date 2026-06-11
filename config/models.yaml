@@ -193,9 +193,27 @@ grouping:
     min_group_size: 3
     # Max concurrent LLM boundary-refine calls.
     concurrency: 5
+  # Attach pass: for each multi-item cluster, find singletons whose max cosine
+  # similarity to any cluster member falls in [attach_floor, similarity_threshold)
+  # — the near-miss band — and make one LLM call per cluster to confirm which
+  # (if any) belong to the same specific event. Runs after connected-components,
+  # before describe. Attach-only; never splits clusters.
+  attach:
+    enabled: true
+    # Lower bound of the near-miss band. Singletons below this floor are too
+    # dissimilar to be worth offering to the LLM.
+    attach_floor: 0.60
+    model: zai-org/glm-5.1
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 1024
+    concurrency: 5
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 120000
   # Describe pass: cheap batched LLM call that writes a neutral title and
-  # short summary for every multi-item cluster. Runs after refine (or directly
-  # after candidate groups when refine is disabled). Singletons skip this pass.
+  # short summary for every multi-item cluster. Runs after attach (and refine
+  # when enabled). Singletons skip this pass.
   describe:
     model: zai-org/glm-5.1
     provider: nanogpt

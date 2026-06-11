@@ -78,6 +78,19 @@ const GroupingRefineConfigSchema = z.object({
   concurrency: z.number().int(),
 });
 
+const GroupingAttachConfigSchema = z.object({
+  enabled: z.boolean(),
+  attach_floor: z.number().min(0).max(1),
+  model: z.string(),
+  provider: ProviderSchema.optional(),
+  temperature: z.number(),
+  max_tokens: z.number().int(),
+  concurrency: z.number().int(),
+  reasoning_effort: z.string().optional(),
+  stream: z.boolean().optional(),
+  timeout_ms: z.number().int().optional(),
+});
+
 const GroupingDescribeConfigSchema = z.object({
   model: z.string(),
   provider: ProviderSchema.optional(),
@@ -93,6 +106,7 @@ const GroupingDescribeConfigSchema = z.object({
 const GroupingStageConfigSchema = StageConfigSchema.extend({
   embedding: GroupingEmbeddingConfigSchema,
   refine: GroupingRefineConfigSchema,
+  attach: GroupingAttachConfigSchema,
   describe: GroupingDescribeConfigSchema,
   pile_target: z.number().int(),
 });
@@ -120,6 +134,7 @@ export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
 export type GroupingRefineConfig = z.infer<typeof GroupingRefineConfigSchema>;
+export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
 export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
 export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;

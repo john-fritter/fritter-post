@@ -52,3 +52,26 @@ export function buildRefineSystemPrompt(): string {
 export function buildRefineUserPrompt(itemBlocks: string): string {
   return `Here is a candidate group of news items selected by embedding similarity. Determine whether these items cover the same specific event or multiple distinct events, then output the appropriate cluster line(s).\n\n${itemBlocks}`;
 }
+
+const ATTACH_SYSTEM_PROMPT = `You are deciding whether individual news items should be attached to an existing news cluster.
+
+The cluster items all report on THE SAME SPECIFIC EVENT. The candidates are similar in embedding space but fell below the automatic clustering threshold — they are near-misses, not confirmed matches.
+
+RULE: attach a candidate only when it reports on the SAME SPECIFIC EVENT as the cluster items — not merely the same topic, conflict, region, ongoing situation, or recurring set of actors. When in doubt, do not attach.
+
+OUTPUT
+If no candidates should be attached: output "none" and nothing else.
+If one or more should be attached: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
+
+No explanation. No JSON. No prose.`;
+
+export function buildAttachSystemPrompt(): string {
+  return ATTACH_SYSTEM_PROMPT;
+}
+
+export function buildAttachUserPrompt(clusterBlocks: string, candidateBlocks: string): string {
+  return (
+    `CLUSTER ITEMS:\n${clusterBlocks}\n\nCANDIDATE ITEMS (near-misses):\n${candidateBlocks}\n\n` +
+    `Which candidate numbers (if any) report on the same specific event as the cluster items?`
+  );
+}
