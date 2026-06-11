@@ -56,6 +56,14 @@ const EditorStageConfigSchema = StageConfigSchema.extend({
   fallback: EditorFallbackConfigSchema.optional(),
 });
 
+const EmbeddingsConfigSchema = z.object({
+  model: z.string(),
+  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  dims: z.number().int(),
+  batch_size: z.number().int(),
+  timeout_ms: z.number().int().optional(),
+});
+
 const ModelsConfigSchema = z.object({
   filter: FilterStageConfigSchema,
   prefilter: FilterStageConfigSchema,
@@ -64,6 +72,7 @@ const ModelsConfigSchema = z.object({
   editor: EditorStageConfigSchema,
   writers: StageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
+  embeddings: EmbeddingsConfigSchema,
 });
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;
@@ -74,6 +83,7 @@ export type TriageStageConfig = z.infer<typeof TriageStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
 export type EditorFallbackConfig = z.infer<typeof EditorFallbackConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
+export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(

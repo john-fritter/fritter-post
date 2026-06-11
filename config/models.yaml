@@ -144,3 +144,13 @@ editor_pass_1:
   singleton_pile_target: 100
   stream: true
   timeout_ms: 600000
+
+# Embedding model for the upcoming embedding-based grouping stage.
+# BAAI/bge-m3 at 1024 dims; matches the vector(1024) column in item_embeddings.
+# batch_size controls how many texts are sent per /v1/embeddings call.
+embeddings:
+  model: BAAI/bge-m3
+  provider: nanogpt
+  dims: 1024
+  batch_size: 100
+  timeout_ms: 120000

@@ -55,6 +55,66 @@ function getClient(provider: LLMProvider = "nanogpt", timeoutMs: number = DEFAUL
   return new OpenAI({ baseURL, apiKey, timeout: timeoutMs, maxRetries: LLM_MAX_RETRIES });
 }
 
+export interface EmbedOptions {
+  stage: string;
+  stageRunId?: number;
+  model: string;
+  provider?: LLMProvider;
+  timeoutMs?: number;
+}
+
+export async function embed(texts: string[], opts: EmbedOptions): Promise<number[][]> {
+  const { stage, stageRunId, model, provider, timeoutMs } = opts;
+  const pool = getPool();
+  const startMs = Date.now();
+
+  let inputTokens: number | null = null;
+  let errorMsg: string | null = null;
+  let vectors: number[][] = [];
+
+  try {
+    const client = getClient(provider ?? "nanogpt", timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const response = await client.embeddings.create({ model, input: texts });
+    vectors = response.data.map((d) => d.embedding);
+    inputTokens = response.usage?.prompt_tokens ?? null;
+  } catch (err) {
+    errorMsg = err instanceof Error ? err.message : String(err);
+  }
+
+  const durationMs = Date.now() - startMs;
+
+  if (errorMsg !== null) {
+    console.error(
+      `[llm] ${stage} embed failed: model=${model} inputs=${texts.length} elapsed=${durationMs}ms error=${errorMsg}`
+    );
+  }
+
+  await pool.query(
+    `INSERT INTO generation_logs
+       (stage, stage_run_id, model, system_prompt, user_prompt,
+        response_text, input_tokens, output_tokens, duration_ms, error)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      stage,
+      stageRunId ?? null,
+      model,
+      "",
+      `[embedding: ${texts.length} texts]`,
+      null,
+      inputTokens,
+      null,
+      durationMs,
+      errorMsg,
+    ]
+  );
+
+  if (errorMsg !== null) {
+    throw new Error(`Embed call failed: ${errorMsg}`);
+  }
+
+  return vectors;
+}
+
 export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   const { stage, stageRunId, model, systemPrompt, userPrompt, temperature, maxTokens, reasoningEffort, provider, timeoutMs, stream } = options;
   const pool = getPool();
