@@ -19,7 +19,8 @@
     "filter": "tsx scripts/filter.ts",
     "prefilter": "tsx scripts/prefilter.ts",
     "editor-pass-1": "tsx scripts/editor-pass-1.ts",
-    "editor": "tsx scripts/editor.ts"
+    "editor": "tsx scripts/editor.ts",
+    "grouping": "tsx scripts/grouping.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
