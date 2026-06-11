@@ -3,13 +3,15 @@ import path from "path";
 import { parse } from "yaml";
 import { z } from "zod";
 
+const ProviderSchema = z.enum(["ollama-cloud", "nanogpt", "openrouter"]);
+
 const StageConfigSchema = z.object({
   model: z.string(),
   temperature: z.number(),
   max_tokens: z.number().int(),
   step_limit: z.number().int().optional(),
   reasoning_effort: z.string().optional(),
-  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  provider: ProviderSchema.optional(),
   timeout_ms: z.number().int().optional(),
   stream: z.boolean().optional(),
 });
@@ -48,7 +50,7 @@ const EditorPass1StageConfigSchema = FilterStageConfigSchema.extend({
 
 const EditorFallbackConfigSchema = z.object({
   model: z.string(),
-  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  provider: ProviderSchema.optional(),
   reasoning_effort: z.string().optional(),
 });
 
@@ -58,7 +60,7 @@ const EditorStageConfigSchema = StageConfigSchema.extend({
 
 const EmbeddingsConfigSchema = z.object({
   model: z.string(),
-  provider: z.enum(["ollama-cloud", "nanogpt"]).optional(),
+  provider: ProviderSchema.optional(),
   dims: z.number().int(),
   batch_size: z.number().int(),
   timeout_ms: z.number().int().optional(),

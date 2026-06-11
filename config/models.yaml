@@ -146,12 +146,13 @@ editor_pass_1:
   timeout_ms: 600000
 
 # Embedding model for the grouping stage.
-# BAAI/bge-m3 at 1024 dims; matches the vector(1024) column in item_embeddings.
-# batch_size controls how many texts are sent per /v1/embeddings call.
+# Qwen3-Embedding-8B via OpenRouter at 4096 dims; matches vector(4096) in
+# item_embeddings (migration 020). batch_size controls texts per API call.
+# body_cap is set in grouping.embedding.body_cap (2000 chars) — not here.
 embeddings:
-  model: BAAI/bge-m3
-  provider: nanogpt
-  dims: 1024
+  model: qwen/qwen3-embedding-8b
+  provider: openrouter
+  dims: 4096
   batch_size: 100
   timeout_ms: 120000
 
@@ -174,7 +175,9 @@ grouping:
   timeout_ms: 600000
   embedding:
     # Max characters from body_text included in embed text per item.
-    body_cap: 500
+    # 2000 chars captures enough of the article opening that same-event
+    # pairs score meaningfully higher than same-topic-different-event pairs.
+    body_cap: 2000
     # Cosine similarity threshold for adding an edge between two items.
     # Start here and sweep: higher tightens groups, lower loosens them.
     similarity_threshold: 0.82
