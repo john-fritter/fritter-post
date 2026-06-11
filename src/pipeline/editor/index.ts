@@ -4,6 +4,7 @@ import path from "path";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMCallOptions } from "../../llm/index.js";
+import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -278,7 +279,8 @@ export interface EditorRun {
   startedAt: Date;
   completedAt: Date | null;
   pileId: number;
-  triageRunId: number;
+  triageRunId: number | null;
+  groupingRunId: number | null;
   modelUsed: string;
   itemsIn: number;
   itemsFeature: number;
@@ -292,7 +294,8 @@ interface EditorRunRow {
   started_at: string;
   completed_at: string | null;
   pile_id: number;
-  triage_run_id: number;
+  triage_run_id: number | null;
+  grouping_run_id: number | null;
   model_used: string;
   items_in: number;
   items_feature: number;
@@ -321,26 +324,63 @@ export async function runEditor(
     pileId = rows[0].id;
   }
 
-  // 2. Load the pile and its triage run's digest.
-  const { rows: pileRows } = await pool.query<{ id: number; triage_run_id: number }>(
-    "SELECT id, triage_run_id FROM editor_piles WHERE id = $1",
+  // 2. Load the pile and resolve its cluster source. A pile comes from one of
+  //    two upstream paths: triage (triage_run_id set) or the embedding-based
+  //    grouping stage (grouping_run_id set, triage_run_id null). Both store
+  //    cluster title/summary/members in the same flat digest format; only the
+  //    source table differs.
+  const { rows: pileRows } = await pool.query<{
+    id: number;
+    triage_run_id: number | null;
+    grouping_run_id: number | null;
+  }>(
+    "SELECT id, triage_run_id, grouping_run_id FROM editor_piles WHERE id = $1",
     [pileId],
   );
   const pile = pileRows[0];
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
   const triageRunId = pile.triage_run_id;
+  const groupingRunId = pile.grouping_run_id;
 
-  const { rows: triageRows } = await pool.query<{ digest: string | null }>(
-    "SELECT digest FROM triage_runs WHERE id = $1",
-    [triageRunId],
-  );
-  const digest = triageRows[0]?.digest;
-  if (!digest) throw new Error(`Triage run #${triageRunId} has no digest`);
+  let digestClusters: DigestCluster[];
+  if (groupingRunId !== null) {
+    // Grouping-sourced pile. Resolve cluster details from the grouping run's
+    // digest using the SAME parser the scorer used to assign
+    // editor_pile_items.cluster_index, so indices align by construction.
+    // Source count per cluster is its member-id count.
+    const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
+      "SELECT digest FROM grouping_runs WHERE id = $1",
+      [groupingRunId],
+    );
+    const digest = groupingRows[0]?.digest;
+    if (!digest) throw new Error(`Grouping run #${groupingRunId} has no digest`);
 
-  const digestClusters = parseDigestClusters(digest);
-  if (digestClusters === null) {
+    digestClusters = parseGroupingDigest(digest).map((c) => ({
+      index: c.clusterIndex,
+      title: c.title,
+      summary: c.summary,
+      notes: null,
+      itemCount: c.memberIds.length,
+    }));
+  } else if (triageRunId !== null) {
+    // Triage-sourced pile (original path) — behaviour unchanged.
+    const { rows: triageRows } = await pool.query<{ digest: string | null }>(
+      "SELECT digest FROM triage_runs WHERE id = $1",
+      [triageRunId],
+    );
+    const digest = triageRows[0]?.digest;
+    if (!digest) throw new Error(`Triage run #${triageRunId} has no digest`);
+
+    const parsed = parseDigestClusters(digest);
+    if (parsed === null) {
+      throw new Error(
+        `Triage run #${triageRunId} digest could not be parsed — cannot resolve cluster details`,
+      );
+    }
+    digestClusters = parsed;
+  } else {
     throw new Error(
-      `Triage run #${triageRunId} digest could not be parsed — cannot resolve cluster details`,
+      `Editor pile #${pileId} references neither a triage run nor a grouping run`,
     );
   }
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
@@ -443,12 +483,13 @@ export async function runEditor(
       `${pileItems.length} items total — one whole-pile call`,
   );
 
-  // 6. Create editor_runs row.
+  // 6. Create editor_runs row. Exactly one of triage_run_id / grouping_run_id
+  //    is set, matching the pile's source.
   const { rows: runRows } = await pool.query<{ id: number }>(
-    `INSERT INTO editor_runs (started_at, pile_id, triage_run_id, model_used, items_in)
-     VALUES (NOW(), $1, $2, $3, $4)
+    `INSERT INTO editor_runs (started_at, pile_id, triage_run_id, grouping_run_id, model_used, items_in)
+     VALUES (NOW(), $1, $2, $3, $4, $5)
      RETURNING id`,
-    [pileId, triageRunId, model, pileItems.length],
+    [pileId, triageRunId, groupingRunId, model, pileItems.length],
   );
   const runId = runRows[0]!.id;
 
@@ -588,6 +629,7 @@ async function fetchEditorRun(pool: import("pg").Pool, runId: number): Promise<E
     completedAt: r.completed_at ? new Date(r.completed_at) : null,
     pileId: r.pile_id,
     triageRunId: r.triage_run_id,
+    groupingRunId: r.grouping_run_id,
     modelUsed: r.model_used,
     itemsIn: r.items_in,
     itemsFeature: r.items_feature,

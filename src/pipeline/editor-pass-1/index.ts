@@ -483,14 +483,14 @@ interface GroupingPass1RunRow {
   items_in: number;
 }
 
-interface ParsedGroupingCluster {
+export interface ParsedGroupingCluster {
   clusterIndex: number;
   title: string;
   summary: string;
   memberIds: number[];
 }
 
-function parseGroupingDigest(digest: string): ParsedGroupingCluster[] {
+export function parseGroupingDigest(digest: string): ParsedGroupingCluster[] {
   const clusters: ParsedGroupingCluster[] = [];
   let clusterIndex = 0;
   for (const rawLine of digest.split(/\r?\n/)) {
