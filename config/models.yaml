@@ -115,9 +115,9 @@ editor:
   provider: nanogpt
   temperature: 0.2
   max_tokens: 48000
-  reasoning_effort: "medium"
+  reasoning_effort: "low"
   stream: true
-  timeout_ms: 600000
+  timeout_ms: 900000
   # stream: true — keeps the HTTP connection alive past undici's ~300s headers
   # timeout when a reasoning model thinks before emitting the first token.
   # timeout_ms: 600000 — generous body/stream timeout for long reasoning calls.
