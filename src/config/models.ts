@@ -121,6 +121,7 @@ const ModelsConfigSchema = z.object({
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
   grouping: GroupingStageConfigSchema,
+  pile_merge: StageConfigSchema,
 });
 
 export type StageConfig = z.infer<typeof StageConfigSchema>;
@@ -137,6 +138,7 @@ export type GroupingRefineConfig = z.infer<typeof GroupingRefineConfigSchema>;
 export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
 export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
 export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
+export type PileMergeStageConfig = StageConfig;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(

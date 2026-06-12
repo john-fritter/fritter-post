@@ -1,6 +1,6 @@
 export interface EditorClusterPileItem {
   ref: string; // C{cluster_index}
-  clusterIndex: number;
+  clusterIndex: number | null; // null for merged-singleton clusters with no digest index
   title: string;
   summary: string;
   notes: string | null;
@@ -95,6 +95,66 @@ export function buildUserPrompt(
       [`## SINGLETONS (ordered by pass-1 score, descending)`, ...singletons.map(formatSingleton)].join(
         "\n\n",
       ),
+    );
+  }
+
+  return sections.join("\n\n");
+}
+
+// Used by the editor when pile_merge_run_id is set on the pile: the merged
+// pile's entries replace the normal cluster + singleton resolution. Entries
+// with a non-empty summary are shown as clusters (multi-source); entries with
+// a non-empty excerpt (and empty summary) are shown as singletons.
+export interface MergedPileBlock {
+  ref: string;
+  title: string;
+  summary: string; // non-empty for clusters and merged entries
+  excerpt: string; // non-empty for unmerged singletons only
+  itemCount: number;
+  pass1Score: number | null;
+  pass1Reason: string | null;
+}
+
+function formatMergedCluster(block: MergedPileBlock): string {
+  return (
+    `[${block.ref}] ${block.title} — ` +
+    `${block.itemCount} source${block.itemCount === 1 ? "" : "s"}\n${block.summary}`
+  );
+}
+
+function formatMergedSingleton(block: MergedPileBlock): string {
+  const scoreStr =
+    block.pass1Score !== null ? ` — pass-1 score ${block.pass1Score} (${block.pass1Reason ?? ""})` : "";
+  return `[${block.ref}] ${block.title}${scoreStr}\n${block.excerpt}`;
+}
+
+export function buildMergedUserPrompt(blocks: MergedPileBlock[]): string {
+  const clusterBlocks = blocks.filter((b) => b.summary.length > 0);
+  const singletonBlocks = blocks.filter((b) => b.summary.length === 0);
+  const total = blocks.length;
+
+  const sections: string[] = [
+    `Today's pile: ${total} item${total === 1 ? "" : "s"} — ` +
+      `${clusterBlocks.length} cluster${clusterBlocks.length === 1 ? "" : "s"} (multi-source stories) and ` +
+      `${singletonBlocks.length} singleton${singletonBlocks.length === 1 ? "" : "s"} (single-source items). ` +
+      `Rank and tier all ${total} of them.`,
+  ];
+
+  if (clusterBlocks.length > 0) {
+    sections.push(
+      [
+        "## CLUSTERS (ordered by source count, descending)",
+        ...clusterBlocks.map(formatMergedCluster),
+      ].join("\n\n"),
+    );
+  }
+
+  if (singletonBlocks.length > 0) {
+    sections.push(
+      [
+        "## SINGLETONS (ordered by pass-1 score, descending)",
+        ...singletonBlocks.map(formatMergedSingleton),
+      ].join("\n\n"),
     );
   }
 

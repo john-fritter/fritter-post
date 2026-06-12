@@ -8,9 +8,12 @@ import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
+  buildMergedUserPrompt,
   type EditorClusterPileItem,
   type EditorSingletonPileItem,
+  type MergedPileBlock,
 } from "./prompt.js";
+import type { MergedPileEntry } from "../pile-merge/index.js";
 
 const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
 const STANDING_MEMO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "standing-memo.md");
@@ -333,130 +336,226 @@ export async function runEditor(
     id: number;
     triage_run_id: number | null;
     grouping_run_id: number | null;
+    pile_merge_run_id: number | null;
   }>(
-    "SELECT id, triage_run_id, grouping_run_id FROM editor_piles WHERE id = $1",
+    "SELECT id, triage_run_id, grouping_run_id, pile_merge_run_id FROM editor_piles WHERE id = $1",
     [pileId],
   );
   const pile = pileRows[0];
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
   const triageRunId = pile.triage_run_id;
   const groupingRunId = pile.grouping_run_id;
+  const pileMergeRunId = pile.pile_merge_run_id;
 
-  let digestClusters: DigestCluster[];
-  if (groupingRunId !== null) {
-    // Grouping-sourced pile. Resolve cluster details from the grouping run's
-    // digest using the SAME parser the scorer used to assign
-    // editor_pile_items.cluster_index, so indices align by construction.
-    // Source count per cluster is its member-id count.
-    const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
-      "SELECT digest FROM grouping_runs WHERE id = $1",
-      [groupingRunId],
+  let clusterItems: EditorClusterPileItem[];
+  let singletonItems: EditorSingletonPileItem[];
+  let pileItems: EditorPileItem[];
+  let userPrompt: string;
+
+  if (pileMergeRunId !== null) {
+    // Merged pile path: the pile-merge pass already assembled the final pile as
+    // JSONB. Use it directly — no digest resolution or separate item queries.
+    const { rows: mergeRows } = await pool.query<{ merged_pile: MergedPileEntry[] | null }>(
+      "SELECT merged_pile FROM pile_merge_runs WHERE id = $1",
+      [pileMergeRunId],
     );
-    const digest = groupingRows[0]?.digest;
-    if (!digest) throw new Error(`Grouping run #${groupingRunId} has no digest`);
+    const mergedPile = mergeRows[0]?.merged_pile;
+    if (!mergedPile) {
+      throw new Error(`Pile-merge run #${pileMergeRunId} has no merged_pile — run pile-merge first`);
+    }
 
-    digestClusters = parseGroupingDigest(digest).map((c) => ({
-      index: c.clusterIndex,
-      title: c.title,
-      summary: c.summary,
-      notes: null,
-      itemCount: c.memberIds.length,
-    }));
-  } else if (triageRunId !== null) {
-    // Triage-sourced pile (original path) — behaviour unchanged.
-    const { rows: triageRows } = await pool.query<{ digest: string | null }>(
-      "SELECT digest FROM triage_runs WHERE id = $1",
-      [triageRunId],
-    );
-    const digest = triageRows[0]?.digest;
-    if (!digest) throw new Error(`Triage run #${triageRunId} has no digest`);
+    // Split into cluster-like (has summary) and singleton-like (has excerpt)
+    // entries for both the prompt and the per-item fail-safe tier logic.
+    clusterItems = mergedPile
+      .filter((e) => e.summary.length > 0)
+      .map((e) => ({
+        ref: e.ref,
+        clusterIndex: e.clusterIndex,
+        title: e.title,
+        summary: e.summary,
+        notes: null,
+        sourceCount: e.itemCount,
+      }))
+      .sort((a, b) => b.sourceCount - a.sourceCount || (a.clusterIndex ?? -1) - (b.clusterIndex ?? -1));
 
-    const parsed = parseDigestClusters(digest);
-    if (parsed === null) {
+    singletonItems = mergedPile
+      .filter((e) => e.summary.length === 0)
+      .map((e) => ({
+        ref: e.ref,
+        preprocessedItemId: e.preprocessedItemId ?? 0,
+        title: e.title,
+        bodyExcerpt: e.excerpt,
+        pass1Score: e.pass1Score ?? 0,
+        pass1Reason: e.pass1Reason ?? "",
+      }));
+
+    const mergedBlocks: MergedPileBlock[] = [
+      ...clusterItems.map((c) => ({
+        ref: c.ref,
+        title: c.title,
+        summary: c.summary,
+        excerpt: "",
+        itemCount: c.sourceCount,
+        pass1Score: null,
+        pass1Reason: null,
+      })),
+      ...singletonItems.map((s) => ({
+        ref: s.ref,
+        title: s.title,
+        summary: "",
+        excerpt: s.bodyExcerpt,
+        itemCount: 1,
+        pass1Score: s.pass1Score,
+        pass1Reason: s.pass1Reason,
+      })),
+    ];
+
+    pileItems = [
+      ...mergedPile
+        .filter((e) => e.summary.length > 0)
+        .map((e) => ({
+          ref: e.ref,
+          itemType: "cluster" as const,
+          clusterIndex: e.clusterIndex,
+          preprocessedItemId: null,
+          pass1Score: null,
+        })),
+      ...mergedPile
+        .filter((e) => e.summary.length === 0)
+        .map((e) => ({
+          ref: e.ref,
+          itemType: "singleton" as const,
+          clusterIndex: null,
+          preprocessedItemId: e.preprocessedItemId,
+          pass1Score: e.pass1Score,
+        })),
+    ];
+
+    userPrompt = buildMergedUserPrompt(mergedBlocks);
+    console.log(`[editor] pile #${pileId}: merged pile (pile-merge run #${pileMergeRunId})`);
+  } else {
+    // Normal path: resolve cluster details from the appropriate digest, then
+    // load and present items from editor_pile_items.
+    let digestClusters: DigestCluster[];
+    if (groupingRunId !== null) {
+      // Grouping-sourced pile. Resolve cluster details from the grouping run's
+      // digest using the SAME parser the scorer used to assign
+      // editor_pile_items.cluster_index, so indices align by construction.
+      // Source count per cluster is its member-id count.
+      const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
+        "SELECT digest FROM grouping_runs WHERE id = $1",
+        [groupingRunId],
+      );
+      const digest = groupingRows[0]?.digest;
+      if (!digest) throw new Error(`Grouping run #${groupingRunId} has no digest`);
+
+      digestClusters = parseGroupingDigest(digest).map((c) => ({
+        index: c.clusterIndex,
+        title: c.title,
+        summary: c.summary,
+        notes: null,
+        itemCount: c.memberIds.length,
+      }));
+    } else if (triageRunId !== null) {
+      // Triage-sourced pile (original path) — behaviour unchanged.
+      const { rows: triageRows } = await pool.query<{ digest: string | null }>(
+        "SELECT digest FROM triage_runs WHERE id = $1",
+        [triageRunId],
+      );
+      const digest = triageRows[0]?.digest;
+      if (!digest) throw new Error(`Triage run #${triageRunId} has no digest`);
+
+      const parsed = parseDigestClusters(digest);
+      if (parsed === null) {
+        throw new Error(
+          `Triage run #${triageRunId} digest could not be parsed — cannot resolve cluster details`,
+        );
+      }
+      digestClusters = parsed;
+    } else {
       throw new Error(
-        `Triage run #${triageRunId} digest could not be parsed — cannot resolve cluster details`,
+        `Editor pile #${pileId} references neither a triage run nor a grouping run`,
       );
     }
-    digestClusters = parsed;
-  } else {
-    throw new Error(
-      `Editor pile #${pileId} references neither a triage run nor a grouping run`,
+    const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
+
+    // 3. Load in-pile items: clusters (by triage digest index) and singletons
+    //    (joined to preprocessed_items for title/body, carrying pass-1 score + reason).
+    const { rows: clusterPileRows } = await pool.query<{ cluster_index: number }>(
+      `SELECT cluster_index FROM editor_pile_items
+       WHERE pile_id = $1 AND item_type = 'cluster' AND in_pile = true
+       ORDER BY cluster_index ASC`,
+      [pileId],
     );
+
+    const { rows: singletonPileRows } = await pool.query<{
+      preprocessed_item_id: string;
+      score: number;
+      reason: string;
+      title: string;
+      body_text: string | null;
+    }>(
+      `SELECT epi.preprocessed_item_id, epi.score, epi.reason, pi.title, pi.body_text
+       FROM editor_pile_items epi
+       JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
+       WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true
+       ORDER BY epi.score DESC, epi.preprocessed_item_id ASC`,
+      [pileId],
+    );
+
+    // 4. Build presentation lists in stable order: clusters by source count desc,
+    //    then singletons by pass-1 score desc (already the query order).
+    clusterItems = clusterPileRows
+      .map((row): EditorClusterPileItem | null => {
+        const detail = clusterByIndex.get(row.cluster_index);
+        if (!detail) {
+          console.warn(
+            `[editor] pile cluster_index ${row.cluster_index} not found in digest — skipping`,
+          );
+          return null;
+        }
+        return {
+          ref: `C${row.cluster_index}`,
+          clusterIndex: row.cluster_index,
+          title: detail.title,
+          summary: detail.summary,
+          notes: detail.notes,
+          sourceCount: detail.itemCount,
+        };
+      })
+      .filter((c): c is EditorClusterPileItem => c !== null)
+      .sort(
+        (a, b) => b.sourceCount - a.sourceCount || (a.clusterIndex ?? 0) - (b.clusterIndex ?? 0),
+      );
+
+    singletonItems = singletonPileRows.map((row) => ({
+      ref: `S${row.preprocessed_item_id}`,
+      preprocessedItemId: Number(row.preprocessed_item_id),
+      title: row.title,
+      bodyExcerpt: (row.body_text ?? "").replace(/\s+/g, " ").trim().slice(0, 50),
+      pass1Score: row.score,
+      pass1Reason: row.reason,
+    }));
+
+    pileItems = [
+      ...clusterItems.map((c) => ({
+        ref: c.ref,
+        itemType: "cluster" as const,
+        clusterIndex: c.clusterIndex,
+        preprocessedItemId: null,
+        pass1Score: null,
+      })),
+      ...singletonItems.map((s) => ({
+        ref: s.ref,
+        itemType: "singleton" as const,
+        clusterIndex: null,
+        preprocessedItemId: s.preprocessedItemId,
+        pass1Score: s.pass1Score,
+      })),
+    ];
+
+    userPrompt = buildUserPrompt(clusterItems, singletonItems);
   }
-  const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
-
-  // 3. Load in-pile items: clusters (by triage digest index) and singletons
-  //    (joined to preprocessed_items for title/body, carrying pass-1 score + reason).
-  const { rows: clusterPileRows } = await pool.query<{ cluster_index: number }>(
-    `SELECT cluster_index FROM editor_pile_items
-     WHERE pile_id = $1 AND item_type = 'cluster' AND in_pile = true
-     ORDER BY cluster_index ASC`,
-    [pileId],
-  );
-
-  const { rows: singletonPileRows } = await pool.query<{
-    preprocessed_item_id: string;
-    score: number;
-    reason: string;
-    title: string;
-    body_text: string | null;
-  }>(
-    `SELECT epi.preprocessed_item_id, epi.score, epi.reason, pi.title, pi.body_text
-     FROM editor_pile_items epi
-     JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
-     WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true
-     ORDER BY epi.score DESC, epi.preprocessed_item_id ASC`,
-    [pileId],
-  );
-
-  // 4. Build presentation lists in stable order: clusters by source count desc,
-  //    then singletons by pass-1 score desc (already the query order).
-  const clusterItems: EditorClusterPileItem[] = clusterPileRows
-    .map((row) => {
-      const detail = clusterByIndex.get(row.cluster_index);
-      if (!detail) {
-        console.warn(
-          `[editor] pile cluster_index ${row.cluster_index} not found in digest — skipping`,
-        );
-        return null;
-      }
-      return {
-        ref: `C${row.cluster_index}`,
-        clusterIndex: row.cluster_index,
-        title: detail.title,
-        summary: detail.summary,
-        notes: detail.notes,
-        sourceCount: detail.itemCount,
-      };
-    })
-    .filter((c): c is EditorClusterPileItem => c !== null)
-    .sort((a, b) => b.sourceCount - a.sourceCount || a.clusterIndex - b.clusterIndex);
-
-  const singletonItems: EditorSingletonPileItem[] = singletonPileRows.map((row) => ({
-    ref: `S${row.preprocessed_item_id}`,
-    preprocessedItemId: Number(row.preprocessed_item_id),
-    title: row.title,
-    bodyExcerpt: (row.body_text ?? "").replace(/\s+/g, " ").trim().slice(0, 50),
-    pass1Score: row.score,
-    pass1Reason: row.reason,
-  }));
-
-  const pileItems: EditorPileItem[] = [
-    ...clusterItems.map((c) => ({
-      ref: c.ref,
-      itemType: "cluster" as const,
-      clusterIndex: c.clusterIndex,
-      preprocessedItemId: null,
-      pass1Score: null,
-    })),
-    ...singletonItems.map((s) => ({
-      ref: s.ref,
-      itemType: "singleton" as const,
-      clusterIndex: null,
-      preprocessedItemId: s.preprocessedItemId,
-      pass1Score: s.pass1Score,
-    })),
-  ];
 
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
@@ -476,12 +575,18 @@ export async function runEditor(
   const standingMemo = loadTextFile(STANDING_MEMO_PATH, STANDING_MEMO_FALLBACK);
   const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
   const systemPrompt = buildSystemPrompt(standingMemo, bio);
-  const userPrompt = buildUserPrompt(clusterItems, singletonItems);
 
-  console.log(
-    `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
-      `${pileItems.length} items total — one whole-pile call`,
-  );
+  if (pileMergeRunId === null) {
+    console.log(
+      `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
+        `${pileItems.length} items total — one whole-pile call`,
+    );
+  } else {
+    console.log(
+      `[editor] pile #${pileId} (merged): ${clusterItems.length} clusters, ` +
+        `${singletonItems.length} singletons, ${pileItems.length} items total — one whole-pile call`,
+    );
+  }
 
   // 6. Create editor_runs row. Exactly one of triage_run_id / grouping_run_id
   //    is set, matching the pile's source.

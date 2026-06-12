@@ -156,6 +156,19 @@ embeddings:
   batch_size: 100
   timeout_ms: 120000
 
+# Pile-merge pass: one LLM call over the assembled top-N pile that identifies
+# same-story duplicates the upstream clusterer missed. Merge-only — does not
+# score, tier, or cut. Conservative same-specific-event threshold. Runs after
+# assembleGroupingPile (or assemblePile) and before the editor.
+pile_merge:
+  model: moonshotai/kimi-k2.6:thinking
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 8192
+  reasoning_effort: "medium"
+  stream: true
+  timeout_ms: 600000
+
 # Embedding-based grouping stage — runs in parallel with triage for comparison.
 # Three steps: embed (software + embedding model), candidate groups (software,
 # cosine-similarity graph + union-find), boundary refine (LLM, one call per
