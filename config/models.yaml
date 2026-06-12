@@ -180,7 +180,7 @@ grouping:
     body_cap: 2000
     # Cosine similarity threshold for adding an edge between two items.
     # Start here and sweep: higher tightens groups, lower loosens them.
-    similarity_threshold: 0.82
+    similarity_threshold: 0.72
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
     top_k: 10

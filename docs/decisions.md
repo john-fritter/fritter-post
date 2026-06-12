@@ -20,6 +20,77 @@ Entry format:
 
 ---
 
+## 2026-06-12 — Grouping clusterer: validated threshold 0.72, attach pass design, operational lessons
+
+**Decision:** Commit the grouping clusterer's production configuration as validated on
+preprocessor run #15 / grouping run #7:
+
+- `embedding.similarity_threshold: 0.72` (was 0.82 on the branch; see lessons below)
+- `attach.attach_floor: 0.60` (unchanged; intentionally low — see Bias section)
+- `refine.enabled: false` (unchanged)
+
+**Architecture (final):** embed (Qwen3-Embedding-8B, 4096d, OpenRouter, pgvector)
+→ connected-components grouping at cosine ≥ 0.72
+→ attach pass: per-cluster glm-5.1 LLM call over singletons in the [0.60, 0.72) near-miss
+  band, attach-only
+→ describe pass: glm-5.1 neutral title + summary for every multi-item cluster.
+
+No refine pass (code kept, flag stays false). Runs in parallel with the existing triage
+(seed + spines + semantic-merge) path for comparison; both terminate at the same editor.
+
+**Context: why 0.72**
+
+0.72 forms confident same-event clusters with no observed false merges. Below ~0.69,
+distinct-story chains begin to form (items that share a topic and a cast of actors but
+cover different events get connected transitively through a sequence of above-threshold
+pairs). 0.72 sits cleanly above that chain-formation floor.
+
+The embedding layer cannot separate same-event-different-framing pairs from
+distinct-event-same-topic pairs by threshold alone. Measured on run #7: same-event pairs
+ranged 0.59–0.89 (wide spread, reflecting how differently outlets frame identical facts);
+distinct-event pairs reached 0.71 (a UN statement on the Iran war scored 0.71 against the
+missile-exchange cluster — same cast, same week, different event). A threshold high enough
+to exclude all 0.71 distinct-event pairs would also exclude many genuine same-event pairs
+in the 0.59–0.71 range.
+
+The attach pass is what recovers those stranded same-event items. On run #7 the Iran war
+cluster formed from 8 sources at the 0.72 threshold; the attach pass brought it to 22
+by absorbing near-misses the threshold correctly excluded from the connected-components
+graph (UN condemnation, fuel-price dispatch, War Powers congressional response — all the
+same specific event, all scoring in the [0.60, 0.72) band against the core cluster).
+
+**Bias: prefer over-attaching over under-attaching**
+
+`attach_floor: 0.60` is intentionally low. The failure asymmetry for the attach pass:
+
+- An incorrectly-attached source (present in the cluster but covering a related-but-not-
+  identical event) is harmless: the editor and reader can ignore a slightly-wrong source
+  in a 22-item cluster.
+- A missed same-event source (left as a singleton because the floor was too high) is lost:
+  it scores against the backdrop of today's full pile, may never reach the editor pile
+  at all, and never joins the cluster it belongs in.
+
+Do not raise the floor to reduce false attachments. The cost of false attachments is low;
+the cost of misses is high. If over-attaching becomes a real problem, the correct fix is
+tightening the LLM prompt's "same specific event" definition, not raising the floor.
+
+**Operational lessons**
+
+**(A) Cluster SIZE is not an over-merge signal.** A 66-item cluster is not evidence of a
+wrongful merge — a global war with 66 sources covering it is the correct output. Judge
+merge quality by reading the cluster CONTENTS (are these all the same specific event?),
+never by item count. Applying a size-based heuristic will produce false positives on every
+genuinely large story and cause the operator to re-tune away from correct behavior.
+
+**(B) `similarity_threshold` is the highest-leverage knob in the pipeline.** An unintended
+value of 0.82 (left over from an earlier tuning run) caused every same-event pair with
+cosine similarity 0.72–0.81 to be split into separate singletons. The full run produced
+~1226 singletons and ~16 clusters — a result that looked exactly like a broken clusterer
+but was a single misconfigured YAML value. When the grouping output looks wrong (pile
+dominated by singletons, few multi-item clusters), check this value first.
+
+---
+
 ## 2026-06-10 — Model bake-off picks: triage clusterer and editor_pass_1 scorer
 
 **Decision:** Two model selections from bake-offs run on identical pipeline input:
