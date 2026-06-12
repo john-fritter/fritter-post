@@ -5,6 +5,7 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMCallOptions } from "../../llm/index.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { normalizeRef } from "../../lib/refs.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -227,20 +228,28 @@ export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): Ed
     if (secondDelimiter === -1) continue;
 
     const tierField = line.slice(0, firstDelimiter).trim().toLowerCase();
-    const ref = line.slice(firstDelimiter + 2, secondDelimiter).trim();
+    const rawRef = line.slice(firstDelimiter + 2, secondDelimiter).trim();
     const reason = line.slice(secondDelimiter + 2).trim();
 
-    if (ref.length === 0 || reason.length === 0) continue;
+    if (rawRef.length === 0 || reason.length === 0) continue;
     parsedLineCount++;
 
+    // normalizeRef strips brackets, punctuation, and case so both "[C3]" and
+    // "C3" resolve to the same pile key. Clean refs normalize to themselves.
+    const ref = normalizeRef(rawRef);
+    if (!ref) {
+      console.warn(`[editor] unknown ref in output (dropped): ${rawRef}`);
+      unknownRefCount++;
+      continue;
+    }
     const pileItem = byRef.get(ref);
     if (!pileItem) {
-      console.warn(`[editor] unknown ref in output (dropped): ${ref}`);
+      console.warn(`[editor] unknown ref in output (dropped): ${rawRef}`);
       unknownRefCount++;
       continue;
     }
     if (seen.has(ref)) {
-      console.warn(`[editor] duplicate ref in output (kept first occurrence): ${ref}`);
+      console.warn(`[editor] duplicate ref in output (kept first occurrence): ${rawRef}`);
       duplicateRefCount++;
       continue;
     }

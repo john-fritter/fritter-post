@@ -3,6 +3,7 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { extractRefs } from "../../lib/refs.js";
 import { buildPileMergeSystemPrompt, buildPileMergeUserPrompt } from "./prompt.js";
 
 // Maps cluster_index → digest-resolved details for cluster pile items.
@@ -147,11 +148,9 @@ function parseMergeOutput(text: string, validRefs: Set<string>): string[][] {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line.toUpperCase().startsWith("MERGE:")) continue;
-    const refPart = line.slice("MERGE:".length).trim();
-    const refs = refPart
-      .split(",")
-      .map((r) => r.trim())
-      .filter((r) => r.length > 0);
+    // extractRefs pulls bare upper-case C/S tokens from the raw text,
+    // tolerating brackets, trailing punctuation, and spacing variations.
+    const refs = extractRefs(line.slice("MERGE:".length));
 
     const validGroup: string[] = [];
     for (const ref of refs) {
