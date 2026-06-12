@@ -115,7 +115,7 @@ editor:
   provider: nanogpt
   temperature: 0.2
   max_tokens: 48000
-  reasoning_effort: "low"
+  reasoning_effort: "medium"
   stream: true
   timeout_ms: 900000
   # stream: true — keeps the HTTP connection alive past undici's ~300s headers
