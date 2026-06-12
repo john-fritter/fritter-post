@@ -191,21 +191,25 @@ export interface EditorParseResult {
 }
 
 /**
- * Defensive flat-line parser for the editor's ranked output: `tier;;ref;;reason`.
- * Mirrors parseBatchOutput's split-on-first-two-`;;` shape, but reconciles
- * against the pile by ref rather than by id, since rank is derived from line
- * order, not emitted by the model.
+ * Recognition-based parser for the editor's ranked output.
  *
- * - Unknown refs are dropped and logged.
- * - Duplicate refs keep the first occurrence; later ones are dropped and logged.
- * - Invalid tier values fail-safe to 'brief'.
- * - Pile items absent from the output are appended at the end with a flagged
- *   reason — an editor that drops items truncates the paper. Their fail-safe
- *   tier is derived from the best signal available rather than a flat
- *   'brief': clusters (inherently higher-signal — multi-source pickup got
- *   them into the pile) fail safe to 'standard'; singletons fail safe to
- *   'standard' or 'brief' based on their pass-1 relevance score (see
- *   failSafeTierForMissingItem). Never 'feature' — see that function.
+ * The contract with the model is `tier;;ref;;reason`, but reasoning models
+ * routinely reorder fields, add line numbers, or bracket refs. This parser
+ * finds tier and ref by RECOGNITION rather than position:
+ *   - tier:  the first ;;-segment whose lowercased content is in VALID_TIERS
+ *   - ref:   the first non-tier ;;-segment containing a C/S pattern (via normalizeRef)
+ *   - reason: all remaining segments joined back with ;;
+ *
+ * All these shapes for the same item parse correctly:
+ *   "feature;;C3;;reason"       (specified format)
+ *   "C3;;feature;;reason"       (swapped — kimi does this)
+ *   "1. C3;;feature;;reason"    (numbered + swapped)
+ *   "feature;;[C3];;reason"     (bracketed ref)
+ *
+ * A line is only valid if both tier and ref are found; lines with neither are
+ * silently skipped — they do not inflate parsedLineCount or trigger badTier
+ * accounting. The fail-safe for genuinely-absent items is applied at the end,
+ * unchanged.
  */
 export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): EditorParseResult {
   const byRef = new Map<string, EditorPileItem>();
@@ -216,54 +220,63 @@ export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): Ed
   let parsedLineCount = 0;
   let unknownRefCount = 0;
   let duplicateRefCount = 0;
-  let badTierCount = 0;
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (line.length === 0) continue;
+    if (line.length === 0 || !line.includes(";;")) continue;
 
-    const firstDelimiter = line.indexOf(";;");
-    if (firstDelimiter === -1) continue;
-    const secondDelimiter = line.indexOf(";;", firstDelimiter + 2);
-    if (secondDelimiter === -1) continue;
+    const parts = line.split(";;");
+    if (parts.length < 3) continue;
 
-    const tierField = line.slice(0, firstDelimiter).trim().toLowerCase();
-    const rawRef = line.slice(firstDelimiter + 2, secondDelimiter).trim();
-    const reason = line.slice(secondDelimiter + 2).trim();
+    // Find tier: first segment that matches a valid tier word exactly.
+    let tier: EditorTier | null = null;
+    let tierIdx = -1;
+    for (let i = 0; i < parts.length; i++) {
+      const lower = parts[i]!.trim().toLowerCase();
+      if (VALID_TIERS.has(lower as EditorTier)) {
+        tier = lower as EditorTier;
+        tierIdx = i;
+        break;
+      }
+    }
+    if (tier === null) continue; // no valid tier word in any segment → skip
 
-    if (rawRef.length === 0 || reason.length === 0) continue;
+    // Find ref: first non-tier segment containing a C/S pattern.
+    let ref: string | null = null;
+    let refIdx = -1;
+    for (let i = 0; i < parts.length; i++) {
+      if (i === tierIdx) continue;
+      const r = normalizeRef(parts[i]!);
+      if (r) {
+        ref = r;
+        refIdx = i;
+        break;
+      }
+    }
+    if (ref === null) continue; // no ref token in any segment → skip
+
+    // Reason: remaining segments (everything that's neither tier nor ref).
+    const reason = parts
+      .filter((_, i) => i !== tierIdx && i !== refIdx)
+      .join(";;")
+      .trim();
+    if (reason.length === 0) continue;
+
+    // Count this line: it had a recognizable tier and ref token.
     parsedLineCount++;
 
-    // normalizeRef strips brackets, punctuation, and case so both "[C3]" and
-    // "C3" resolve to the same pile key. Clean refs normalize to themselves.
-    const ref = normalizeRef(rawRef);
-    if (!ref) {
-      console.warn(`[editor] unknown ref in output (dropped): ${rawRef}`);
-      unknownRefCount++;
-      continue;
-    }
     const pileItem = byRef.get(ref);
     if (!pileItem) {
-      console.warn(`[editor] unknown ref in output (dropped): ${rawRef}`);
+      console.warn(`[editor] unknown ref in output (dropped): ${ref}`);
       unknownRefCount++;
       continue;
     }
     if (seen.has(ref)) {
-      console.warn(`[editor] duplicate ref in output (kept first occurrence): ${rawRef}`);
+      console.warn(`[editor] duplicate ref in output (kept first occurrence): ${ref}`);
       duplicateRefCount++;
       continue;
     }
     seen.add(ref);
-
-    let tier: EditorTier;
-    if (VALID_TIERS.has(tierField as EditorTier)) {
-      tier = tierField as EditorTier;
-    } else {
-      console.warn(`[editor] invalid tier "${tierField}" for ${ref} — fail-safe to brief`);
-      badTierCount++;
-      tier = "brief";
-    }
-
     ordered.push({ ...pileItem, tier, reason });
   }
 
@@ -282,7 +295,7 @@ export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): Ed
     missingCount,
     unknownRefCount,
     duplicateRefCount,
-    badTierCount,
+    badTierCount: 0, // no longer meaningful with recognition-based parsing
   };
 }
 
