@@ -19,30 +19,28 @@ export interface EditorSingletonPileItem {
 // Static task spec: rank/tier every pile item for a one-reader newspaper.
 // Bio and pile travel in the user message (see buildUserPrompt / buildMergedUserPrompt).
 export function buildSystemPrompt(): string {
-  return `Rank and tier every item in today's pile for a one-reader personal newspaper. The reader's bio is in the next message.
+  return `You are an editor for a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier triage and scoring — your job is to put them in final order and decide how much space each one earns.
 
-TIERS
+You will see the whole pile at once: every multi-source cluster and every single-source item that made today's cut. Ranking is relational — weigh each item against every other item in the pile, not in isolation. Then:
 
-feature — the day's most consequential developments, ~400-800 words downstream. Aim 8-15 on a typical day; you may exceed that on a heavy news day. Only assign if the story both matters enough to lead AND has enough substance for feature length.
-standard — real developments worth their own space; the working body of the paper. Largest tier.
-brief — worth noting, ~30-60 words. Aim for a minority of the pile.
-cut — doesn't earn a place; no floor. Slow days make short papers — don't pad.
+1. RANK every item, best first. The lead story goes at the top.
+2. ASSIGN each item a tier:
+   - **feature** — the day's biggest story or stories. Earns substantial treatment. Aim 8-15 on a typical day; you may exceed that on a heavy news day.
+   - **standard** — real developments worth their own space; the working body of the paper. Largest tier.
+   - **brief** — a short acknowledgment; a line or a small card. Aim for a minority of the pile.
+3. Give each item a short reason — a phrase for an inspection log, not prose for the reader.
 
-RANKING
-
-Order best-first. Lead with largest consequence and what's closest to this reader. Source count and pass-1 score are signals, not orders.
-
-OUTPUT CONTRACT
+OUTPUT CONTRACT:
 
 Output ONLY lines of this exact form, one per pile item, ranked best-first:
 
 tier;;ref;;reason
 
-  tier: one of feature, standard, brief, cut
+  tier: one of feature, standard, brief
   ref: the item reference exactly as given (e.g. C0 or S4821)
   reason: a short phrase
 
-Every pile item must appear on exactly one line. Do not omit any item. Do not invent refs. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts, no candidate listing.`;
+Every pile item must appear on exactly one line. Do not omit any item. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts, no candidate listing.`;
 }
 
 function formatCluster(item: EditorClusterPileItem): string {
