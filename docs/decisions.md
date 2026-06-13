@@ -20,6 +20,203 @@ Entry format:
 
 ---
 
+## 2026-06-13 — Editor prompt redesign: static system prompt, bio in user message, standing memo dissolved
+
+**Decision:** Rewrite the editor's prompt structure so that (1) the system
+prompt is fully static — no runtime file reads, no bio — and carries only the
+task spec and output contract; (2) the bio travels in the user message alongside
+the pile; (3) `docs/standing-memo.md` is dissolved — its editorial judgment
+principles move into a new `## How to weigh stories` section in `docs/bio.md`
+and its task content is absorbed into the system prompt.
+
+`buildSystemPrompt()` now takes no arguments. `buildUserPrompt()` and
+`buildMergedUserPrompt()` prepend `"The reader:\n\n${bio}\n\n---\n\n"` before
+the pile section. `docs/standing-memo.md` is deleted.
+
+The five principles that moved into `docs/bio.md → ## How to weigh stories`:
+- Power skepticism applied evenly, not just at one political pole.
+- Attribution is a claim ("police say X"), not a fact.
+- The people a decision lands on matter more than the people making it.
+- Weight non-Western stories by consequence, not by American attention.
+- Significance earns prominence, not drama; resist outrage-bait and horse-race framing.
+
+**Context:** Earlier prompt structure put the bio and standing memo in the
+system message and pile in the user message. Reasoning models treated the
+system message as a persistent identity and narrated editorial theory before
+producing output ("I will prioritize…", "Let me consider the reader's
+interests…"), ignoring the `Begin immediately` instruction. Moving the bio to
+the user message alongside the pile — the material being acted on — produced
+clean, immediate `tier;;ref;;reason` output on the next run.
+
+**Rationale:**
+- **Static system prompt = stable model identity.** A prompt whose content
+  changes daily (bio gets updated, standing memo gets revised) creates
+  inconsistent model behavior. A prompt that says only "here is your task and
+  output format" is stable by construction.
+- **Bio belongs with the pile it governs.** The user message is "the reader +
+  today's pile" — the full context for a single editorial decision. Keeping
+  them together reflects what the call is actually doing.
+- **Dissolving the standing memo eliminates a two-document maintenance surface.**
+  The editorial voice principles don't need a separate file: they're reader
+  preferences and belong with the reader. The task framing (tiers, ranking,
+  output contract) belongs in the system prompt. There was no third category
+  that needed its own document.
+- **Additive for the scorer.** `editor-pass-1` and `grouping-pass-1` also read
+  `docs/bio.md` for interest signals (high/low interest, geography, work). The
+  new `## How to weigh stories` section is purely additive — the scorer uses
+  bio for relevance scoring, not editorial craft, so extra principles cause no
+  harm and may improve marginal scoring decisions.
+
+---
+
+## 2026-06-13 — Editor output parser made recognition-based to handle model format variation
+
+**Decision:** Replace the positional `;;`-column parser in `parseEditorOutput`
+with a recognition-based scanner that finds tier and ref by pattern, not by
+column index. For each non-empty `;;`-containing line, the parser scans all
+`;;`-delimited segments: the first segment whose lowercase content is one of
+`{feature, standard, brief, cut}` is the tier; the first non-tier segment
+containing a `[CS]\d+` ref pattern (after `normalizeRef`) is the ref; all
+remaining segments join as the reason.
+
+**Context:** Run #78 — kimi-k2.6:thinking returned lines in two variant
+formats on the same output: `1. C3;;feature;;US-Iran war escalation` (numbered
+prefix + swapped to `ref;;tier;;reason`) and `C3;;feature;;reason` (no tier
+field at the correct position for positional parsing). The prior parser read
+column 0 as tier, column 1 as ref — which meant `"1. C3"` was the tier
+(invalid, fail-safed), `"feature"` was the ref (no C/S pattern, dropped), and
+every item in the run was lost. This produced 0/145 valid lines — a complete
+parse collapse, worse than the all-standard collapse from run #74.
+
+**Rationale:**
+- **The model's tier keywords and ref patterns are unambiguous.** `feature`,
+  `standard`, `brief`, `cut` don't appear in titles or reasons as standalone
+  `;;`-delimited segments. `C\d+`/`S\d+` patterns are structurally distinct
+  from both tier words and reason text. Recognition over these two signals is
+  robust to any column permutation.
+- **Backwards-compatible with clean output.** On well-formed `tier;;ref;;reason`
+  lines, the recognition scan finds tier in segment 0 and ref in segment 1 —
+  identical outcome to the positional parser. No behavioral change for
+  well-behaved model output.
+- **`badTierCount` retired.** The positional parser incremented this counter
+  when column 0 wasn't a tier keyword; since the recognition parser searches
+  all segments for the tier, a line with no valid tier keyword simply produces
+  no match and is skipped silently. The counter no longer has meaning and was
+  zeroed.
+
+---
+
+## 2026-06-13 — Editor timeout raised to 900s; reasoning_effort kept at medium
+
+**Decision:** Raise `editor.timeout_ms` from 600000 to 900000. Keep
+`editor.reasoning_effort` at `"medium"`.
+
+**Context:** Run #76 was killed at exactly 603s — 3s past the 600s limit —
+having produced no output. First attempted fix: change `reasoning_effort` from
+`"medium"` to `"low"` to reduce thinking time. Result (run #77): kimi at
+`"low"` effort stopped emitting `tier;;ref;;reason` lines entirely and instead
+dumped raw reasoning text ("Top tier candidates:", "Let's verify total…"),
+producing 0/145 valid parsed lines — a worse outcome than the timeout. Reverted
+`reasoning_effort` to `"medium"`; raised `timeout_ms` to 900000.
+
+**Rationale:** At `"medium"` effort, kimi-k2.6:thinking produces well-formed
+output and correctly ranks 145-item piles. At `"low"` effort, it appears to
+skip the formatting step and emit thinking scratchpad text directly — the model
+doesn't apply the output contract at low effort. Extending the timeout to 900s
+is the correct fix: the 603s run was close to finishing, and 15 more minutes of
+headroom covers the realistic tail without changing model behavior.
+
+---
+
+## 2026-06-13 — New stage: pile-merge (same-story dedup before the editor)
+
+**Decision:** Add an optional `pile-merge` stage between pile assembly
+(editor-pass-1 / grouping-pass-1) and the editor. The stage presents the
+assembled pile to a reasoning model and asks it to identify item groups that
+cover the same specific event, then merges each flagged group into one entry:
+the primary item is kept (cluster over singleton, then highest source count,
+then lex ref for determinism), secondary source IDs are absorbed, and a merged
+singleton's excerpt is promoted to the summary field.
+
+Schema: `pile_merge_runs` table (migration 023) with `editor_pile_id`,
+`model_used`, `items_in`, `items_out`, `groups_merged`, `merged_pile JSONB`,
+and `generation_log_id`. `editor_piles` gains a nullable `pile_merge_run_id`
+FK. The editor checks this column first: when set, it reads `merged_pile` JSONB
+directly from `pile_merge_runs` and skips digest resolution.
+
+Model: `moonshotai/kimi-k2.6:thinking`, nanogpt, `reasoning_effort: "medium"`,
+`stream: true`, `timeout_ms: 600000`. Output format: `MERGE: C0, S12345` lines
+(or `NONE` if no merges needed). Parser uses `extractRefs()` from
+`src/lib/refs.ts` to tolerate trailing punctuation and brackets.
+
+**Context:** After editor-pass-1 / grouping-pass-1 assemble the pile, it
+occasionally contains multiple entries covering the same specific event — e.g.
+two clusters formed from disjoint source sets, or a cluster and a singleton
+that both cover the same ruling or announcement. These show up in the editor
+pile as separate items and, if both are tiered `feature`, produce redundant
+entries in the day's paper. Triage's semantic-merge pass already catches most of
+these during clustering, but some slip through — especially cross-path
+divergence (triage and grouping can form different cluster boundaries) and items
+that scored highly as singletons.
+
+**Rationale:**
+- **Same-specific-event threshold, not topic similarity.** The prompt's
+  definition is identical to triage's clustering standard: merge only when two
+  items describe the same event (same vote, same ruling, same strike), not
+  merely the same running story or the same cast of actors. Conservative bias:
+  when in doubt, keep separate. A missed merge is a minor duplication; a
+  wrongful merge collapses distinct stories into one and loses information.
+- **Optional, not required.** The stage is a clean step on the pile's FK:
+  `pile_merge_run_id IS NULL` means the editor uses the standard digest path,
+  `IS NOT NULL` means it uses the merged pile. No flag in the editor; no
+  required ordering. It can be run or skipped on any given day.
+- **JSONB for the merged pile.** The merged pile is a structured list written
+  with `JSON.stringify(mergedPile)` and an explicit `::jsonb` cast (per the
+  existing pg-library JSONB quirk in CLAUDE.md). The editor reads it with a
+  typed cast back to `MergedPileEntry[]`.
+- **Merged singletons promoted to cluster type.** When a singleton is absorbed
+  into a cluster (or two singletons are merged together), the surviving entry
+  becomes `itemType: "cluster"` with the singleton's excerpt promoted to the
+  summary field, so the editor's merged-pile formatter presents it the same way
+  as a cluster (title + summary, source count), not as a bare excerpt.
+
+---
+
+## 2026-06-13 — Shared ref normalizer: src/lib/refs.ts
+
+**Decision:** Add `src/lib/refs.ts` with two exported functions:
+
+- `normalizeRef(token: string): string | null` — extracts the first `[CS]\d+`
+  pattern from a token and returns it upper-cased (`"[C3]"` → `"C3"`,
+  `"S17566."` → `"S17566"`, `"cut"` → `null`).
+- `extractRefs(text: string): string[]` — returns all `[CS]\d+` matches in a
+  string, upper-cased (`"S17544, S17566."` → `["S17544", "S17566"]`).
+
+Both functions are used to route LLM-returned ref tokens to pile Map lookups
+without trusting the raw string. `parseEditorOutput` uses `normalizeRef` on
+each ref segment; `parseMergeOutput` uses `extractRefs` on each `MERGE:` line.
+
+**Context:** Two separate ref-brittleness bugs surfaced in the same session:
+
+1. **Editor run #74 — all 150 items fail-safed to standard** (unknown-refs=78,
+   missing=150). Cause: the prompt labels items as `[C3]` (bracketed) but the
+   parser did `byRef.get(rawRef)` with the bracket-containing string, which
+   matched nothing in the bare-key Map. Result: every `byRef.get` call missed →
+   every item was "unknown ref" → every item was fail-safed.
+
+2. **Pile-merge parser dropped valid group** because the model wrote
+   `MERGE: S17544, S17566.` (trailing period). The parser split on `,` and
+   trimmed, leaving `"S17566."` which had no exact match in `validRefs`.
+
+**Rationale:** Both bugs are the same brittleness: trusting the raw LLM token
+as the Map key. The fix extracts the canonical `[CS]\d+` pattern rather than
+cleaning ad-hoc, so any future variation (spacing, case, punctuation) is
+normalized at the lookup site. `src/lib/` is the established home for shared
+utilities per CLAUDE.md; the two functions are general enough that either could
+be re-used by a future parser that handles C/S refs.
+
+---
+
 ## 2026-06-12 — Grouping clusterer: validated threshold 0.72, attach pass design, operational lessons
 
 **Decision:** Commit the grouping clusterer's production configuration as validated on

@@ -59,11 +59,7 @@ fritter-post/
 ├── docs/
 │   ├── concept.md               # the vision document
 │   ├── decisions.md             # decision log, append-only
-│   ├── standing-memo.md         # editorial voice (written)
-│   ├── bio.md                   # the reader (written)
-│   ├── source-policy.md         # operational rules for sources (TBD)
-│   ├── preferences-written.md   # standing reader instructions (TBD)
-│   └── preferences-observed.md  # agent-updated, dated entries (TBD)
+│   └── bio.md                   # the reader (written)
 ├── config/
 │   ├── sources.yaml             # feed list
 │   └── models.yaml              # per-stage LLM model and budget config
@@ -86,7 +82,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–022)
+├── migrations/                  # numbered SQL migrations (001–023)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -111,6 +107,8 @@ collector  →  preprocessor  →  filter  →  prefilter
                               ↓                                 ↓
                         editor-pass-1               grouping-pass-1
                               └────────────────┬────────────────┘
+                                               ↓
+                                        pile-merge (optional)
                                                ↓
                                             editor
 ```
@@ -212,20 +210,45 @@ The `editor-pass-1` module also houses the grouping-path scorer above
 (`runGroupingPass1` / `assembleGroupingPile`). The two functions share the
 same scoring prompt, model config, and `parseBatchOutput` parser.
 
+### pile-merge
+Optional same-story dedup pass that runs after pile assembly and before the
+editor. Presents the assembled pile to a reasoning model (`moonshotai/kimi-k2.6:
+thinking`, nanogpt) and asks it to identify items that cover the same specific
+event. For each flagged merge group, one primary item is kept (cluster over
+singleton, then highest source count, then lex ref for determinism) and
+secondary items are absorbed: their source IDs are merged in and the excerpt of
+a merged singleton is promoted to the summary field of the surviving entry.
+Items not flagged survive unchanged.
+
+Output: `pile_merge_runs` table (model used, items in/out, groups merged,
+`merged_pile` JSONB). The pile's `pile_merge_run_id` FK is set; the editor
+checks this column first and, when set, reads the merged pile directly from
+`pile_merge_runs.merged_pile` instead of resolving digest rows from scratch.
+Threshold is strictly same-specific-event — identical to triage's clustering
+standard. Conservative bias: when in doubt, keep separate. Controlled by
+`pile_merge.*` in `models.yaml`.
+
 ### editor
 Whole-pile single LLM call. Reads all clusters and singletons from the editor
-pile, ranks and tiers them: `feature`, `standard`, `brief`, or `cut`. Emits
-`tier;;ref;;reason` lines in rank order; software derives rank from line
-position. Streaming always on (`stream: true`). Retry-once-then-fallback
-resilience: primary → retry primary once → optional fallback model
-(`editor.fallback` in `models.yaml`). Reads `docs/bio.md` and
-`docs/standing-memo.md`.
+pile (or the merged pile, if pile-merge ran), ranks and tiers them: `feature`,
+`standard`, `brief`, or `cut`. Emits `tier;;ref;;reason` lines in rank order;
+software derives rank from line position. Streaming always on (`stream: true`).
+Retry-once-then-fallback resilience: primary → retry primary once → optional
+fallback model (`editor.fallback` in `models.yaml`). Reads `docs/bio.md`.
 
-Consumes piles from **either path**: when `editor_piles.grouping_run_id` is
-set it resolves cluster details (title, summary, source count) from
-`grouping_runs.digest`; when `triage_run_id` is set it uses `triage_runs.digest`.
-Both digests share the same flat `title;;summary;;ids` format, so the editor's
-prompt input is equivalent regardless of path.
+The system prompt is fully static (no runtime file reads). The bio travels in
+the user message alongside the pile. The output parser is recognition-based:
+each `;;`-delimited line is scanned for a tier keyword (`feature`, `standard`,
+`brief`, `cut`) and a C/S ref pattern (`C\d+` / `S\d+`) independently of
+column position, so format variation from the model (swapped columns, leading
+numbering) doesn't break parsing.
+
+Consumes piles from **three paths**: when `editor_piles.pile_merge_run_id` is
+set it reads the merged pile JSONB directly; when `grouping_run_id` is set it
+resolves cluster details from `grouping_runs.digest`; when `triage_run_id` is
+set it uses `triage_runs.digest`. All three paths produce the same prompt
+structure (`MergedPileBlock` list for the merged path, `EditorClusterPileItem` +
+`EditorSingletonPileItem` for the digest paths).
 
 ---
 
@@ -329,6 +352,7 @@ anything with quoted arguments).
 - `npm run triage [-- --model <id>]` — cluster items; `--model` pins one
   model across seed + spines + semantic-merge for a clean bake-off
 - `npm run editor-pass-1` — score residual singletons + assemble triage pile
+- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup pass on assembled pile
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Pipeline stages** (grouping path — experimental parallel)
@@ -337,6 +361,7 @@ anything with quoted arguments).
   embed items, build candidate groups, run describe pass, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
   score all clusters + singletons on 0–100 bio-relevance scale, assemble pile
+- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup (shared with triage path)
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -391,7 +416,6 @@ discussion first.
 
 - `docs/concept.md` — vision, principles, pipeline architecture
 - `docs/decisions.md` — why specific choices were made (append-only)
-- `docs/standing-memo.md` — editorial voice; the editor's brief
 - `docs/bio.md` — the reader; read by prefilter, editor-pass-1, grouping-pass-1, and editor
 - `config/sources.yaml` — current feed list
 - `config/models.yaml` — per-stage model, provider, budget, stream config
