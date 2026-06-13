@@ -231,7 +231,7 @@ standard. Conservative bias: when in doubt, keep separate. Controlled by
 ### editor
 Whole-pile single LLM call. Reads all clusters and singletons from the editor
 pile (or the merged pile, if pile-merge ran), ranks and tiers them: `feature`,
-`standard`, `brief`, or `cut`. Emits `tier;;ref;;reason` lines in rank order;
+`standard`, or `brief`. Emits `tier;;ref;;reason` lines in rank order;
 software derives rank from line position. Streaming always on (`stream: true`).
 Retry-once-then-fallback resilience: primary → retry primary once → optional
 fallback model (`editor.fallback` in `models.yaml`). Reads `docs/bio.md`.

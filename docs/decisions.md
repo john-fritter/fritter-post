@@ -69,6 +69,29 @@ clean, immediate `tier;;ref;;reason` output on the next run.
 
 ---
 
+## 2026-06-13 — Editor tier vocabulary simplified to three tiers (cut removed from prompt)
+
+**Decision:** Remove `cut` from the editor's system prompt tier vocabulary.
+The active tiers are now `feature`, `standard`, and `brief`. The parser
+(`VALID_TIERS`) and DB schema (`items_cut`) retain `cut` as a recognized tier
+for backwards compatibility, but the model is no longer instructed to use it.
+
+**Context:** After the prompt redesign, the `brief` tier already serves as the
+low end of the paper and the explicit `cut` tier introduced marginal ambiguity
+("doesn't earn a place" vs. "worth noting, ~30-60 words") at the boundary
+between brief and cut. The system prompt was rewritten with only three tiers
+and the `cut` instruction removed.
+
+**Rationale:** Fewer tiers = simpler decision surface at the margins. Every
+item assigned `brief` appears somewhere in the paper (briefly), which is
+arguably a better policy than silent omission. The `cut` value remains
+parseable in case a future model emits it despite not being instructed to.
+
+**Supersedes:** The `cut` tier description in "Editor stage: whole-pile single
+call, three tiers + cut, line-order ranking" (2026-06-07).
+
+---
+
 ## 2026-06-13 — Editor output parser made recognition-based to handle model format variation
 
 **Decision:** Replace the positional `;;`-column parser in `parseEditorOutput`
