@@ -2,7 +2,7 @@ import "dotenv/config";
 import OpenAI from "openai";
 import { getPool } from "../db/index.js";
 
-export type LLMProvider = "ollama-cloud" | "nanogpt";
+export type LLMProvider = "ollama-cloud" | "nanogpt" | "openrouter";
 
 export interface LLMCallOptions {
   stage: string;
@@ -45,6 +45,11 @@ function getClient(provider: LLMProvider = "nanogpt", timeoutMs: number = DEFAUL
     apiKey = process.env["NANOGPT_API_KEY"];
     if (!baseURL) throw new Error("NANOGPT_BASE_URL environment variable is required for nanogpt provider");
     if (!apiKey) throw new Error("NANOGPT_API_KEY environment variable is required for nanogpt provider");
+  } else if (provider === "openrouter") {
+    baseURL = process.env["OPENROUTER_BASE_URL"];
+    apiKey = process.env["OPENROUTER_API_KEY"];
+    if (!baseURL) throw new Error("OPENROUTER_BASE_URL environment variable is required for openrouter provider");
+    if (!apiKey) throw new Error("OPENROUTER_API_KEY environment variable is required for openrouter provider");
   } else {
     baseURL = process.env["LLM_BASE_URL"];
     apiKey = process.env["LLM_API_KEY"];

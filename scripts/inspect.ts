@@ -169,7 +169,8 @@ interface EditorRunRow {
   started_at: string;
   completed_at: string | null;
   pile_id: number;
-  triage_run_id: number;
+  triage_run_id: number | null;
+  grouping_run_id: number | null;
   model_used: string;
   items_in: number;
   items_feature: number;
@@ -1095,7 +1096,11 @@ async function main() {
           console.log(`  Started:    ${started}`);
           console.log(`  Completed:  ${finished}`);
           console.log(`  Pile:       #${run.pile_id}`);
-          console.log(`  Triage run: #${run.triage_run_id}`);
+          if (run.grouping_run_id !== null) {
+            console.log(`  Grouping run: #${run.grouping_run_id}`);
+          } else {
+            console.log(`  Triage run: #${run.triage_run_id}`);
+          }
           console.log(`  Model:      ${run.model_used}`);
           console.log(`  Items in:   ${run.items_in}`);
 
@@ -1105,17 +1110,32 @@ async function main() {
           console.log(`  brief     ${run.items_brief}`);
           console.log(`  cut       ${run.items_cut}`);
 
-          // Resolve cluster titles from the triage digest (indexed by line order,
-          // matching cluster_index) so the ranked list can show readable titles.
-          const { rows: triageRows } = await pool.query<{ digest: string | null }>(
-            "SELECT digest FROM triage_runs WHERE id = $1",
-            [run.triage_run_id]
-          );
-          const digest = triageRows[0]?.digest;
-          const parsedDigest = digest ? parseTriageJson(digest) : null;
+          // Resolve cluster titles from the upstream digest so the ranked list
+          // can show readable titles. Both triage and grouping digests use the
+          // same flat format; parseTriageJson handles both.
           const clusterTitles = new Map<number, string>();
-          if (parsedDigest) {
-            parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
+          if (run.grouping_run_id !== null) {
+            const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
+              "SELECT digest FROM grouping_runs WHERE id = $1",
+              [run.grouping_run_id]
+            );
+            const parsedDigest = groupingRows[0]?.digest
+              ? parseTriageJson(groupingRows[0].digest)
+              : null;
+            if (parsedDigest) {
+              parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
+            }
+          } else if (run.triage_run_id !== null) {
+            const { rows: triageRows } = await pool.query<{ digest: string | null }>(
+              "SELECT digest FROM triage_runs WHERE id = $1",
+              [run.triage_run_id]
+            );
+            const parsedDigest = triageRows[0]?.digest
+              ? parseTriageJson(triageRows[0].digest)
+              : null;
+            if (parsedDigest) {
+              parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
+            }
           }
 
           const { rows: storyRows } = await pool.query<EditorStoryRow>(
@@ -1156,7 +1176,7 @@ async function main() {
         } else {
           const limit = parseInt(flags["limit"] ?? "20", 10);
           const { rows } = await pool.query<EditorRunRow>(
-            `SELECT id, started_at, completed_at, pile_id, triage_run_id,
+            `SELECT id, started_at, completed_at, pile_id, triage_run_id, grouping_run_id,
                     model_used, items_in, items_feature, items_standard, items_brief, items_cut
              FROM editor_runs
              ORDER BY started_at DESC

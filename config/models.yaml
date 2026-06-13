@@ -117,7 +117,7 @@ editor:
   max_tokens: 48000
   reasoning_effort: "medium"
   stream: true
-  timeout_ms: 600000
+  timeout_ms: 900000
   # stream: true — keeps the HTTP connection alive past undici's ~300s headers
   # timeout when a reasoning model thinks before emitting the first token.
   # timeout_ms: 600000 — generous body/stream timeout for long reasoning calls.
@@ -145,12 +145,100 @@ editor_pass_1:
   stream: true
   timeout_ms: 600000
 
-# Embedding model for the upcoming embedding-based grouping stage.
-# BAAI/bge-m3 at 1024 dims; matches the vector(1024) column in item_embeddings.
-# batch_size controls how many texts are sent per /v1/embeddings call.
+# Embedding model for the grouping stage.
+# Qwen3-Embedding-8B via OpenRouter at 4096 dims; matches vector(4096) in
+# item_embeddings (migration 020). batch_size controls texts per API call.
+# body_cap is set in grouping.embedding.body_cap (2000 chars) — not here.
 embeddings:
-  model: BAAI/bge-m3
-  provider: nanogpt
-  dims: 1024
+  model: qwen/qwen3-embedding-8b
+  provider: openrouter
+  dims: 4096
   batch_size: 100
   timeout_ms: 120000
+
+# Pile-merge pass: one LLM call over the assembled top-N pile that identifies
+# same-story duplicates the upstream clusterer missed. Merge-only — does not
+# score, tier, or cut. Conservative same-specific-event threshold. Runs after
+# assembleGroupingPile (or assemblePile) and before the editor.
+pile_merge:
+  model: moonshotai/kimi-k2.6:thinking
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 8192
+  reasoning_effort: "medium"
+  stream: true
+  timeout_ms: 600000
+
+# Embedding-based grouping stage — runs in parallel with triage for comparison.
+# Three steps: embed (software + embedding model), candidate groups (software,
+# cosine-similarity graph + union-find), boundary refine (LLM, one call per
+# large candidate group).
+#
+# THE KNOB: embedding.similarity_threshold is the primary tuning lever.
+# Higher = fewer, tighter groups. Lower = more, looser groups.
+grouping:
+  # LLM used for step 3 boundary-refine calls (one call per candidate group
+  # of size >= refine.min_group_size).
+  model: alibaba/qwen3.6-27b:thinking
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 8192
+  reasoning_effort: "none"
+  stream: true
+  timeout_ms: 600000
+  embedding:
+    # Max characters from body_text included in embed text per item.
+    # 2000 chars captures enough of the article opening that same-event
+    # pairs score meaningfully higher than same-topic-different-event pairs.
+    body_cap: 2000
+    # Cosine similarity threshold for adding an edge between two items.
+    # Start here and sweep: higher tightens groups, lower loosens them.
+    similarity_threshold: 0.72
+    # Top-K nearest neighbors per item considered for edge creation.
+    # Limits graph density; raise if same-story items are getting missed.
+    top_k: 10
+  refine:
+    # Set to true to run the LLM boundary-refine step (one call per large
+    # candidate group asking "same event or split?"). False = skip entirely;
+    # connected-component groups are the final groups. Keep code, just disable.
+    enabled: false
+    # Candidate groups with >= this many items receive a refine call when enabled.
+    min_group_size: 3
+    # Max concurrent LLM boundary-refine calls.
+    concurrency: 5
+  # Attach pass: for each multi-item cluster, find singletons whose max cosine
+  # similarity to any cluster member falls in [attach_floor, similarity_threshold)
+  # — the near-miss band — and make one LLM call per cluster to confirm which
+  # (if any) belong to the same specific event. Runs after connected-components,
+  # before describe. Attach-only; never splits clusters.
+  attach:
+    enabled: true
+    # Lower bound of the near-miss band. Singletons below this floor are too
+    # dissimilar to be worth offering to the LLM.
+    attach_floor: 0.60
+    model: zai-org/glm-5.1
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 1024
+    concurrency: 5
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 120000
+  # Describe pass: cheap batched LLM call that writes a neutral title and
+  # short summary for every multi-item cluster. Runs after attach (and refine
+  # when enabled). Singletons skip this pass.
+  describe:
+    model: zai-org/glm-5.1
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 4096
+    # Clusters per LLM call. Each call sees batch_size clusters, each shown
+    # as its member items (title + body excerpt).
+    batch_size: 20
+    concurrency: 5
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 120000
+  # Top-N rows (clusters + singletons combined) by bio-relevance score that
+  # pass into the editor pile. Replaces the old all-clusters + singleton_pile_target logic.
+  pile_target: 150

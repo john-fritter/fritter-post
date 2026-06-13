@@ -55,7 +55,11 @@ async function main() {
 
   console.log(`\nEditor run #${run.id} complete.`);
   console.log(`  Pile:        #${run.pileId}`);
-  console.log(`  Triage run:  #${run.triageRunId}`);
+  if (run.groupingRunId !== null) {
+    console.log(`  Grouping run: #${run.groupingRunId}`);
+  } else {
+    console.log(`  Triage run:  #${run.triageRunId}`);
+  }
   console.log(`  Model:       ${run.modelUsed}`);
   console.log(`  Items in:    ${run.itemsIn}`);
   console.log(`  Feature:     ${run.itemsFeature}`);
