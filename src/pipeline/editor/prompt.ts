@@ -16,44 +16,33 @@ export interface EditorSingletonPileItem {
   pass1Reason: string;
 }
 
-export function buildSystemPrompt(standingMemo: string, bioContent: string): string {
-  return `You are the editor of a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier triage and scoring — your job is to put them in final order and decide how much space each one earns. You do not write anything; that happens downstream.
+// Static task spec: rank/tier every pile item for a one-reader newspaper.
+// Bio and pile travel in the user message (see buildUserPrompt / buildMergedUserPrompt).
+export function buildSystemPrompt(): string {
+  return `Rank and tier every item in today's pile for a one-reader personal newspaper. The reader's bio is in the next message.
 
-## STANDING MEMO
+TIERS
 
-${standingMemo}
+feature — the day's most consequential developments, ~400-800 words downstream. Aim 8-15 on a typical day; you may exceed that on a heavy news day. Only assign if the story both matters enough to lead AND has enough substance for feature length.
+standard — real developments worth their own space; the working body of the paper. Largest tier.
+brief — worth noting, ~30-60 words. Aim for a minority of the pile.
+cut — doesn't earn a place; no floor. Slow days make short papers — don't pad.
 
-## READER BIO
+RANKING
 
-${bioContent}
+Order best-first. Lead with largest consequence and what's closest to this reader. Source count and pass-1 score are signals, not orders.
 
-## YOUR TASK
+OUTPUT CONTRACT
 
-You will see the whole pile at once: every multi-source cluster and every single-source item that made today's cut. Ranking is relational — weigh each item against every other item in the pile, not in isolation. Then:
-
-1. RANK every item, best first. The lead story goes at the top.
-2. ASSIGN each item a tier:
-   - **feature** — the day's biggest story or stories. Earns substantial treatment.
-   - **standard** — solid coverage; a real card with an expandable body.
-   - **brief** — a short acknowledgment; a line or a small card.
-   - **cut** — does not earn a place in today's paper.
-3. Give each item a short reason — a phrase for an inspection log, not prose for the reader.
-
-Use the standing memo's voice and priorities and the bio's sense of what matters to this reader to make these calls. Slow news days are honored: a quiet day should produce a short paper, mostly brief or cut, not an inflated one. Don't pad weak stories upward to fill space, and don't be afraid to cut.
-
-## OUTPUT
-
-Output ONE LINE PER PILE ITEM and nothing else — no JSON, no brackets, no markdown fence, no header, no prose before or after. Emit items in your final ranked order, best first. Rank is the line order — do not number the lines yourself.
-
-Each line must be exactly:
+Output ONLY lines of this exact form, one per pile item, ranked best-first:
 
 tier;;ref;;reason
 
-- tier: one of feature, standard, brief, cut
-- ref: the item's reference exactly as given to you (e.g. C0 or S4821)
-- reason: a short phrase, a few words, on why it ranks where it does and earned that tier
+  tier: one of feature, standard, brief, cut
+  ref: the item reference exactly as given (e.g. C0 or S4821)
+  reason: a short phrase
 
-Every item in the pile must appear on exactly one line. Do not omit any item, do not invent a ref that wasn't given to you, and never place the same ref on more than one line.`;
+Every pile item must appear on exactly one line. Do not omit any item. Do not invent refs. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts, no candidate listing.`;
 }
 
 function formatCluster(item: EditorClusterPileItem): string {
@@ -72,7 +61,7 @@ function formatSingleton(item: EditorSingletonPileItem): string {
   ].join("\n");
 }
 
-export function buildUserPrompt(
+function buildPileSection(
   clusters: EditorClusterPileItem[],
   singletons: EditorSingletonPileItem[],
 ): string {
@@ -99,6 +88,14 @@ export function buildUserPrompt(
   }
 
   return sections.join("\n\n");
+}
+
+export function buildUserPrompt(
+  clusters: EditorClusterPileItem[],
+  singletons: EditorSingletonPileItem[],
+  bio: string,
+): string {
+  return `The reader:\n\n${bio}\n\n---\n\n${buildPileSection(clusters, singletons)}`;
 }
 
 // Used by the editor when pile_merge_run_id is set on the pile: the merged
@@ -128,7 +125,7 @@ function formatMergedSingleton(block: MergedPileBlock): string {
   return `[${block.ref}] ${block.title}${scoreStr}\n${block.excerpt}`;
 }
 
-export function buildMergedUserPrompt(blocks: MergedPileBlock[]): string {
+function buildMergedPileSection(blocks: MergedPileBlock[]): string {
   const clusterBlocks = blocks.filter((b) => b.summary.length > 0);
   const singletonBlocks = blocks.filter((b) => b.summary.length === 0);
   const total = blocks.length;
@@ -159,4 +156,8 @@ export function buildMergedUserPrompt(blocks: MergedPileBlock[]): string {
   }
 
   return sections.join("\n\n");
+}
+
+export function buildMergedUserPrompt(blocks: MergedPileBlock[], bio: string): string {
+  return `The reader:\n\n${bio}\n\n---\n\n${buildMergedPileSection(blocks)}`;
 }

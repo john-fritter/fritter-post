@@ -17,19 +17,12 @@ import {
 import type { MergedPileEntry } from "../pile-merge/index.js";
 
 const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
-const STANDING_MEMO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "standing-memo.md");
 
 const BIO_FALLBACK =
   "(Reader bio not yet written. Apply generic editorial judgment: weight " +
   "substantive accountability journalism and stories with direct stakes for an " +
   "ordinary reader; send routine sports, celebrity, and market-noise items toward " +
   "the bottom tiers or cut them outright.)";
-
-const STANDING_MEMO_FALLBACK =
-  "(Standing memo not yet written. Rank by what most directly matters to the " +
-  "reader described in the bio below — give the lead position to the day's most " +
-  "consequential story — and don't be afraid to tier most of the pile down to " +
-  "brief or cut on a slow news day. A short, honest paper beats a padded one.)";
 
 function loadTextFile(filePath: string, fallback: string): string {
   try {
@@ -369,6 +362,8 @@ export async function runEditor(
   const groupingRunId = pile.grouping_run_id;
   const pileMergeRunId = pile.pile_merge_run_id;
 
+  const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
+
   let clusterItems: EditorClusterPileItem[];
   let singletonItems: EditorSingletonPileItem[];
   let pileItems: EditorPileItem[];
@@ -453,7 +448,7 @@ export async function runEditor(
         })),
     ];
 
-    userPrompt = buildMergedUserPrompt(mergedBlocks);
+    userPrompt = buildMergedUserPrompt(mergedBlocks, bio);
     console.log(`[editor] pile #${pileId}: merged pile (pile-merge run #${pileMergeRunId})`);
   } else {
     // Normal path: resolve cluster details from the appropriate digest, then
@@ -576,7 +571,7 @@ export async function runEditor(
       })),
     ];
 
-    userPrompt = buildUserPrompt(clusterItems, singletonItems);
+    userPrompt = buildUserPrompt(clusterItems, singletonItems, bio);
   }
 
   if (pileItems.length === 0) {
@@ -594,9 +589,7 @@ export async function runEditor(
   const timeoutMs = stageConfig.timeout_ms;
   const stream = stageConfig.stream;
 
-  const standingMemo = loadTextFile(STANDING_MEMO_PATH, STANDING_MEMO_FALLBACK);
-  const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
-  const systemPrompt = buildSystemPrompt(standingMemo, bio);
+  const systemPrompt = buildSystemPrompt();
 
   if (pileMergeRunId === null) {
     console.log(

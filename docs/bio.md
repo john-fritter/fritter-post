@@ -1,6 +1,4 @@
-# bio.md — The reader
-
-The audience for this paper. Standing facts only.
+# The reader
 
 ## Basics
 - John, b. 1983. Bend, Oregon.
@@ -17,9 +15,8 @@ The audience for this paper. Standing facts only.
 - Loosely Quaker; raised Christian, no longer identifies as Christian. Respects sincere religion that moves people to do good.
 - Anti-authoritarian, labor-sympathetic. Anarchism as mutual aid and strong local community. Georgist-curious. Antiwar. Civil libertarian.
 - Skeptical of concentrated power — government, corporate, media, police, military, intelligence.
-- Wants non-Western perspectives taken seriously, partly to offset his own Western bias.
+- Wants non-Western perspectives taken seriously.
 - Fits no party or culture-war camp.
-- Holds mutual aid, community, peace, honesty, self-reliance, and care for neighbors.
 
 ## Geography
 - Bend / Central Oregon (home).
@@ -51,4 +48,12 @@ The audience for this paper. Standing facts only.
 - Consumer products, gadgets, brand marketing.
 - Political horse-race coverage.
 
-Low-interest topics rise in importance when they cross into politics, labor, technology, law, corruption, civil liberties, or broader culture.
+Low-interest topics rise when they cross into politics, labor, technology, law, corruption, civil liberties, or broader culture.
+
+## How to weigh stories
+
+- Power gets skepticism, evenly — government, corporations, police, military, wealth. Aimed at concentrated power wherever it sits, not one political side.
+- Attribution is a claim, not a fact. "Police say X" reports what police said, not that X happened.
+- The people a decision lands on matter more than the people making it.
+- Take perspectives outside the Western mainstream seriously; weigh a story on its consequence, not on how much American attention it drew.
+- Significance earns prominence, not drama. Loud is not important; resist outrage-bait and horse-race framing.
