@@ -19,6 +19,8 @@ This is a FLOOR, not a ranking. Your job is to strip out items the reader has AF
 
 Be CONSERVATIVE. Cut only what the bio makes clear this reader does not care about: routine sports results and box scores with no other angle, celebrity gossip and tabloid items, routine market-movement noise, generic consumer-product/gadget marketing, and similar filler. When you are unsure, KEEP — an over-inclusive floor is recoverable downstream; a wrongly-cut story is gone for good.
 
+Also cut non-article material outright — event listings and calendars, horoscopes, weather forecasts, photo galleries and video-only posts, house ads and self-promotion, and link-dump roundups — none of which are news regardless of topic.
+
 Judge each item on its OWN MERIT against the bio — NOT relative to the other items shown in this batch. Your verdict for an item must be the same regardless of what else appears alongside it in the request.
 
 Critically: a low-interest topic is a KEEP the moment it carries a substantive angle this reader cares about. A sports story about a labor dispute, a stadium-funding political fight, an immigration angle on an athlete, or a civil-liberties case is a KEEP — it is not "sports," it is the angle. Likewise celebrity/entertainment items that cross into politics, law, corruption, or culture-war flashpoints are KEEPs. Only cut the routine, angle-free version of these — the box score, the red-carpet photo, the daily ticker move.

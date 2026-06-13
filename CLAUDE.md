@@ -67,8 +67,7 @@ fritter-post/
 │   ├── pipeline/                # the pipeline stages
 │   │   ├── collector/
 │   │   ├── preprocessor/
-│   │   ├── filter/              # LLM garbage filter
-│   │   ├── prefilter/           # bio-aware relevance floor + news/opinion routing
+│   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── triage/              # clustering: seed + parallel spines + merge
 │   │   ├── grouping/            # alt clustering: embeddings + connected components + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (triage AND grouping paths)
@@ -99,7 +98,7 @@ Both terminate at the same editor stage; only one pile feeds the editor on
 any given run.
 
 ```
-collector  →  preprocessor  →  filter  →  prefilter
+collector  →  preprocessor  →  prefilter
                                                │
                               ┌────────────────┴────────────────┐
                               ↓                                 ↓
@@ -122,22 +121,20 @@ is signal, not noise.
 URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
 pattern rules in `junk-filter.ts`), track/group assignment from source config.
 Writes `preprocessed_items`. The assembler (`assembler.ts`) queries the kept set
-for downstream stages, composing filter, prefilter, and junk-filter results by
+for downstream stages, composing prefilter and junk-filter results by
 simple set intersection.
-
-### filter
-LLM-based garbage filter: JSON-structured output per batch, keep/discard with
-reason. Needs no reader context — pure "is this a legitimate news item" judgment.
 
 ### prefilter
 Bio-aware relevance floor between the preprocessor and the clusterer. Batched,
 concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
 - `cut` — obvious noise this reader has no interest in (routine sports scores,
-  celebrity tabloid, market-movement wire filler)
+  celebrity tabloid, market-movement wire filler) plus non-article material
+  (event calendars, horoscopes, photo galleries, house ads, link-dump roundups)
 - `news` — flows into clustering (triage) and editor-pass-1 scoring
 - `opinion` — kept but routed out of clustering; pools with `track=analysis`
   items for a future Longer Reads section
-Conservative bias: when unsure, keep as `news`. Reads `docs/bio.md`.
+Conservative bias: when unsure, keep as `news`. Reads `docs/bio.md`. Absorbs the
+junk-removal job that the former standalone LLM `filter` stage handled.
 
 ### triage
 Clusters the kept `news` items. Four-phase architecture:
@@ -347,8 +344,7 @@ anything with quoted arguments).
 **Pipeline stages** (triage path — production)
 - `npm run collect` — collect raw source items
 - `npm run preprocess` — deduplicate/canonicalize collected items
-- `npm run filter` — LLM garbage filter
-- `npm run prefilter` — bio-aware relevance floor + news/opinion routing
+- `npm run prefilter` — bio-aware relevance floor + junk removal + news/opinion routing
 - `npm run triage [-- --model <id>]` — cluster items; `--model` pins one
   model across seed + spines + semantic-merge for a clean bake-off
 - `npm run editor-pass-1` — score residual singletons + assemble triage pile
@@ -356,7 +352,7 @@ anything with quoted arguments).
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Pipeline stages** (grouping path — experimental parallel)
-- (collect / preprocess / filter / prefilter same as above)
+- (collect / preprocess / prefilter same as above)
 - `npm run grouping [-- --preprocessor-run-id <n>] [-- --model <id>]` —
   embed items, build candidate groups, run describe pass, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
@@ -368,7 +364,6 @@ anything with quoted arguments).
 - `npm run inspect -- list [--source <name>] [--limit <n>]`
 - `npm run inspect -- collector [--id <n>]`
 - `npm run inspect -- preprocessor [--id <n>]`
-- `npm run inspect -- filter [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- triage [--id <n>] [--rounds]` — `--rounds` shows each
   round's raw output (seed, spine:*, merged, semantic_merge)
