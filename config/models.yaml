@@ -88,7 +88,7 @@ pile_merge:
   model: moonshotai/kimi-k2.6:thinking
   provider: nanogpt
   temperature: 0.1
-  max_tokens: 8192
+  max_tokens: 48000
   reasoning_effort: "medium"
   stream: true
   timeout_ms: 600000
