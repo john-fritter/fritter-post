@@ -1,21 +1,9 @@
 # Model assignments per pipeline stage.
 # All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
 
-filter:
-  model: deepseek/deepseek-v4-flash  # NanoGPT model id (confirmed nano-gpt.com/models)
-  provider: nanogpt
-  temperature: 0.1
-  max_tokens: 4096
-  batch_size: 100
-  concurrency: 10
-  reasoning_effort: "none"
-  stream: true
-  timeout_ms: 600000
-
-# Bio-aware relevance floor between the preprocessor and the clusterer — a
-# separate, later judgment from `filter` (garbage vs. reader-relevance; see
-# docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
-# since this stage is built to become a scorer itself with only a prompt swap.
+# Bio-aware relevance floor between the preprocessor and the clusterer. Same
+# model family as editor_pass_1's bio-aware scoring, since this stage is built
+# to become a scorer itself with only a prompt swap (see docs/decisions.md).
 prefilter:
   model: zai-org/glm-5.1
   provider: nanogpt
@@ -80,29 +68,17 @@ embeddings:
   batch_size: 100
   timeout_ms: 120000
 
-# Pile-merge pass: one LLM call over the assembled top-N pile that identifies
-# same-story duplicates the upstream clusterer missed. Merge-only — does not
-# score, tier, or cut. Conservative same-specific-event threshold. Runs after
-# assembleGroupingPile (or assemblePile) and before the editor.
-pile_merge:
-  model: zai-org/glm-5.1:thinking
-  provider: nanogpt
-  temperature: 0.1
-  max_tokens: 48000
-  reasoning_effort: "xhigh"
-  stream: true
-  timeout_ms: 900000
-
 # Embedding-based grouping stage — the pipeline's clustering step.
-# Three steps: embed (software + embedding model), candidate groups (software,
-# cosine-similarity graph + union-find), boundary refine (LLM, one call per
-# large candidate group).
+# Four steps: embed (software + embedding model), candidate groups (software,
+# cosine-similarity graph + union-find), attach (LLM, near-miss singletons),
+# describe (LLM, neutral title + summary per multi-item cluster).
 #
 # THE KNOB: embedding.similarity_threshold is the primary tuning lever.
 # Higher = fewer, tighter groups. Lower = more, looser groups.
 grouping:
-  # LLM used for step 3 boundary-refine calls (one call per candidate group
-  # of size >= refine.min_group_size).
+  # Stage-level model. The attach and describe sub-steps set their own models
+  # under grouping.attach / grouping.describe; this top-level value satisfies
+  # the shared stage-config schema.
   model: alibaba/qwen3.6-27b:thinking
   provider: nanogpt
   temperature: 0.1
@@ -121,15 +97,6 @@ grouping:
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
     top_k: 10
-  refine:
-    # Set to true to run the LLM boundary-refine step (one call per large
-    # candidate group asking "same event or split?"). False = skip entirely;
-    # connected-component groups are the final groups. Keep code, just disable.
-    enabled: false
-    # Candidate groups with >= this many items receive a refine call when enabled.
-    min_group_size: 3
-    # Max concurrent LLM boundary-refine calls.
-    concurrency: 10
   # Attach pass: for each multi-item cluster, find singletons whose max cosine
   # similarity to any cluster member falls in [attach_floor, similarity_threshold)
   # — the near-miss band — and make one LLM call per cluster to confirm which
@@ -149,8 +116,8 @@ grouping:
     stream: true
     timeout_ms: 120000
   # Describe pass: cheap batched LLM call that writes a neutral title and
-  # short summary for every multi-item cluster. Runs after attach (and refine
-  # when enabled). Singletons skip this pass.
+  # short summary for every multi-item cluster. Runs after attach. Singletons
+  # skip this pass.
   describe:
     model: zai-org/glm-5.1
     provider: nanogpt

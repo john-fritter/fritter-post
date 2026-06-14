@@ -17,8 +17,7 @@
     "prefilter": "tsx scripts/prefilter.ts",
     "editor": "tsx scripts/editor.ts",
     "grouping": "tsx scripts/grouping.ts",
-    "grouping-pass1": "tsx scripts/grouping-pass1.ts",
-    "pile-merge": "tsx scripts/pile-merge.ts"
+    "grouping-pass1": "tsx scripts/grouping-pass1.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

@@ -56,7 +56,6 @@ async function main() {
   console.log(`  model:                ${effectiveModel}${modelOverride ? " (override)" : " (default)"}`);
   console.log(`  similarity_threshold: ${cfg.embedding.similarity_threshold}`);
   console.log(`  top_k:                ${cfg.embedding.top_k}`);
-  console.log(`  min_group_size:       ${cfg.refine.min_group_size}`);
   console.log(`  embed_body_cap:       ${cfg.embedding.body_cap} chars`);
 
   const run = await runGrouping({ preprocessorRunId, modelOverride });

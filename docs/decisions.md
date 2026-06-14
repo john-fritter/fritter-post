@@ -20,6 +20,44 @@ Entry format:
 
 ---
 
+## 2026-06-14 — Pile-merge and grouping refine removed; stale filter remnants cleaned
+
+**Decision:** Remove three things from the codebase entirely:
+1. The **pile-merge** stage (`src/pipeline/pile-merge/`, `scripts/pile-merge.ts`,
+   the `pile_merge` config block + schema, the `npm run pile-merge` script, and
+   the editor's merged-pile path). Dropped the `pile_merge_runs` table and the
+   `editor_piles.pile_merge_run_id` column via migration `025_drop_pile_merge.sql`.
+2. The grouping **boundary-refine** pass (the gated step 4 in
+   `src/pipeline/grouping/index.ts`, the `REFINE_*` prompts, and the
+   `grouping.refine` config block + Zod schema). The editor now has a single
+   pile path (resolve `grouping_runs.digest`), and grouping is four steps:
+   embed → candidate groups → attach → describe.
+3. Leftover **filter** stage remnants: the orphaned `filter` config block, the
+   dead `FilterStageConfig` export (the shared schema was renamed
+   `FilterStageConfigSchema` → `BatchStageConfigSchema`, since it's the base for
+   prefilter and editor-pass-1), and the never-read `filter_runs` / `filter_results`
+   tables via migration `026_drop_filter.sql`.
+
+**Context:** Pile-merge had been built and wired (see 2026-06-13 entry) but never
+earned its place — same-story dedup is better handled upstream in grouping, and
+the extra reasoning-model call before the editor was cost and latency we no longer
+want. The refine pass had been kept dormant behind `refine.enabled: false` (see
+2026-06-12 entry) as a "keep the code, toggle to re-enable" hedge; carrying dead
+gated code and stale config comments wasn't worth it. The filter stage was
+replaced by prefilter long ago but its config and tables were never cleaned up.
+
+**Rationale:** Less is more. Dormant feature flags and orphaned schema rot — they
+drift out of sync with reality and mislead the next reader. Removing pile-merge
+collapses the editor back to a single, easier-to-reason-about path. The DB cleanup
+uses new `DROP ... IF EXISTS` migrations rather than editing history, consistent
+with `024_drop_triage.sql`; the original `007`/`023` migrations stay in place.
+
+**Supersedes:** 2026-06-13 "New stage: pile-merge" (pile-merge is removed) and the
+refine-pass portion of 2026-06-12 "Grouping clusterer: validated threshold 0.72…"
+(the refine code is now deleted, not just disabled).
+
+---
+
 ## 2026-06-14 — Triage clusterer removed; grouping is the sole clustering path
 
 **Decision:** Remove the LLM-based `triage` clusterer (wire seed + parallel
