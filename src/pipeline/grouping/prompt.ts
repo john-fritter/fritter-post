@@ -55,14 +55,18 @@ export function buildRefineUserPrompt(itemBlocks: string): string {
 
 const ATTACH_SYSTEM_PROMPT = `You are deciding whether individual news items should be attached to an existing news cluster.
 
-The cluster items all report on THE SAME SPECIFIC EVENT. The candidates are similar in embedding space but fell below the automatic clustering threshold — they are near-misses, not confirmed matches.
+The cluster items all report on THE SAME STORY. The candidates are similar in embedding space but fell below the automatic clustering threshold — they are near-misses, not confirmed matches. Attach a candidate when it belongs to the same story as the cluster.
 
-RULE: attach a candidate only when it reports on the SAME SPECIFIC EVENT as the cluster items — not merely the same topic, conflict, region, ongoing situation, or recurring set of actors. When in doubt, do not attach.
+THE SAME STORY:
+- The same event — a strike, ruling, vote, announcement, disaster — reported by any outlet, in any language.
+- Military actions within the same war or campaign.
+- An event and the official or civic response it drew.
+
+A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same story; do not attach it. Read each candidate for what happened, not how it is worded; language never hides a match.
 
 OUTPUT
 If no candidates should be attached: output "none" and nothing else.
 If one or more should be attached: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
-
 No explanation. No JSON. No prose.`;
 
 export function buildAttachSystemPrompt(): string {
