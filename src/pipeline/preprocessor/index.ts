@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { convert, type HtmlToTextOptions } from "html-to-text";
 import { loadSources } from "../../config/sources.js";
+import { loadModelConfig } from "../../config/models.js";
 import { getPool } from "../../db/index.js";
 import { canonicalizeUrl } from "./canonicalize.js";
 
@@ -14,6 +15,7 @@ export interface PreprocessorRun {
   itemsDroppedRecency: number;
   itemsDroppedDuplicate: number;
   itemsDroppedParentDedup: number;
+  itemsDroppedCrossRun: number;
   notes: string | null;
 }
 
@@ -73,25 +75,51 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
   );
   const runId = runRows[0]!.id;
 
+  const { recency, dedup } = loadModelConfig().preprocessor;
+
   try {
-    // 1. Recency filter: items published or fetched within 48 hours.
+    // 1. Recency filter, keyed off the previous successful preprocessor run.
+    //    An item is in-window when its fetched_at ("first time we saw it") is at
+    //    or after that run's start — so each newly-seen item gets exactly one
+    //    eligibility window, and a lagging feed's late-surfaced (old-dated)
+    //    story still passes once because its fetched_at is recent.
+    const { rows: anchorRows } = await pool.query<{ started_at: string }>(
+      `SELECT started_at FROM preprocessor_runs
+       WHERE completed_at IS NOT NULL AND items_kept > 0 AND id <> $1
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      [runId]
+    );
+    // First run / empty history: fall back to a fixed window to absorb backlog.
+    const anchor = anchorRows[0]
+      ? new Date(anchorRows[0].started_at)
+      : new Date(Date.now() - recency.fallback_hours * 60 * 60 * 1000);
+
+    // Optional backstop: drop items whose published_at predates the window by
+    // more than max_age_days, so a feed dumping its archive can't flood the
+    // paper. NULL published_at is never dropped by the backstop.
     const { rows: allRows } = await pool.query<RawItemRow & { total_count: string }>(
       `SELECT id, source_name, original_url, title, body, published_at, fetched_at,
               COUNT(*) OVER () AS total_count
        FROM raw_items
-       WHERE (published_at >= NOW() - INTERVAL '48 hours')
-          OR (published_at IS NULL AND fetched_at >= NOW() - INTERVAL '48 hours')
-       ORDER BY COALESCE(published_at, fetched_at) ASC`
+       WHERE fetched_at >= $1
+         AND ($2::int IS NULL
+              OR published_at IS NULL
+              OR published_at >= NOW() - ($2::int || ' days')::interval)
+       ORDER BY COALESCE(published_at, fetched_at) ASC`,
+      [anchor, recency.max_age_days]
     );
 
     const totalConsidered = allRows.length > 0 ? parseInt(allRows[0]!.total_count, 10) : 0;
 
-    // Count all raw_items to compute dropped-by-recency.
+    // Items older than the window (prior runs already considered them, or the
+    // backstop excluded them) are reported as dropped-by-recency for this run.
     const { rows: totalRows } = await pool.query<{ n: string }>(
-      "SELECT COUNT(*) AS n FROM raw_items"
+      "SELECT COUNT(*) AS n FROM raw_items WHERE fetched_at >= $1",
+      [new Date(anchor.getTime() - recency.fallback_hours * 60 * 60 * 1000)]
     );
-    const grandTotal = parseInt(totalRows[0]?.n ?? "0", 10);
-    const droppedRecency = grandTotal - totalConsidered;
+    const recentTotal = parseInt(totalRows[0]?.n ?? "0", 10);
+    const droppedRecency = Math.max(recentTotal - totalConsidered, 0);
 
     // 2 & 3. HTML stripping and URL canonicalization.
     interface Candidate {
@@ -126,13 +154,59 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       fetchedAt: new Date(row.fetched_at),
     }));
 
+    // 3b. Cross-run dedup: suppress a story we already processed in a recent run
+    //     but that has been re-ingested under a new URL/guid (so the within-run
+    //     maps below never see it). Keyed on the same canonical-URL and
+    //     normalized-title keys used in-run; titles must be >= 30 chars to be
+    //     distinctive enough for a title match. Exact-URL repeats match
+    //     regardless of title length. Reworded-headline dupes are left to the
+    //     downstream grouping + pile-merge semantic layer.
+    const { rows: historyRows } = await pool.query<{
+      source_name: string;
+      canonical_url: string;
+      title: string;
+    }>(
+      `SELECT source_name, canonical_url, title
+       FROM preprocessed_items
+       WHERE created_at >= NOW() - ($1::int || ' days')::interval`,
+      [dedup.lookback_days]
+    );
+
+    const historyUrlKeys = new Set<string>();   // `${source_name}::${canonical_url}` and `${parent}::${canonical_url}`
+    const historyTitleKeys = new Set<string>(); // `${parent}::${normalized_title}`
+    for (const h of historyRows) {
+      const parent = parentMap.get(h.source_name) ?? h.source_name;
+      historyUrlKeys.add(`${h.source_name}::${h.canonical_url}`);
+      historyUrlKeys.add(`${parent}::${h.canonical_url}`);
+      const nt = normalizeTitle(h.title);
+      if (nt.length >= 30) historyTitleKeys.add(`${parent}::${nt}`);
+    }
+
+    let droppedCrossRun = 0;
+    const freshCandidates = candidates.filter((item) => {
+      const parent = parentMap.get(item.sourceName) ?? item.sourceName;
+      const nt = normalizeTitle(item.title);
+      const seenBefore =
+        historyUrlKeys.has(`${item.sourceName}::${item.canonicalUrl}`) ||
+        historyUrlKeys.has(`${parent}::${item.canonicalUrl}`) ||
+        (nt.length >= 30 && historyTitleKeys.has(`${parent}::${nt}`));
+      if (seenBefore) {
+        console.log(
+          `[preprocessor] cross-run dedup: dropped "${item.sourceName}" | already processed within ${dedup.lookback_days}d | "${item.title}"`
+        );
+        droppedCrossRun++;
+        return false;
+      }
+      return true;
+    });
+
     // 4. Deduplication: within same source_name, keep earliest by published_at / fetched_at.
     // Cross-source duplicates are kept (signal for clustering).
     const seen = new Map<string, Candidate>(); // key: `${source_name}::${canonical_url}`
     let droppedDuplicate = 0;
     const surviving: Candidate[] = [];
 
-    for (const item of candidates) {
+    for (const item of freshCandidates) {
       const key = `${item.sourceName}::${item.canonicalUrl}`;
       const existing = seen.get(key);
       if (!existing) {
@@ -254,9 +328,10 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
            items_kept                  = $2,
            items_dropped_recency       = $3,
            items_dropped_duplicate     = $4,
-           items_dropped_parent_dedup  = $5
-       WHERE id = $6`,
-      [totalConsidered, finalSurviving.length, droppedRecency, droppedDuplicate, droppedParentDedup, runId]
+           items_dropped_parent_dedup  = $5,
+           items_dropped_cross_run     = $6
+       WHERE id = $7`,
+      [totalConsidered, finalSurviving.length, droppedRecency, droppedDuplicate, droppedParentDedup, droppedCrossRun, runId]
     );
 
     const { rows: finalRows } = await pool.query<{
@@ -269,6 +344,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       items_dropped_recency: number;
       items_dropped_duplicate: number;
       items_dropped_parent_dedup: number;
+      items_dropped_cross_run: number;
       notes: string | null;
     }>("SELECT * FROM preprocessor_runs WHERE id = $1", [runId]);
 
@@ -283,6 +359,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       itemsDroppedRecency: r.items_dropped_recency,
       itemsDroppedDuplicate: r.items_dropped_duplicate,
       itemsDroppedParentDedup: r.items_dropped_parent_dedup,
+      itemsDroppedCrossRun: r.items_dropped_cross_run,
       notes: r.notes,
     };
   } catch (err) {

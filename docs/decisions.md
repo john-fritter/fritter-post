@@ -20,6 +20,37 @@ Entry format:
 
 ---
 
+## 2026-06-14 — Recency window keyed off previous run; cross-run dedup added
+
+**Decision:** Two preprocessor changes. (1) Replace the fixed
+`NOW() - 48 hours` recency window with one keyed off the previous successful
+preprocessor run: an item is in-window when its `fetched_at` is at or after
+that run's `started_at`. First run / empty history falls back to a fixed
+`fallback_hours` window. An optional `max_age_days` backstop on `published_at`
+guards against a feed dumping its archive. (2) Add a persistent cross-run dedup
+pass: before the in-run dedup, candidates matching a recently-processed
+`preprocessed_items` row (same canonical URL, or same normalized title ≥30
+chars, within source/parent, over a `lookback_days` window) are dropped. All
+three knobs live in the new `preprocessor` block in `config/models.yaml`.
+
+**Context:** On a once-a-day cadence the 48h window made every item eligible on
+two consecutive runs, so yesterday's stories bled into today's pile. Separately,
+when a source republishes a story under a changed URL/guid, the collector's
+`(source_name, item_guid)` constraint and the preprocessor's *in-run-only*
+dedup maps both miss it, so it reappears as a "new" row in a later run.
+
+**Rationale:** Keying eligibility off the previous run gives each newly-seen
+item exactly one window — no overlap, no boundary jitter — while still letting a
+lagging feed's late-surfaced (old-dated) story through once, because we key on
+`fetched_at` ("first time we saw it") rather than `published_at`. A fixed 24h
+window was rejected: it still bleeds/gaps under run-time drift and a
+publish-date variant would drop lagging stories. Cross-run dedup is deterministic
+and reuses the existing canonical-URL / normalized-title keys; genuinely
+reworded-headline duplicates are deliberately left to the downstream grouping +
+pile-merge semantic layer rather than guessed at here.
+
+---
+
 ## 2026-06-14 — Triage clusterer removed; grouping is the sole clustering path
 
 **Decision:** Remove the LLM-based `triage` clusterer (wire seed + parallel
