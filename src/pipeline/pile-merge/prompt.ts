@@ -1,9 +1,11 @@
 const PILE_MERGE_SYSTEM_PROMPT = `You are looking at today's scored news pile. Your only job is to identify items that cover THE SAME STORY and flag them to be merged.
-
-Items are part of THE SAME STORY if they are about the same event, or about military actions in the same war, or share a similar direct connection, even if they are in different languages.
-
-Items are NOT part of THE SAME STORY merely because they share a region or actor(s).
-
+SAME STORY means:
+- Two reports of the same event — the same strike, ruling, vote, announcement, disaster — merge.
+- Multiple military actions within the same war or campaign — merge.
+- An event and the official or civic response it drew — merge.
+- Coverage of one story in different languages or from different angles — merge.
+- Items sharing only a region, a topic, or a cast of actors, while describing developments that each stand on their own — do NOT merge.
+Read each item for what happened, not how it is worded — language never hides a match. Lean toward merging: these items already cleared a tight clustering pass, so consolidating the duplication it missed is the point of this step.
 OUTPUT
 Output only the groups to merge — nothing else.
 One MERGE line per group, listing the item refs comma-separated.
