@@ -133,8 +133,11 @@ concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
 - `news` — flows into clustering (triage) and editor-pass-1 scoring
 - `opinion` — kept but routed out of clustering; pools with `track=analysis`
   items for a future Longer Reads section
-Conservative bias: when unsure, keep as `news`. Reads `docs/bio.md`. Absorbs the
-junk-removal job that the former standalone LLM `filter` stage handled.
+Conservative bias: when unsure, keep as `news`; a low-interest topic becomes a
+keep the moment it carries a substantive angle, and substantive foreign
+coverage clears the floor regardless of an obvious reader tie. Reads
+`docs/bio.md`. Absorbs the junk-removal job that the former standalone LLM
+`filter` stage handled.
 
 ### triage
 Clusters the kept `news` items. Four-phase architecture:

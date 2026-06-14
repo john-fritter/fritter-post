@@ -20,13 +20,40 @@ Entry format:
 
 ---
 
+## 2026-06-14 — Prefilter prompt tightened; explicit foreign-coverage floor
+
+**Decision:** Refactor the prefilter system prompt (`buildSystemPrompt` in
+`src/pipeline/prefilter/prompt.ts`) for concision — same three-way
+cut/news/opinion contract, same non-article-junk cut, same output format, just
+shorter and clearer prose. One substantive rule is added: substantive foreign
+coverage is a KEEP regardless of geography or an obvious reader tie —
+governance and politics, economic disruption, and science or health with real
+substance all clear the floor.
+
+**Context:** The folded-in prompt (see entry below) had grown long and
+repetitive after absorbing the filter's junk list. Separately, the floor was
+cutting foreign stories that lacked an obvious tie to this reader even when the
+underlying news was substantial, because the keep bias leaned on
+reader-proximity. The prefilter is a floor, not a ranking, so substance should
+clear it even without a local hook; relative importance is the editor's job
+downstream.
+
+**Rationale:** Tightening the prompt lowers token cost per batch and reduces
+the chance the model fixates on one over-explained clause. Making the
+foreign-coverage rule explicit fixes a real false-cut pattern at the single
+choke point that has the bio, rather than trying to recover wrongly-cut foreign
+news later (there is no recovery path). Keeps the prefilter's existing
+keep-when-unsure bias intact.
+
+---
+
 ## 2026-06-13 — Filter stage folded into the prefilter; standalone filter removed
 
 **Decision:** Remove the standalone LLM `filter` stage and have the
 `prefilter` absorb its job. The prefilter's Step 1 ("KEEP OR CUT") prompt
-gains one sentence directing it to also cut non-article material — event
-listings and calendars, horoscopes, weather forecasts, photo galleries and
-video-only posts, house ads and self-promotion, and link-dump roundups.
+gains a directive to also cut non-article material — event listings and
+calendars, horoscopes, weather forecasts, photo galleries and video-only
+posts, house ads and self-promotion, and link-dump roundups.
 Everything else about the prefilter is unchanged. Deleted: `src/pipeline/filter/`,
 `scripts/filter.ts`, the `filter` npm script, the `inspect -- filter`
 subcommand, and the assembler's `getFilterKeptIds` gate. The `filter_runs` /
@@ -39,8 +66,8 @@ galleries, house ads, link dumps) is squarely a subset of "noise this reader
 has no interest in," which the prefilter's broader LLM call already judges per
 item. Two LLM passes over the full item set where one suffices. Both stages had
 been working well, so the prefilter's behavior was changed as little as
-possible: a single added sentence, not a rewrite. The deterministic
-`junk-filter.ts` in the preprocessor/assembler is unrelated and stays.
+possible. The deterministic `junk-filter.ts` in the preprocessor/assembler is
+unrelated and stays.
 
 **Rationale:** One bio-aware LLM gate is cheaper and simpler than a mechanical
 gate plus a bio-aware gate doing overlapping work. The assembler already
