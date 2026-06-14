@@ -117,7 +117,7 @@ grouping:
     body_cap: 2000
     # Cosine similarity threshold for adding an edge between two items.
     # Start here and sweep: higher tightens groups, lower loosens them.
-    similarity_threshold: 0.72
+    similarity_threshold: 0.66
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
     top_k: 10
@@ -129,7 +129,7 @@ grouping:
     # Candidate groups with >= this many items receive a refine call when enabled.
     min_group_size: 3
     # Max concurrent LLM boundary-refine calls.
-    concurrency: 5
+    concurrency: 10
   # Attach pass: for each multi-item cluster, find singletons whose max cosine
   # similarity to any cluster member falls in [attach_floor, similarity_threshold)
   # — the near-miss band — and make one LLM call per cluster to confirm which
@@ -139,12 +139,12 @@ grouping:
     enabled: true
     # Lower bound of the near-miss band. Singletons below this floor are too
     # dissimilar to be worth offering to the LLM.
-    attach_floor: 0.60
+    attach_floor: 0.50
     model: zai-org/glm-5.1
     provider: nanogpt
     temperature: 0.1
     max_tokens: 1024
-    concurrency: 5
+    concurrency: 10
     reasoning_effort: "none"
     stream: true
     timeout_ms: 120000
@@ -159,7 +159,7 @@ grouping:
     # Clusters per LLM call. Each call sees batch_size clusters, each shown
     # as its member items (title + body excerpt).
     batch_size: 20
-    concurrency: 5
+    concurrency: 10
     reasoning_effort: "none"
     stream: true
     timeout_ms: 120000
