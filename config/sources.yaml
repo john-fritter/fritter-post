@@ -11,9 +11,9 @@
 #           advocacy has a policy position, newsletters often single-author).
 #   track — news | analysis  (default: news when omitted)
 #           Which pipeline lane the source feeds. 'news' items flow into the
-#           clusterer and daily triage. 'analysis' items are routed aside and
-#           pool unconsumed until a Longer Reads selector exists — they never
-#           enter the clusterer context.
+#           clusterer. 'analysis' items are routed aside and pool unconsumed
+#           until a Longer Reads selector exists — they never enter the
+#           clusterer context.
 #           track is a SEPARATE axis from type: type is operational (wire/
 #           journalism/advocacy/newsletter); track is which lane the item feeds.
 #           A source's track is a stable property of what it publishes, not a
@@ -21,20 +21,20 @@
 #           derived per item.
 #   group — wire | national | accountability | local | intl_broad |
 #           intl_asia | intl_americas | tech | ai | climate | labor | legal | science
-#           A THIRD axis, separate from both type and track. It exists for
-#           exactly one purpose: telling the triage clusterer which round an
-#           item enters (config/models.yaml triage.clustering.rounds groups
-#           preprocessed_items by this field). It is NOT an editorial or topic
-#           tag — it never reaches the paper, the editor, or the reader. Tags,
-#           categories, and prominence live at the story level (assigned by
-#           triage/editor), independent of where a source's items were staged
-#           for clustering. group is a stable property of the source (which
-#           round its volume belongs in), not a judgment about any one story.
+#           A THIRD axis, separate from both type and track. Historically it
+#           told the LLM clusterer which thematic spine an item entered; the
+#           current embedding-based grouping stage does not consume it, but it
+#           is retained as a stable structural label on the source. It is NOT an
+#           editorial or topic tag — it never reaches the paper, the editor, or
+#           the reader. Tags, categories, and prominence live at the story level
+#           (assigned by the editor), independent of where a source's items were
+#           staged. group is a stable property of the source, not a judgment
+#           about any one story.
 #   notes — free text. Anything the editor/researcher should know about the
 #           source, including institutional alignment where it's worth knowing.
 #
 # Tags, categories, prominence weighting, and tiers live at the story level,
-# assigned by the triage and editor stages.
+# assigned by the editor stage.
 #
 # Entries marked [VERIFY] have RSS URLs that may need checking — endpoints move.
 
@@ -117,9 +117,9 @@
   type: journalism
   group: national
   notes: >
-    Paywalled full text. RSS abstracts useful as triage prominence signal — what
-    the Times put on the homepage today is information the triage needs, even if
-    the framing requires editor pushback.
+    Paywalled full text. RSS abstracts useful as a prominence signal — what
+    the Times put on the homepage today is information the clusterer needs, even
+    if the framing requires editor pushback.
   parent: "New York Times"
 
 - name: New York Times Politics
@@ -423,7 +423,7 @@
   type: journalism
   group: local
   notes: Bend local TV. Lower editorial quality but catches local incidents.
-    Triage should weight down unless it's a genuine Bend story.
+    Prefilter should weight down unless it's a genuine Bend story.
 
 # DROPPED — three runs returning not recognized as RSS.
 # - name: High Desert Advocate
@@ -624,7 +624,7 @@
   url: https://www.theverge.com/rss/index.xml
   type: journalism
   group: tech
-  notes: Higher volume, more product coverage than this paper needs. Triage
+  notes: Higher volume, more product coverage than this paper needs. Prefilter
     should filter down to policy, labor, and society-level tech stories.
 
 - name: Wired
@@ -644,7 +644,7 @@
   type: journalism
   group: tech
   notes: High volume, mostly product/funding news. Low expected yield. Drop
-    after a few weeks if triage never promotes anything.
+    after a few weeks if the editor never promotes anything.
 
 - name: Hacker News (top)
   url: https://news.ycombinator.com/rss
@@ -896,13 +896,13 @@
 # NON-ENGLISH LANGUAGE SOURCES
 #
 # The LLM pipeline stages read any language natively and produce English output.
-# No translation layer is needed — the triage prompt instructs the model to
-# treat multilingual input and produce an English digest. The collector is
+# No translation layer is needed — the clustering stage's prompts treat
+# multilingual input and produce an English digest. The collector is
 # indifferent to language.
 #
 # Cross-language title-similarity clustering won't work at the lexical level
-# (Levenshtein/Jaccard), but the triage stage handles cross-language story
-# recognition natively.
+# (Levenshtein/Jaccard), but the embedding-based grouping stage handles
+# cross-language story recognition natively.
 #
 # RSS URLs for these sources are less certain than the English sources above.
 # All marked [VERIFY]. The collector will log which ones fail; fix the YAML
@@ -1068,7 +1068,7 @@
 # ─────────────────────────────────────────────
 
 # - Axios (section feeds available, content extremely brief — may serve as
-#   triage signal without adding to researcher)
+#   clustering signal without adding to researcher)
 # - Politico (high volume, DC-insider framing this paper pushes against)
 # - Bellingcat (verification/OSINT — occasional, not daily)
 # - KQED (Northern California — good on Western US policy and tech)

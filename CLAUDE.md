@@ -68,10 +68,9 @@ fritter-post/
 │   │   ├── collector/
 │   │   ├── preprocessor/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
-│   │   ├── triage/              # clustering: seed + parallel spines + merge
-│   │   ├── grouping/            # alt clustering: embeddings + connected components + describe
-│   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (triage AND grouping paths)
-│   │   ├── editor/              # whole-pile tiering and ranking (triage or grouping pile)
+│   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
+│   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
+│   │   ├── editor/              # whole-pile tiering and ranking (grouping pile)
 │   │   ├── researcher/          # (stub)
 │   │   ├── writers/             # (stub)
 │   │   └── publisher/           # (stub)
@@ -81,7 +80,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–023)
+├── migrations/                  # numbered SQL migrations (001–024)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -92,24 +91,16 @@ fritter-post/
 The full concept is seven stages (see `docs/concept.md`). The following are
 built and production-ready. Researcher, writers, and publisher are stubs.
 
-Two parallel clustering paths exist — **triage** (LLM-based, the production
-path) and **grouping** (embedding-based, the experimental comparison path).
-Both terminate at the same editor stage; only one pile feeds the editor on
-any given run.
+Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
+`triage` clusterer — seed + parallel spines + semantic merge — was removed once
+grouping proved out; see `docs/decisions.md`.)
 
 ```
-collector  →  preprocessor  →  prefilter
-                                               │
-                              ┌────────────────┴────────────────┐
-                              ↓                                 ↓
-                           triage                           grouping
-                              ↓                                 ↓
-                        editor-pass-1               grouping-pass-1
-                              └────────────────┬────────────────┘
-                                               ↓
-                                        pile-merge (optional)
-                                               ↓
-                                            editor
+collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
+                                                               ↓
+                                                       pile-merge (optional)
+                                                               ↓
+                                                            editor
 ```
 
 ### collector
@@ -130,7 +121,7 @@ concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
 - `cut` — obvious noise this reader has no interest in (routine sports scores,
   celebrity tabloid, market-movement wire filler) plus non-article material
   (event calendars, horoscopes, photo galleries, house ads, link-dump roundups)
-- `news` — flows into clustering (triage) and editor-pass-1 scoring
+- `news` — flows into clustering (grouping) and grouping-pass-1 scoring
 - `opinion` — kept but routed out of clustering; pools with `track=analysis`
   items for a future Longer Reads section
 Conservative bias: when unsure, keep as `news`; a low-interest topic becomes a
@@ -139,30 +130,9 @@ coverage clears the floor regardless of an obvious reader tie. Reads
 `docs/bio.md`. Absorbs the junk-removal job that the former standalone LLM
 `filter` stage handled.
 
-### triage
-Clusters the kept `news` items. Four-phase architecture:
-1. **Seed** — one LLM call, wire items only. Produces the day's major-story
-   clusters. Every spine accretes onto this same list, so seed item ids become
-   the free merge key in phase 3.
-2. **Spines** — thematic group-sets (domestic, international, local, tech), each
-   one LLM call that accretes onto the seed's cluster list independently. Spines
-   run concurrently (capped at `max_concurrent_spines`). Every spine starts fresh
-   from the same seed, so its prompt stays bounded regardless of total pile size.
-3. **Deterministic merge** — software union of any two clusters sharing ≥ 1 item
-   id, transitively. No LLM call needed.
-4. **Semantic merge/attach** — one final LLM call on a small input (the merged
-   cluster list + up to `max_singletons` recent singletons) that fuses same-story
-   clusters the id-union missed and attaches orphaned singletons (including
-   cross-language items). Guarded by a `max_cluster_share` runaway check that
-   falls back to the id-union result if the output looks like an over-merge blob.
-
-Output: `triage_runs.digest` (flat `label;;summary;;ids` lines). Per-round
-raw outputs stored in `round_digests` (seed, spine:*, merged, semantic_merge)
-for stage-by-stage inspection.
-
 ### grouping
-Embedding-based alternative to triage, running on the same preprocessed item
-set. Three steps:
+The clustering stage. Embedding-based, running on the kept `news` items. Four
+steps:
 1. **Embed** — each item's title + body excerpt (capped at `body_cap` chars)
    is embedded via `qwen/qwen3-embedding-8b` (OpenRouter, 4096 dims) and
    stored in `item_embeddings` (upserted, so re-runs are cheap).
@@ -170,7 +140,11 @@ set. Three steps:
    `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
    union-find connected components. Groups of size ≥ 2 become candidate
    clusters; isolated items are singletons.
-3. **Describe** — batched LLM call (glm-5.1, nanogpt) that writes a neutral
+3. **Attach** — for each cluster, near-miss singletons (max cosine similarity
+   in the `[attach_floor, similarity_threshold)` band) are offered to a cheap
+   LLM (glm-5.1) that confirms which genuinely belong. Controlled by
+   `grouping.attach.*` in `models.yaml`.
+4. **Describe** — batched LLM call (glm-5.1, nanogpt) that writes a neutral
    `title;;summary` for every multi-item cluster. Singletons skip this pass.
    Controlled by `grouping.describe.*` in `models.yaml`.
 
@@ -178,37 +152,26 @@ An optional **boundary-refine** step (one LLM call per large candidate group
 asking "same event or split?") exists in the code behind `refine.enabled`
 (default `false`). Keep the code; toggle the flag to re-enable.
 
-Output: `grouping_runs.digest` — same flat `title;;summary;;ids` format as
-triage. The **primary tuning lever** is `embedding.similarity_threshold` in
-`models.yaml`: higher = fewer, tighter groups; lower = more, looser groups.
+Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
+**primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
+higher = fewer, tighter groups; lower = more, looser groups.
 
 ### grouping-pass-1
-Scoring stage for the grouping path; lives in `src/pipeline/editor-pass-1/`
-alongside the triage-path scorer. Two functions:
+Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
+(the directory keeps the historical name; the `editor_pass_1.*` config block
+supplies its model and prompt). Two functions:
 
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
 clusters and singletons on the same scale. Clusters are scored on their
 describe-pass title + summary; singletons on their title + body excerpt.
 Source count is stored on each `grouping_pass1_results` row but the scorer
-never sees it — scoring is purely reader-relevance. Uses the same model and
-prompt as `editor-pass-1` (`editor_pass_1.*` config block). Writes to
-`grouping_pass1_runs` / `grouping_pass1_results`.
+never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
+Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
 
 `assembleGroupingPile` — sorts all scored rows by score descending, takes the
 top `grouping.pile_target` (config: 150), and writes to `editor_piles` (with
-`grouping_run_id` set, `triage_run_id` null) + `editor_pile_items`. Source
-count travels to the editor via the grouping digest's id-list length.
-
-### editor-pass-1
-**Triage path** (original function): bio-aware 0–100 scoring of residual
-singletons — items that survived prefilter but landed in no triage cluster.
-Batched, concurrency-capped. Reads `docs/bio.md`. Assembles `editor_piles` +
-`editor_pile_items` (all triage clusters included unconditionally; top-N
-singletons by score up to `singleton_pile_target`).
-
-The `editor-pass-1` module also houses the grouping-path scorer above
-(`runGroupingPass1` / `assembleGroupingPile`). The two functions share the
-same scoring prompt, model config, and `parseBatchOutput` parser.
+`grouping_run_id` set) + `editor_pile_items`. Source count travels to the
+editor via the grouping digest's id-list length.
 
 ### pile-merge
 Optional same-story dedup pass that runs after pile assembly and before the
@@ -224,9 +187,9 @@ Output: `pile_merge_runs` table (model used, items in/out, groups merged,
 `merged_pile` JSONB). The pile's `pile_merge_run_id` FK is set; the editor
 checks this column first and, when set, reads the merged pile directly from
 `pile_merge_runs.merged_pile` instead of resolving digest rows from scratch.
-Threshold is strictly same-specific-event — identical to triage's clustering
-standard. Conservative bias: when in doubt, keep separate. Controlled by
-`pile_merge.*` in `models.yaml`.
+Threshold is strictly same-specific-event — the same clustering standard the
+grouping stage applies. Conservative bias: when in doubt, keep separate.
+Controlled by `pile_merge.*` in `models.yaml`.
 
 ### editor
 Whole-pile single LLM call. Reads all clusters and singletons from the editor
@@ -243,12 +206,11 @@ each `;;`-delimited line is scanned for a tier keyword (`feature`, `standard`,
 column position, so format variation from the model (swapped columns, leading
 numbering) doesn't break parsing.
 
-Consumes piles from **three paths**: when `editor_piles.pile_merge_run_id` is
-set it reads the merged pile JSONB directly; when `grouping_run_id` is set it
-resolves cluster details from `grouping_runs.digest`; when `triage_run_id` is
-set it uses `triage_runs.digest`. All three paths produce the same prompt
-structure (`MergedPileBlock` list for the merged path, `EditorClusterPileItem` +
-`EditorSingletonPileItem` for the digest paths).
+Consumes piles from **two paths**: when `editor_piles.pile_merge_run_id` is
+set it reads the merged pile JSONB directly; otherwise it resolves cluster
+details from `grouping_runs.digest` via `grouping_run_id`. Both paths produce
+the same prompt structure (`MergedPileBlock` list for the merged path,
+`EditorClusterPileItem` + `EditorSingletonPileItem` for the digest path).
 
 ---
 
@@ -327,7 +289,7 @@ here so future agents don't rediscover them the hard way:
   hundred lines probably wants to be split.
 - **Tests where they earn their keep.** Deterministic code with clear
   inputs and outputs needs tests: URL canonicalization, dedup, flat-line
-  parsers (triage, prefilter, editor-pass-1). LLM stages don't get
+  parsers (cluster digest, prefilter, grouping-pass-1). LLM stages don't get
   conventional unit tests; their feedback loop is the inspection CLI.
 
 ---
@@ -344,23 +306,16 @@ anything with quoted arguments).
 - `npm run typecheck` — TypeScript check
 - `npm run migrate` — apply numbered SQL migrations
 
-**Pipeline stages** (triage path — production)
+**Pipeline stages**
 - `npm run collect` — collect raw source items
 - `npm run preprocess` — deduplicate/canonicalize collected items
 - `npm run prefilter` — bio-aware relevance floor + junk removal + news/opinion routing
-- `npm run triage [-- --model <id>]` — cluster items; `--model` pins one
-  model across seed + spines + semantic-merge for a clean bake-off
-- `npm run editor-pass-1` — score residual singletons + assemble triage pile
-- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup pass on assembled pile
-- `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
-
-**Pipeline stages** (grouping path — experimental parallel)
-- (collect / preprocess / prefilter same as above)
 - `npm run grouping [-- --preprocessor-run-id <n>] [-- --model <id>]` —
-  embed items, build candidate groups, run describe pass, write digest
+  embed items, build candidate groups, run attach + describe passes, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
   score all clusters + singletons on 0–100 bio-relevance scale, assemble pile
-- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup (shared with triage path)
+- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup pass on assembled pile
+- `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -368,21 +323,14 @@ anything with quoted arguments).
 - `npm run inspect -- collector [--id <n>]`
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
-- `npm run inspect -- triage [--id <n>] [--rounds]` — `--rounds` shows each
-  round's raw output (seed, spine:*, merged, semantic_merge)
-- `npm run inspect -- editor-pass-1 [--id <n>]` — score distribution + pile info
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
-
-**Assemble** (used for spot-checking, not the production pipeline)
-- `npm run assemble` — assembles a preprocessor run into a triage document
-  to see exactly what triage will receive as input
 
 In production, run CLI stages inside the app container:
 
 ```bash
 docker compose exec -T app npm run migrate
-docker compose exec -T app npm run triage
-docker compose exec -T app npm run inspect -- triage
+docker compose exec -T app npm run grouping
+docker compose exec -T app npm run inspect -- editor
 ```
 
 `docker-compose.yml` uses `env_file: .env` for the app service. After any
@@ -414,6 +362,6 @@ discussion first.
 
 - `docs/concept.md` — vision, principles, pipeline architecture
 - `docs/decisions.md` — why specific choices were made (append-only)
-- `docs/bio.md` — the reader; read by prefilter, editor-pass-1, grouping-pass-1, and editor
+- `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, and editor
 - `config/sources.yaml` — current feed list
 - `config/models.yaml` — per-stage model, provider, budget, stream config

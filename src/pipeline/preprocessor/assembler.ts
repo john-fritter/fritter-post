@@ -23,16 +23,6 @@ function formatTimestamp(publishedAt: string | null): string {
   return `${hh}:${mm} UTC`;
 }
 
-function formatDate(d: Date): string {
-  return d.toLocaleDateString("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
-
 /**
  * Returns the set of news-routable preprocessed_item IDs from the latest
  * completed prefilter run for the given preprocessor run, or null if no
@@ -68,11 +58,10 @@ async function getPrefilterKeptIds(
 /**
  * Reads preprocessed_items for a given run, applies the bio-aware prefilter
  * run (if any) and the junk filter, and returns the surviving items in
- * chronological order — the same item set `assembleTriageDocument` would
- * format. Exposed so the triage stage can group these items into rounds
- * before formatting.
+ * chronological order. Exposed so the clustering stage can work with this
+ * item set directly.
  */
-export async function getTriageItems(preprocessorRunId: number): Promise<PreprocessedItemRow[]> {
+export async function getClusteringItems(preprocessorRunId: number): Promise<PreprocessedItemRow[]> {
   const pool = getPool();
 
   const { rows: items } = await pool.query<PreprocessedItemRow>(
@@ -116,11 +105,10 @@ export async function getTriageItems(preprocessorRunId: number): Promise<Preproc
 }
 
 /**
- * Formats a list of preprocessed items into the per-item blocks the triage
- * LLM reads: id, source, type, time, headline, body preview. Shared by the
- * full triage document and by the incremental clustering rounds' item lists.
+ * Formats a list of preprocessed items into the per-item blocks the
+ * clustering LLM reads: id, source, type, time, headline, body preview.
  */
-export function formatTriageItemBlocks(items: PreprocessedItemRow[]): string {
+export function formatItemBlocks(items: PreprocessedItemRow[]): string {
   const lines: string[] = [];
 
   for (const item of items) {
@@ -133,41 +121,6 @@ export function formatTriageItemBlocks(items: PreprocessedItemRow[]): string {
     }
     lines.push("");
   }
-
-  return lines.join("\n");
-}
-
-/**
- * Reads preprocessed_items for a given run and produces a flat
- * chronological plain-text document for the triage LLM.
- * If a completed prefilter run exists for this preprocessor run, only the
- * items kept by that prefilter run are included.
- *
- * An optional `filter` restricts the document to a subset of the surviving
- * items (e.g. by source_type, for clustering rounds) without re-running the
- * prefilter/junk-filter pipeline.
- */
-export async function assembleTriageDocument(
-  preprocessorRunId: number,
-  filter?: (item: PreprocessedItemRow) => boolean,
-): Promise<string> {
-  const allKept = await getTriageItems(preprocessorRunId);
-  const kept = filter ? allKept.filter(filter) : allKept;
-
-  if (kept.length === 0) {
-    return `FRITTER POST — TRIAGE INPUT ${formatDate(new Date())}\n0 items | preprocessor run #${preprocessorRunId}\n`;
-  }
-
-  const sourceCount = new Set(kept.map((i) => i.source_name)).size;
-  const date = formatDate(new Date());
-
-  const lines: string[] = [];
-
-  lines.push(`FRITTER POST — TRIAGE INPUT ${date}`);
-  lines.push(`${kept.length} items from ${sourceCount} sources | preprocessor run #${preprocessorRunId}`);
-  lines.push(`Reader location: Bend, Oregon`);
-  lines.push("");
-  lines.push(formatTriageItemBlocks(kept));
 
   return lines.join("\n");
 }

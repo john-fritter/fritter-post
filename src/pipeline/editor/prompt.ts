@@ -19,7 +19,7 @@ export interface EditorSingletonPileItem {
 // Static task spec: rank/tier every pile item for a one-reader newspaper.
 // Bio and pile travel in the user message (see buildUserPrompt / buildMergedUserPrompt).
 export function buildSystemPrompt(): string {
-  return `You are an editor for a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier triage and scoring — your job is to put them in final order and decide how much space each one earns.
+  return `You are an editor for a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier filtering and scoring — your job is to put them in final order and decide how much space each one earns.
 
 You will see the whole pile at once: every multi-source cluster and every single-source item that made today's cut. Ranking is relational — weigh each item against every other item in the pile, not in isolation. Then:
 

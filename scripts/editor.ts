@@ -57,8 +57,6 @@ async function main() {
   console.log(`  Pile:        #${run.pileId}`);
   if (run.groupingRunId !== null) {
     console.log(`  Grouping run: #${run.groupingRunId}`);
-  } else {
-    console.log(`  Triage run:  #${run.triageRunId}`);
   }
   console.log(`  Model:       ${run.modelUsed}`);
   console.log(`  Items in:    ${run.itemsIn}`);
