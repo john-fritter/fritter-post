@@ -34,35 +34,9 @@ function formatDate(d: Date): string {
 }
 
 /**
- * Returns the set of kept preprocessed_item IDs from the latest completed
- * filter run for the given preprocessor run, or null if no filter run exists.
- */
-async function getFilterKeptIds(
-  pool: import("pg").Pool,
-  preprocessorRunId: number
-): Promise<Set<number> | null> {
-  const { rows: runRows } = await pool.query<{ id: number }>(
-    `SELECT id FROM filter_runs
-     WHERE preprocessor_run_id = $1 AND completed_at IS NOT NULL
-     ORDER BY completed_at DESC LIMIT 1`,
-    [preprocessorRunId]
-  );
-  if (!runRows[0]) return null;
-
-  const filterRunId = runRows[0].id;
-  const { rows: resultRows } = await pool.query<{ preprocessed_item_id: string }>(
-    `SELECT preprocessed_item_id FROM filter_results
-     WHERE filter_run_id = $1 AND keep = true`,
-    [filterRunId]
-  );
-  return new Set(resultRows.map((r: { preprocessed_item_id: string }) => Number(r.preprocessed_item_id)));
-}
-
-/**
  * Returns the set of news-routable preprocessed_item IDs from the latest
  * completed prefilter run for the given preprocessor run, or null if no
- * prefilter run exists. Mirrors getFilterKeptIds — same shape, same fallback
- * (no run means no opinion, so nothing is excluded on its account).
+ * prefilter run exists. A null run means nothing is excluded on its account.
  *
  * Restricted to kind = 'news': the prefilter also classifies kept items as
  * news or opinion, and opinion-kept items route to the Longer Reads pool —
@@ -92,11 +66,11 @@ async function getPrefilterKeptIds(
 }
 
 /**
- * Reads preprocessed_items for a given run, applies the LLM filter run (if
- * any), the bio-aware prefilter run (if any), and the junk filter, and
- * returns the surviving items in chronological order — the same item set
- * `assembleTriageDocument` would format. Exposed so the triage stage can
- * group these items into rounds before formatting.
+ * Reads preprocessed_items for a given run, applies the bio-aware prefilter
+ * run (if any) and the junk filter, and returns the surviving items in
+ * chronological order — the same item set `assembleTriageDocument` would
+ * format. Exposed so the triage stage can group these items into rounds
+ * before formatting.
  */
 export async function getTriageItems(preprocessorRunId: number): Promise<PreprocessedItemRow[]> {
   const pool = getPool();
@@ -109,27 +83,14 @@ export async function getTriageItems(preprocessorRunId: number): Promise<Preproc
     [preprocessorRunId]
   );
 
-  // Apply LLM filter results if a completed filter run exists.
-  const keptIds = await getFilterKeptIds(pool, preprocessorRunId);
-  const preFilterItems = keptIds !== null
-    ? items.filter((item: PreprocessedItemRow) => (keptIds as Set<number>).has(Number(item.id)))
-    : items;
-
-  if (keptIds !== null) {
-    const dropped = items.length - preFilterItems.length;
-    if (dropped > 0) {
-      console.log(`[assembler] filter run applied: ${preFilterItems.length} kept, ${dropped} dropped`);
-    }
-  }
-
   // Apply the bio-aware prefilter run, if one exists.
   const prefilterKeptIds = await getPrefilterKeptIds(pool, preprocessorRunId);
   const prefilteredItems = prefilterKeptIds !== null
-    ? preFilterItems.filter((item: PreprocessedItemRow) => (prefilterKeptIds as Set<number>).has(Number(item.id)))
-    : preFilterItems;
+    ? items.filter((item: PreprocessedItemRow) => (prefilterKeptIds as Set<number>).has(Number(item.id)))
+    : items;
 
   if (prefilterKeptIds !== null) {
-    const cut = preFilterItems.length - prefilteredItems.length;
+    const cut = items.length - prefilteredItems.length;
     if (cut > 0) {
       console.log(`[assembler] prefilter run applied: ${prefilteredItems.length} kept, ${cut} cut`);
     }
@@ -179,12 +140,12 @@ export function formatTriageItemBlocks(items: PreprocessedItemRow[]): string {
 /**
  * Reads preprocessed_items for a given run and produces a flat
  * chronological plain-text document for the triage LLM.
- * If a completed filter run exists for this preprocessor run, only the
- * items kept by that filter run are included.
+ * If a completed prefilter run exists for this preprocessor run, only the
+ * items kept by that prefilter run are included.
  *
  * An optional `filter` restricts the document to a subset of the surviving
  * items (e.g. by source_type, for clustering rounds) without re-running the
- * filter-run/junk-filter pipeline.
+ * prefilter/junk-filter pipeline.
  */
 export async function assembleTriageDocument(
   preprocessorRunId: number,
