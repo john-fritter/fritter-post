@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseFlatClusterOutput } from "../src/pipeline/triage/index.js";
+import { parseFlatClusterOutput } from "../src/lib/cluster.js";
 
 const INPUT_IDS = new Set([101, 102, 103, 104, 105, 106]);
 
@@ -105,4 +105,4 @@ testFabricatedIdDroppedAndLogged();
 testOneIdClusterDropped();
 testSplitLineJoinFallback();
 testWholeOutputUnparseableReturnsNull();
-console.log("triage parser tests passed");
+console.log("cluster parser tests passed");

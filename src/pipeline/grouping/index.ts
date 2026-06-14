@@ -4,10 +4,10 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import type { GroupingDescribeConfig, GroupingAttachConfig } from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
-import { getTriageItems, formatTriageItemBlocks } from "../preprocessor/assembler.js";
+import { getClusteringItems, formatItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
-import { parseFlatClusterOutput } from "../triage/index.js";
-import type { TriageCluster } from "../triage/index.js";
+import { parseFlatClusterOutput } from "../../lib/cluster.js";
+import type { Cluster } from "../../lib/cluster.js";
 import {
   buildRefineSystemPrompt,
   buildRefineUserPrompt,
@@ -45,12 +45,12 @@ function l2Norm(v: number[]): number {
   return Math.sqrt(dotProduct(v, v));
 }
 
-function formatFlatClusterLines(clusters: TriageCluster[]): string {
+function formatFlatClusterLines(clusters: Cluster[]): string {
   return clusters.map((c) => `${c.title};;${c.summary};;${c.item_ids.join(",")}`).join("\n");
 }
 
 // Fallback label for a group that has no LLM description yet.
-function buildAutoCluster(groupItems: PreprocessedItemRow[]): TriageCluster {
+function buildAutoCluster(groupItems: PreprocessedItemRow[]): Cluster {
   const label = groupItems[0]!.title.slice(0, 80);
   const summary = groupItems.map((i) => i.title).join(" | ");
   return {
@@ -91,7 +91,7 @@ function parseAttachOutput(text: string, candidateCount: number): Set<number> {
 }
 
 interface AttachPassResult {
-  clusters: TriageCluster[];
+  clusters: Cluster[];
   remainingSingletonIds: Set<number>;
   clustersWithCandidates: number;
   candidatesOffered: number;
@@ -102,7 +102,7 @@ interface AttachPassResult {
 }
 
 async function attachSingletons(
-  clusters: TriageCluster[],
+  clusters: Cluster[],
   singletonIds: Set<number>,
   normalizedVectors: Map<number, number[]>,
   itemById: Map<number, PreprocessedItemRow>,
@@ -194,7 +194,7 @@ async function attachSingletons(
         const clusterItems = cluster.item_ids
           .map((id) => itemById.get(id))
           .filter((i): i is PreprocessedItemRow => i !== undefined);
-        const clusterBlocks = formatTriageItemBlocks(clusterItems);
+        const clusterBlocks = formatItemBlocks(clusterItems);
         const candidateBlocks = formatAttachCandidateBlocks(candidates, itemById);
 
         try {
@@ -329,14 +329,14 @@ function parseDescribeOutput(text: string, batchSize: number): Map<number, Descr
 }
 
 interface DescribePassResult {
-  clusters: TriageCluster[];
+  clusters: Cluster[];
   inputTokens: number | null;
   outputTokens: number | null;
   firstGenerationLogId: bigint | null;
 }
 
 async function describeGroups(
-  clusters: TriageCluster[],
+  clusters: Cluster[],
   itemById: Map<number, PreprocessedItemRow>,
   config: GroupingDescribeConfig,
   runId: number,
@@ -347,7 +347,7 @@ async function describeGroups(
 
   const limit = pLimit(config.concurrency);
 
-  const batches: TriageCluster[][] = [];
+  const batches: Cluster[][] = [];
   for (let i = 0; i < clusters.length; i += config.batch_size) {
     batches.push(clusters.slice(i, i + config.batch_size));
   }
@@ -367,7 +367,7 @@ async function describeGroups(
             const items = cluster.item_ids
               .map((id) => itemById.get(id))
               .filter((i): i is PreprocessedItemRow => i !== undefined);
-            return `[CLUSTER ${localIdx}]\n${formatTriageItemBlocks(items)}`;
+            return `[CLUSTER ${localIdx}]\n${formatItemBlocks(items)}`;
           })
           .join("\n");
 
@@ -428,7 +428,7 @@ async function describeGroups(
     ),
   );
 
-  const described: TriageCluster[] = [];
+  const described: Cluster[] = [];
   let totalInputTokens: number | null = 0;
   let totalOutputTokens: number | null = 0;
   let firstGenerationLogId: bigint | null = null;
@@ -511,7 +511,7 @@ export async function runGrouping(
     const stageStartedAt = Date.now();
 
     // --- STEP 1: EMBED ---
-    const items = await getTriageItems(preprocessorRunId);
+    const items = await getClusteringItems(preprocessorRunId);
     console.log(`[grouping] step 1 embed: ${items.length} items to embed`);
 
     const embedTexts = items.map((item) => {
@@ -690,7 +690,7 @@ export async function runGrouping(
     // --- STEP 3: ATTACH ---
     // For each multi-item cluster, offer near-miss singletons ([attach_floor, threshold))
     // to a cheap LLM call. Confirmed singletons are absorbed; others remain isolated.
-    let preClusters: TriageCluster[];
+    let preClusters: Cluster[];
     let remainingSingletonIds: Set<number>;
 
     if (!groupingConfig.attach.enabled) {
@@ -726,7 +726,7 @@ export async function runGrouping(
 
     // --- STEP 4 (optional): BOUNDARY REFINE ---
     // When disabled, clusters from step 3 pass through as-is.
-    let finalClusters: TriageCluster[];
+    let finalClusters: Cluster[];
 
     if (!groupingConfig.refine.enabled) {
       console.log(
@@ -739,7 +739,7 @@ export async function runGrouping(
       const refineLimit = pLimit(groupingConfig.refine.concurrency);
 
       type RefineResult = {
-        clusters: TriageCluster[];
+        clusters: Cluster[];
         inputTokens: number | null;
         outputTokens: number | null;
         generationLogId: bigint | null;
@@ -760,7 +760,7 @@ export async function runGrouping(
             const groupItems = cluster.item_ids
               .map((id) => itemById.get(id))
               .filter((i): i is PreprocessedItemRow => i !== undefined);
-            const itemBlocks = formatTriageItemBlocks(groupItems);
+            const itemBlocks = formatItemBlocks(groupItems);
 
             try {
               const result = await callLLM({

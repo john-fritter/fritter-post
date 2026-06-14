@@ -1,8 +1,6 @@
 /**
- * CLI entry point for the embedding-based grouping stage.
- *
- * Runs in parallel with triage on the same input — compare digests with
- * the inspect tool or by diffing grouping_runs.digest vs triage_runs.digest.
+ * CLI entry point for the embedding-based grouping stage — the clustering
+ * step of the pipeline. Inspect results with `npm run inspect -- grouping`.
  *
  * Usage:
  *   npm run grouping

@@ -53,55 +53,6 @@ interface DigestCluster {
   itemCount: number;
 }
 
-/**
- * Parses cluster title/summary/notes/item-count from a triage digest, indexed
- * the same way assemble-pile.ts and editor-pass-1's extractClusteredIds count
- * them — by raw line position, not by validated cluster membership — so
- * cluster_index here lines up with editor_pile_items.cluster_index.
- */
-function parseDigestClusters(digest: string): DigestCluster[] | null {
-  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-
-  // JSON format (old digests start with '{').
-  if (stripped.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(stripped) as {
-        clusters?: Array<{ title?: unknown; summary?: unknown; notes?: unknown; item_ids?: unknown[] }>;
-      };
-      if (!Array.isArray(parsed.clusters)) return null;
-      return parsed.clusters.map((c, index) => ({
-        index,
-        title: typeof c.title === "string" ? c.title : `Cluster ${index}`,
-        summary: typeof c.summary === "string" ? c.summary : "",
-        notes: typeof c.notes === "string" ? c.notes : null,
-        itemCount: Array.isArray(c.item_ids) ? c.item_ids.length : 0,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  // Flat line format: label;;summary;;id,id,...
-  const clusters: DigestCluster[] = [];
-  for (const rawLine of stripped.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0) continue;
-    const first = line.indexOf(";;");
-    if (first === -1) continue;
-    const last = line.lastIndexOf(";;");
-    if (last === first) continue;
-
-    const title = line.slice(0, first).trim();
-    const summary = line.slice(first + 2, last).trim();
-    const idPart = line.slice(last + 2).trim();
-    const itemCount = idPart.split(",").filter((tok) => /^\s*\d+\s*$/.test(tok)).length;
-
-    clusters.push({ index: clusters.length, title, summary, notes: null, itemCount });
-  }
-
-  return clusters.length > 0 ? clusters : null;
-}
-
 interface EditorPileItem {
   ref: string;
   itemType: "cluster" | "singleton";
@@ -297,7 +248,6 @@ export interface EditorRun {
   startedAt: Date;
   completedAt: Date | null;
   pileId: number;
-  triageRunId: number | null;
   groupingRunId: number | null;
   modelUsed: string;
   itemsIn: number;
@@ -312,7 +262,6 @@ interface EditorRunRow {
   started_at: string;
   completed_at: string | null;
   pile_id: number;
-  triage_run_id: number | null;
   grouping_run_id: number | null;
   model_used: string;
   items_in: number;
@@ -342,23 +291,20 @@ export async function runEditor(
     pileId = rows[0].id;
   }
 
-  // 2. Load the pile and resolve its cluster source. A pile comes from one of
-  //    two upstream paths: triage (triage_run_id set) or the embedding-based
-  //    grouping stage (grouping_run_id set, triage_run_id null). Both store
-  //    cluster title/summary/members in the same flat digest format; only the
-  //    source table differs.
+  // 2. Load the pile and resolve its cluster source. A pile comes from the
+  //    embedding-based grouping stage (grouping_run_id set), and may also have
+  //    been through the optional pile-merge pass (pile_merge_run_id set), which
+  //    stores the final pile as JSONB.
   const { rows: pileRows } = await pool.query<{
     id: number;
-    triage_run_id: number | null;
     grouping_run_id: number | null;
     pile_merge_run_id: number | null;
   }>(
-    "SELECT id, triage_run_id, grouping_run_id, pile_merge_run_id FROM editor_piles WHERE id = $1",
+    "SELECT id, grouping_run_id, pile_merge_run_id FROM editor_piles WHERE id = $1",
     [pileId],
   );
   const pile = pileRows[0];
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
-  const triageRunId = pile.triage_run_id;
   const groupingRunId = pile.grouping_run_id;
   const pileMergeRunId = pile.pile_merge_run_id;
 
@@ -451,52 +397,32 @@ export async function runEditor(
     userPrompt = buildMergedUserPrompt(mergedBlocks, bio);
     console.log(`[editor] pile #${pileId}: merged pile (pile-merge run #${pileMergeRunId})`);
   } else {
-    // Normal path: resolve cluster details from the appropriate digest, then
+    // Normal path: resolve cluster details from the grouping run's digest, then
     // load and present items from editor_pile_items.
-    let digestClusters: DigestCluster[];
-    if (groupingRunId !== null) {
-      // Grouping-sourced pile. Resolve cluster details from the grouping run's
-      // digest using the SAME parser the scorer used to assign
-      // editor_pile_items.cluster_index, so indices align by construction.
-      // Source count per cluster is its member-id count.
-      const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
-        "SELECT digest FROM grouping_runs WHERE id = $1",
-        [groupingRunId],
-      );
-      const digest = groupingRows[0]?.digest;
-      if (!digest) throw new Error(`Grouping run #${groupingRunId} has no digest`);
-
-      digestClusters = parseGroupingDigest(digest).map((c) => ({
-        index: c.clusterIndex,
-        title: c.title,
-        summary: c.summary,
-        notes: null,
-        itemCount: c.memberIds.length,
-      }));
-    } else if (triageRunId !== null) {
-      // Triage-sourced pile (original path) — behaviour unchanged.
-      const { rows: triageRows } = await pool.query<{ digest: string | null }>(
-        "SELECT digest FROM triage_runs WHERE id = $1",
-        [triageRunId],
-      );
-      const digest = triageRows[0]?.digest;
-      if (!digest) throw new Error(`Triage run #${triageRunId} has no digest`);
-
-      const parsed = parseDigestClusters(digest);
-      if (parsed === null) {
-        throw new Error(
-          `Triage run #${triageRunId} digest could not be parsed — cannot resolve cluster details`,
-        );
-      }
-      digestClusters = parsed;
-    } else {
-      throw new Error(
-        `Editor pile #${pileId} references neither a triage run nor a grouping run`,
-      );
+    if (groupingRunId === null) {
+      throw new Error(`Editor pile #${pileId} references no grouping run`);
     }
+    // Resolve cluster details from the grouping run's digest using the SAME
+    // parser the scorer used to assign editor_pile_items.cluster_index, so
+    // indices align by construction. Source count per cluster is its
+    // member-id count.
+    const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
+      "SELECT digest FROM grouping_runs WHERE id = $1",
+      [groupingRunId],
+    );
+    const digest = groupingRows[0]?.digest;
+    if (!digest) throw new Error(`Grouping run #${groupingRunId} has no digest`);
+
+    const digestClusters: DigestCluster[] = parseGroupingDigest(digest).map((c) => ({
+      index: c.clusterIndex,
+      title: c.title,
+      summary: c.summary,
+      notes: null,
+      itemCount: c.memberIds.length,
+    }));
     const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
-    // 3. Load in-pile items: clusters (by triage digest index) and singletons
+    // 3. Load in-pile items: clusters (by grouping digest index) and singletons
     //    (joined to preprocessed_items for title/body, carrying pass-1 score + reason).
     const { rows: clusterPileRows } = await pool.query<{ cluster_index: number }>(
       `SELECT cluster_index FROM editor_pile_items
@@ -603,13 +529,12 @@ export async function runEditor(
     );
   }
 
-  // 6. Create editor_runs row. Exactly one of triage_run_id / grouping_run_id
-  //    is set, matching the pile's source.
+  // 6. Create editor_runs row, recording the grouping run the pile came from.
   const { rows: runRows } = await pool.query<{ id: number }>(
-    `INSERT INTO editor_runs (started_at, pile_id, triage_run_id, grouping_run_id, model_used, items_in)
-     VALUES (NOW(), $1, $2, $3, $4, $5)
+    `INSERT INTO editor_runs (started_at, pile_id, grouping_run_id, model_used, items_in)
+     VALUES (NOW(), $1, $2, $3, $4)
      RETURNING id`,
-    [pileId, triageRunId, groupingRunId, model, pileItems.length],
+    [pileId, groupingRunId, model, pileItems.length],
   );
   const runId = runRows[0]!.id;
 
@@ -748,7 +673,6 @@ async function fetchEditorRun(pool: import("pg").Pool, runId: number): Promise<E
     startedAt: new Date(r.started_at),
     completedAt: r.completed_at ? new Date(r.completed_at) : null,
     pileId: r.pile_id,
-    triageRunId: r.triage_run_id,
     groupingRunId: r.grouping_run_id,
     modelUsed: r.model_used,
     itemsIn: r.items_in,

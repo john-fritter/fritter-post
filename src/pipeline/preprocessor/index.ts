@@ -127,7 +127,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
     }));
 
     // 4. Deduplication: within same source_name, keep earliest by published_at / fetched_at.
-    // Cross-source duplicates are kept (signal for triage).
+    // Cross-source duplicates are kept (signal for clustering).
     const seen = new Map<string, Candidate>(); // key: `${source_name}::${canonical_url}`
     let droppedDuplicate = 0;
     const surviving: Candidate[] = [];

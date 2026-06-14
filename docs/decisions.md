@@ -20,6 +20,46 @@ Entry format:
 
 ---
 
+## 2026-06-14 — Triage clusterer removed; grouping is the sole clustering path
+
+**Decision:** Remove the LLM-based `triage` clusterer (wire seed + parallel
+spines + deterministic id-union merge + semantic merge/attach) entirely and make
+the embedding-based `grouping` stage the only clustering path. Deleted
+`src/pipeline/triage/`, the triage-path scorer/pile functions in
+`editor-pass-1/` (`runEditorPass1`, `assemblePile`), the `triage`/`assemble`/
+`editor-pass-1` scripts and npm entries, the `triage` config block, the
+`inspect -- triage` and `inspect -- editor-pass-1` subcommands, and the triage
+branches in `editor` and `pile-merge`. Shared code that grouping reused moved to
+neutral homes: `parseFlatClusterOutput` + the `Cluster` type to
+`src/lib/cluster.ts`; `getTriageItems`/`formatTriageItemBlocks` renamed to
+`getClusteringItems`/`formatItemBlocks` in the preprocessor assembler. Migration
+`024_drop_triage.sql` drops `triage_runs`, `editor_pass_1_runs`,
+`editor_pass_1_results`, and the now-unused `editor_piles.triage_run_id` /
+`editor_piles.editor_pass_1_run_id` / `editor_runs.triage_run_id` columns.
+
+**Context:** The two clustering paths had run in parallel for comparison (see the
+2026-06-07/08 triage entries and the grouping entries below). Grouping —
+embeddings + connected components + an LLM attach pass + a describe pass — proved
+out as the production choice: simpler, cheaper, no whole-pile-timeout failure
+mode, and no spine-tuning upkeep. Keeping triage alive meant maintaining two
+clusterers, a dead config block, and dual-path branches in every downstream
+stage.
+
+**Rationale:** One clustering path is less to maintain and reason about. The
+downstream stages (`editor`, `pile-merge`) were already path-agnostic, so
+collapsing to grouping-only removed dead branches rather than adding complexity.
+The triage history in this log is preserved for context; the drop migration
+accepts loss of stored triage run rows, which were experimental and not part of
+any published paper.
+
+**Supersedes:** The triage-clusterer architecture entries (2026-06-07
+"ordered group-rounds → wire seed + parallel spines + id-union merge",
+2026-06-08 "semantic merge/attach pass added", 2026-06-10 "split international
+spine into three region spines"). Those remain for historical context but no
+longer describe live code.
+
+---
+
 ## 2026-06-14 — Prefilter prompt tightened; explicit foreign-coverage floor
 
 **Decision:** Refactor the prefilter system prompt (`buildSystemPrompt` in

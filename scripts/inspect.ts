@@ -10,16 +10,12 @@
  *   npm run inspect -- collector --id 3
  *   npm run inspect -- preprocessor
  *   npm run inspect -- preprocessor --id 1
- *   npm run inspect -- triage
- *   npm run inspect -- triage --id 1
- *   npm run inspect -- triage --id 1 --rounds
  *   npm run inspect -- prefilter
  *   npm run inspect -- prefilter --id 1
  */
 
 import "dotenv/config";
 import { Pool } from "pg";
-import { getTriageItems } from "../src/pipeline/preprocessor/assembler.js";
 
 interface RawItemRow {
   id: string;
@@ -66,26 +62,6 @@ interface PreprocessorRunRow {
   notes: string | null;
 }
 
-interface TriageRunRow {
-  id: number;
-  started_at: string;
-  completed_at: string | null;
-  preprocessor_run_id: number;
-  model_used: string;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  duration_ms: number | null;
-  digest: string | null;
-  round_digests: { name: string; text: string }[] | null;
-  generation_log_id: string | null;
-}
-
-interface PrepItemRow {
-  id: string;
-  source_name: string;
-  title: string;
-}
-
 interface PrefilterRunRow {
   id: number;
   started_at: string;
@@ -106,52 +82,11 @@ interface PrefilterResultRow {
   reason: string;
 }
 
-interface EditorPass1RunRow {
-  id: number;
-  started_at: string;
-  completed_at: string | null;
-  triage_run_id: number;
-  model_used: string;
-  items_in: number;
-}
-
-interface EditorPass1ResultRow {
-  id: string;
-  source_name: string;
-  title: string;
-  score: number;
-  reason: string;
-}
-
-interface ScoreDistRow {
-  range_label: string;
-  range_ord: number;
-  n: string;
-}
-
-interface EditorPileRow {
-  id: number;
-  clusters_included: number;
-  singletons_in_pile: number;
-  singletons_below_line: number;
-  score_cutoff: number | null;
-  singleton_pile_target: number;
-}
-
-interface BelowLineRow {
-  id: string;
-  source_name: string;
-  title: string;
-  score: number;
-  reason: string;
-}
-
 interface EditorRunRow {
   id: number;
   started_at: string;
   completed_at: string | null;
   pile_id: number;
-  triage_run_id: number | null;
   grouping_run_id: number | null;
   model_used: string;
   items_in: number;
@@ -172,36 +107,6 @@ interface EditorStoryRow {
   resolved_title: string | null;
 }
 
-function parseClusterCount(digest: string): string {
-  const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-
-  // JSON format (old digests start with '{').
-  if (stripped.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(stripped) as { clusters?: unknown[] };
-      if (Array.isArray(parsed.clusters)) return String(parsed.clusters.length);
-    } catch {
-      // fall through
-    }
-    return "?";
-  }
-
-  // Flat line format: count lines with two distinct ;; occurrences.
-  let count = 0;
-  for (const rawLine of digest.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0) continue;
-    const first = line.indexOf(";;");
-    if (first === -1) continue;
-    if (line.lastIndexOf(";;") !== first) count++;
-  }
-  if (count > 0) return String(count);
-
-  // Legacy text format.
-  const match = digest.match(/^Clusters identified:\s*(\d+)/m);
-  return match?.[1] ?? "?";
-}
-
 interface ClusterObject {
   title: string;
   item_ids: number[];
@@ -209,11 +114,11 @@ interface ClusterObject {
   notes: string | null;
 }
 
-interface TriageJsonOutput {
+interface ClusterDigest {
   clusters: ClusterObject[];
 }
 
-function parseTriageJson(digest: string): TriageJsonOutput | null {
+function parseClusterDigest(digest: string): ClusterDigest | null {
   const stripped = digest.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
 
   // JSON format (old digests start with '{').
@@ -233,7 +138,7 @@ function parseTriageJson(digest: string): TriageJsonOutput | null {
           typeof (c as ClusterObject).summary !== "string"
         ) return null;
       }
-      return obj as TriageJsonOutput;
+      return obj as ClusterDigest;
     } catch {
       return null;
     }
@@ -509,183 +414,6 @@ async function main() {
         break;
       }
 
-      case "triage": {
-        if (flags["id"]) {
-          const runId = parseInt(flags["id"], 10);
-          const { rows } = await pool.query<TriageRunRow>(
-            `SELECT id, started_at, completed_at, preprocessor_run_id, model_used,
-                    input_tokens, output_tokens, duration_ms, digest, round_digests, generation_log_id
-             FROM triage_runs WHERE id = $1`,
-            [runId]
-          );
-          const run = rows[0];
-          if (!run) {
-            console.log(`No triage run with id ${runId}`);
-            break;
-          }
-          if (!run.digest) {
-            console.log(`Triage run #${run.id} has no digest (failed or incomplete).`);
-            break;
-          }
-
-          const parsed = parseTriageJson(run.digest);
-          if (!parsed) {
-            // Fall back to raw output for old/unparseable digests.
-            process.stdout.write(run.digest);
-            if (!run.digest.endsWith("\n")) process.stdout.write("\n");
-            break;
-          }
-
-          // Load the same kept-set the assembler fed to this triage run —
-          // prefilter and junk filter both applied — so counts and
-          // lost-id checks reflect the real lineage, not the unfiltered pool.
-          const prepItems = await getTriageItems(run.preprocessor_run_id);
-          const itemMap = new Map<number, PrepItemRow>();
-          for (const pi of prepItems) {
-            itemMap.set(Number(pi.id), { id: pi.id, source_name: pi.source_name, title: pi.title });
-          }
-
-          const runStarted = new Date(run.started_at).toISOString().slice(0, 19);
-          console.log(`Triage run #${run.id}  |  preprocessor run #${run.preprocessor_run_id}  |  ${runStarted}`);
-          console.log(`Model: ${run.model_used}`);
-          const inTok = run.input_tokens !== null ? run.input_tokens.toLocaleString() : "?";
-          const outTok = run.output_tokens !== null ? run.output_tokens.toLocaleString() : "?";
-          console.log(`Tokens: ${inTok} in / ${outTok} out`);
-          console.log(`Clusters: ${parsed.clusters.length}  |  Items in run: ${prepItems.length}`);
-          console.log("");
-
-          // Per-round breakdown (multi-round incremental clustering).
-          if (flags["rounds"] && run.round_digests && run.round_digests.length > 0) {
-            console.log(`Rounds (${run.round_digests.length}):`);
-            let priorIds: Set<number> | null = null;
-            for (let ri = 0; ri < run.round_digests.length; ri++) {
-              const rd = run.round_digests[ri]!;
-              const roundParsed = parseTriageJson(rd.text);
-              // Restrict to ids in the real kept-set (itemMap) — round digests
-              // can carry fabricated/stale ids that never belonged to this
-              // run's actual lineage, and diffing those produces noise that
-              // has nothing to do with what a round actually lost.
-              const currentIds = new Set<number>();
-              if (roundParsed) {
-                for (const c of roundParsed.clusters) {
-                  for (const id of c.item_ids) {
-                    if (itemMap.has(id)) currentIds.add(id);
-                  }
-                }
-              }
-              let lostNote = "";
-              if (priorIds !== null) {
-                const lost = [...priorIds].filter((id) => !currentIds.has(id));
-                if (lost.length > 0) lostNote = `  ⚠  LOST FROM PRIOR: ${lost.join(", ")}`;
-              }
-              const clusterCount = roundParsed ? roundParsed.clusters.length : 0;
-              console.log(
-                `  [${ri + 1}/${run.round_digests.length}] ${rd.name.padEnd(10)} ` +
-                `clusters=${clusterCount}  ids_clustered=${currentIds.size}${lostNote}`
-              );
-              priorIds = currentIds;
-            }
-            console.log("");
-          }
-
-          // Integrity pre-checks.
-          const allClusteredIds = new Set<number>();
-          const seenIds = new Map<number, number>(); // id → cluster index (first seen)
-          const fabricatedIds: number[] = [];
-          const duplicateIds: number[] = [];
-          const singletonClusters: number[] = [];
-
-          for (let ci = 0; ci < parsed.clusters.length; ci++) {
-            const cluster = parsed.clusters[ci]!;
-            if (cluster.item_ids.length < 2) singletonClusters.push(ci);
-            for (const id of cluster.item_ids) {
-              if (!itemMap.has(id)) {
-                fabricatedIds.push(id);
-              } else if (seenIds.has(id)) {
-                duplicateIds.push(id);
-              } else {
-                seenIds.set(id, ci);
-                allClusteredIds.add(id);
-              }
-            }
-          }
-
-          // Print clusters.
-          for (let ci = 0; ci < parsed.clusters.length; ci++) {
-            const cluster = parsed.clusters[ci]!;
-            const validIds = cluster.item_ids.filter((id) => itemMap.has(id));
-            const sources = [...new Set(validIds.map((id) => itemMap.get(id)!.source_name))];
-            sources.sort();
-            console.log(`── [${ci + 1}/${parsed.clusters.length}] ${cluster.title}`);
-            console.log(`   Items: ${cluster.item_ids.length}  |  Sources (${sources.length}): ${sources.join(", ")}`);
-            console.log(`   ${cluster.summary}`);
-            if (cluster.notes) {
-              console.log(`   Notes: ${cluster.notes}`);
-            }
-            console.log("");
-          }
-
-          // Residual.
-          const residualItems = prepItems.filter((pi) => !allClusteredIds.has(Number(pi.id)));
-          console.log(`── RESIDUAL: ${residualItems.length} unclustered item${residualItems.length !== 1 ? "s" : ""}`);
-          const sample = residualItems.slice(0, 30);
-          for (const pi of sample) {
-            console.log(`   [${pi.id}] ${pi.source_name} — ${pi.title}`);
-          }
-          if (residualItems.length > 30) {
-            console.log(`   … and ${residualItems.length - 30} more`);
-          }
-          console.log("");
-
-          // Integrity flags.
-          const flags2: string[] = [];
-          if (fabricatedIds.length > 0) flags2.push(`FABRICATED IDs (not in run): ${fabricatedIds.join(", ")}`);
-          if (duplicateIds.length > 0) flags2.push(`DUPLICATE IDs (in >1 cluster): ${duplicateIds.join(", ")}`);
-          if (singletonClusters.length > 0) flags2.push(`SINGLETON CLUSTERS (< 2 items): indices ${singletonClusters.map((i) => i + 1).join(", ")}`);
-          if (flags2.length > 0) {
-            console.log("── INTEGRITY FLAGS");
-            for (const f of flags2) console.log(`   ⚠  ${f}`);
-          } else {
-            console.log("── INTEGRITY: OK");
-          }
-        } else {
-          const limit = parseInt(flags["limit"] ?? "20", 10);
-          const { rows } = await pool.query<TriageRunRow>(
-            `SELECT id, started_at, completed_at, preprocessor_run_id,
-                    model_used, input_tokens, output_tokens, duration_ms, digest
-             FROM triage_runs
-             ORDER BY started_at DESC
-             LIMIT $1`,
-            [limit]
-          );
-
-          if (rows.length === 0) {
-            console.log("No triage runs recorded.");
-            break;
-          }
-
-          console.log(
-            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Prep#".padEnd(7)} ${"Model".padEnd(26)} ${"InTok".padEnd(8)} ${"OutTok".padEnd(8)} ${"Ms".padEnd(8)} Clusters`
-          );
-          console.log("─".repeat(100));
-
-          for (const run of rows) {
-            const started = new Date(run.started_at).toISOString().slice(0, 19);
-            const prepId = String(run.preprocessor_run_id);
-            const model = run.model_used.length > 24 ? run.model_used.slice(0, 23) + "…" : run.model_used;
-            const inTok = run.input_tokens !== null ? String(run.input_tokens) : "—";
-            const outTok = run.output_tokens !== null ? String(run.output_tokens) : "—";
-            const ms = run.duration_ms !== null ? String(run.duration_ms) : "—";
-            const clusterCount = run.digest ? parseClusterCount(run.digest) : "—";
-            const status = run.completed_at ? "" : " (running…)";
-            console.log(
-              `${String(run.id).padEnd(6)} ${started} ${prepId.padEnd(7)} ${model.padEnd(26)} ${inTok.padEnd(8)} ${outTok.padEnd(8)} ${ms.padEnd(8)} ${clusterCount}${status}`
-            );
-          }
-        }
-        break;
-      }
-
       case "prefilter": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
@@ -784,189 +512,6 @@ async function main() {
         break;
       }
 
-      case "editor-pass-1": {
-        if (flags["id"]) {
-          const runId = parseInt(flags["id"], 10);
-          const { rows: runRows } = await pool.query<EditorPass1RunRow>(
-            "SELECT * FROM editor_pass_1_runs WHERE id = $1",
-            [runId]
-          );
-          const run = runRows[0];
-          if (!run) {
-            console.log(`No editor-pass-1 run with id ${runId}`);
-            break;
-          }
-
-          const started = new Date(run.started_at).toISOString().slice(0, 19);
-          const finished = run.completed_at
-            ? new Date(run.completed_at).toISOString().slice(0, 19)
-            : "in progress / crashed";
-          console.log(`Editor-pass-1 run #${run.id}`);
-          console.log(`  Started:          ${started}`);
-          console.log(`  Completed:        ${finished}`);
-          console.log(`  Triage run:       #${run.triage_run_id}`);
-          console.log(`  Model:            ${run.model_used}`);
-          console.log(`  Items in:         ${run.items_in}`);
-          if (run.items_in > 0) {
-            console.log(`  Results scored:   ${run.items_in}`);
-          }
-
-          // Score distribution across all scored singletons.
-          const { rows: distRows } = await pool.query<ScoreDistRow>(
-            `SELECT
-               CASE WHEN score >= 90 THEN '90–100'
-                    WHEN score >= 70 THEN '70–89'
-                    WHEN score >= 50 THEN '50–69'
-                    WHEN score >= 30 THEN '30–49'
-                    ELSE                  '0–29'
-               END AS range_label,
-               CASE WHEN score >= 90 THEN 4
-                    WHEN score >= 70 THEN 3
-                    WHEN score >= 50 THEN 2
-                    WHEN score >= 30 THEN 1
-                    ELSE                  0
-               END AS range_ord,
-               COUNT(*) AS n
-             FROM editor_pass_1_results
-             WHERE run_id = $1
-             GROUP BY range_label, range_ord
-             ORDER BY range_ord DESC`,
-            [runId]
-          );
-          if (distRows.length > 0) {
-            console.log("\n── SCORE DISTRIBUTION");
-            const allRanges = [
-              { label: "90–100", ord: 4 },
-              { label: "70–89",  ord: 3 },
-              { label: "50–69",  ord: 2 },
-              { label: "30–49",  ord: 1 },
-              { label: "0–29",   ord: 0 },
-            ];
-            for (const r of allRanges) {
-              const found = distRows.find((d: ScoreDistRow) => d.range_ord === r.ord);
-              const count = found ? found.n : "0";
-              console.log(`  ${r.label.padEnd(8)} ${count}`);
-            }
-          }
-
-          // Score-50 fail-safe audit.
-          const { rows: failSafeRows } = await pool.query<{ reason: string; n: string }>(
-            `SELECT reason, COUNT(*)::int AS n
-             FROM editor_pass_1_results
-             WHERE run_id = $1 AND score = 50
-             GROUP BY reason
-             ORDER BY n DESC, reason`,
-            [runId]
-          );
-          if (failSafeRows.length > 0) {
-            console.log("\n── FAIL-SAFE (score=50)");
-            for (const row of failSafeRows) {
-              console.log(`  ${row.reason.padEnd(28)} ${row.n}`);
-            }
-          }
-
-          // Low-score protected-beat audit.
-          const protectedBeatPatterns = [
-            /philipp|manila|aira/i,
-            /qorvo|semi|semiconductor|fab|chip/i,
-            /labor|union|strike/i,
-            /bend|central oregon|oregon/i,
-            /immigr|ice\b/i,
-            /housing|homeless/i,
-          ];
-          const { rows: lowRows } = await pool.query<EditorPass1ResultRow & { source_name: string }>(
-            `SELECT r.preprocessed_item_id AS id, pi.source_name, pi.title, r.score, r.reason
-             FROM editor_pass_1_results r
-             JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
-             WHERE r.run_id = $1 AND r.score < 30
-             ORDER BY r.score ASC, pi.source_name, pi.title`,
-            [runId]
-          );
-          const protectedMatches = lowRows.filter((row) => {
-            const haystack = `${row.source_name} ${row.title} ${row.reason}`;
-            return protectedBeatPatterns.some((re) => re.test(haystack));
-          });
-          console.log(`\n── PROTECTED-BEAT LOW-SCORE AUDIT (${protectedMatches.length})`);
-          if (protectedMatches.length === 0) {
-            console.log("  none");
-          } else {
-            for (const row of protectedMatches) {
-              console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
-            }
-          }
-          // Pile info, if assembly has been run for this editor-pass-1 run.
-          const { rows: pileRows } = await pool.query<EditorPileRow>(
-            `SELECT id, clusters_included, singletons_in_pile, singletons_below_line,
-                    score_cutoff, singleton_pile_target
-             FROM editor_piles
-             WHERE editor_pass_1_run_id = $1
-             ORDER BY created_at DESC LIMIT 1`,
-            [runId]
-          );
-          const pile = pileRows[0];
-          if (pile) {
-            const totalPile = pile.clusters_included + pile.singletons_in_pile;
-            console.log(`\n── PILE #${pile.id}`);
-            console.log(`  Singleton target:    ${pile.singleton_pile_target}`);
-            console.log(`  Clusters in pile:    ${pile.clusters_included} (all pass through)`);
-            console.log(`  Singletons in pile:  ${pile.singletons_in_pile}`);
-            console.log(`  Singletons below:    ${pile.singletons_below_line}`);
-            if (pile.score_cutoff !== null) {
-              console.log(`  Score cutoff:        ${pile.score_cutoff}`);
-            }
-            console.log(`  Total pile size:     ${totalPile}`);
-
-            if (pile.singletons_below_line > 0) {
-              const { rows: belowRows } = await pool.query<BelowLineRow>(
-                `SELECT epi.preprocessed_item_id AS id, pi.source_name, pi.title,
-                        epi.score, epi.reason
-                 FROM editor_pile_items epi
-                 JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
-                 WHERE epi.pile_id = $1 AND epi.in_pile = false
-                 ORDER BY epi.score DESC, pi.title ASC`,
-                [pile.id]
-              );
-              console.log(`\n── BELOW LINE (${pile.singletons_below_line})`);
-              for (const row of belowRows) {
-                console.log(`  [${row.id}] score=${row.score} | ${row.source_name} | ${row.reason} | ${row.title}`);
-              }
-            }
-          }
-        } else {
-          const limit = parseInt(flags["limit"] ?? "20", 10);
-          const { rows } = await pool.query<EditorPass1RunRow>(
-            `SELECT id, started_at, completed_at, triage_run_id,
-                    model_used, items_in
-             FROM editor_pass_1_runs
-             ORDER BY started_at DESC
-             LIMIT $1`,
-            [limit]
-          );
-
-          if (rows.length === 0) {
-            console.log("No editor-pass-1 runs recorded.");
-            break;
-          }
-
-          console.log(
-            `${"ID".padEnd(6)} ${"Started".padEnd(19)} ${"Triage#".padEnd(9)} ${"Model".padEnd(22)} ${"In".padEnd(6)}`
-          );
-          console.log("─".repeat(65));
-
-          for (const run of rows) {
-            const started = new Date(run.started_at).toISOString().slice(0, 19);
-            const model = run.model_used.length > 24
-              ? run.model_used.slice(0, 23) + "…"
-              : run.model_used;
-            const status = run.completed_at ? "" : " (running…)";
-            console.log(
-              `${String(run.id).padEnd(6)} ${started} ${String(run.triage_run_id).padEnd(9)} ${model.padEnd(22)} ${String(run.items_in).padEnd(6)}${status}`
-            );
-          }
-        }
-        break;
-      }
-
       case "editor": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
@@ -990,8 +535,6 @@ async function main() {
           console.log(`  Pile:       #${run.pile_id}`);
           if (run.grouping_run_id !== null) {
             console.log(`  Grouping run: #${run.grouping_run_id}`);
-          } else {
-            console.log(`  Triage run: #${run.triage_run_id}`);
           }
           console.log(`  Model:      ${run.model_used}`);
           console.log(`  Items in:   ${run.items_in}`);
@@ -1002,9 +545,8 @@ async function main() {
           console.log(`  brief     ${run.items_brief}`);
           console.log(`  cut       ${run.items_cut}`);
 
-          // Resolve cluster titles from the upstream digest so the ranked list
-          // can show readable titles. Both triage and grouping digests use the
-          // same flat format; parseTriageJson handles both.
+          // Resolve cluster titles from the grouping digest so the ranked list
+          // can show readable titles.
           const clusterTitles = new Map<number, string>();
           if (run.grouping_run_id !== null) {
             const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
@@ -1012,18 +554,7 @@ async function main() {
               [run.grouping_run_id]
             );
             const parsedDigest = groupingRows[0]?.digest
-              ? parseTriageJson(groupingRows[0].digest)
-              : null;
-            if (parsedDigest) {
-              parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
-            }
-          } else if (run.triage_run_id !== null) {
-            const { rows: triageRows } = await pool.query<{ digest: string | null }>(
-              "SELECT digest FROM triage_runs WHERE id = $1",
-              [run.triage_run_id]
-            );
-            const parsedDigest = triageRows[0]?.digest
-              ? parseTriageJson(triageRows[0].digest)
+              ? parseClusterDigest(groupingRows[0].digest)
               : null;
             if (parsedDigest) {
               parsedDigest.clusters.forEach((c, idx) => clusterTitles.set(idx, c.title));
@@ -1068,7 +599,7 @@ async function main() {
         } else {
           const limit = parseInt(flags["limit"] ?? "20", 10);
           const { rows } = await pool.query<EditorRunRow>(
-            `SELECT id, started_at, completed_at, pile_id, triage_run_id, grouping_run_id,
+            `SELECT id, started_at, completed_at, pile_id, grouping_run_id,
                     model_used, items_in, items_feature, items_standard, items_brief, items_cut
              FROM editor_runs
              ORDER BY started_at DESC
@@ -1108,13 +639,8 @@ Commands:
   collector --id <n>       Show full detail for one collector run
   preprocessor             List recent preprocessor runs
   preprocessor --id <n>    Show full stats for one preprocessor run
-  triage                   List recent triage runs
-  triage --id <n>          Print full digest for one triage run
-  triage --id <n> --rounds Also show per-round cluster counts and lost-id flags
   prefilter                List recent prefilter runs
   prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
-  editor-pass-1            List recent editor-pass-1 runs
-  editor-pass-1 --id <n>   Show score distribution, pile info, and below-line list
   editor                   List recent editor runs
   editor --id <n>          Show ranked/tiered list with resolved titles and fail-safe flags
 

@@ -13,54 +13,6 @@ interface DigestClusterDetail {
   itemCount: number;
 }
 
-// Parses cluster details from a triage digest string into a map keyed by
-// cluster_index. Handles both the legacy JSON format and the current flat
-// `title;;summary;;ids` format.
-function parseTriageDigest(digest: string): Map<number, DigestClusterDetail> {
-  const map = new Map<number, DigestClusterDetail>();
-  const stripped = digest
-    .replace(/^```(?:json)?\s*/m, "")
-    .replace(/\s*```\s*$/m, "")
-    .trim();
-
-  if (stripped.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(stripped) as {
-        clusters?: Array<{ title?: unknown; summary?: unknown; item_ids?: unknown[] }>;
-      };
-      if (Array.isArray(parsed.clusters)) {
-        parsed.clusters.forEach((c, index) => {
-          map.set(index, {
-            title: typeof c.title === "string" ? c.title : `Cluster ${index}`,
-            summary: typeof c.summary === "string" ? c.summary : "",
-            itemCount: Array.isArray(c.item_ids) ? c.item_ids.length : 0,
-          });
-        });
-      }
-    } catch {
-      /* fall through to flat parser */
-    }
-    return map;
-  }
-
-  let index = 0;
-  for (const rawLine of stripped.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const first = line.indexOf(";;");
-    if (first === -1) continue;
-    const last = line.lastIndexOf(";;");
-    if (last === first) continue;
-    const title = line.slice(0, first).trim();
-    const summary = line.slice(first + 2, last).trim();
-    const idPart = line.slice(last + 2).trim();
-    const itemCount = idPart.split(",").filter((tok) => /^\s*\d+\s*$/.test(tok)).length;
-    map.set(index, { title, summary, itemCount });
-    index++;
-  }
-  return map;
-}
-
 // Full pile entry with all fields needed for formatting and merge building.
 interface ResolvedPileEntry {
   ref: string;
@@ -73,7 +25,7 @@ interface ResolvedPileEntry {
   pass1Score: number | null;
   pass1Reason: string | null;
   itemCount: number; // member count for clusters; 1 for singletons
-  score: number | null; // grouping-path pass-1 score; null for triage-path clusters
+  score: number | null; // grouping pass-1 score
 }
 
 // Exported type stored as JSONB in pile_merge_runs.merged_pile and read by
@@ -302,40 +254,29 @@ export async function runPileMerge(options: { pileId?: number } = {}): Promise<P
     pileId = rows[0].id;
   }
 
-  // 2. Load pile meta and resolve cluster details from the appropriate digest.
+  // 2. Load pile meta and resolve cluster details from the grouping digest.
   const { rows: pileRows } = await pool.query<{
     id: number;
-    triage_run_id: number | null;
     grouping_run_id: number | null;
-  }>("SELECT id, triage_run_id, grouping_run_id FROM editor_piles WHERE id = $1", [pileId]);
+  }>("SELECT id, grouping_run_id FROM editor_piles WHERE id = $1", [pileId]);
   const pile = pileRows[0];
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
 
-  let clusterDetails: Map<number, DigestClusterDetail>;
-  if (pile.grouping_run_id !== null) {
-    const { rows } = await pool.query<{ digest: string | null }>(
-      "SELECT digest FROM grouping_runs WHERE id = $1",
-      [pile.grouping_run_id],
-    );
-    const digest = rows[0]?.digest;
-    if (!digest) throw new Error(`Grouping run #${pile.grouping_run_id} has no digest`);
-    clusterDetails = new Map(
-      parseGroupingDigest(digest).map((c) => [
-        c.clusterIndex,
-        { title: c.title, summary: c.summary, itemCount: c.memberIds.length },
-      ]),
-    );
-  } else if (pile.triage_run_id !== null) {
-    const { rows } = await pool.query<{ digest: string | null }>(
-      "SELECT digest FROM triage_runs WHERE id = $1",
-      [pile.triage_run_id],
-    );
-    const digest = rows[0]?.digest;
-    if (!digest) throw new Error(`Triage run #${pile.triage_run_id} has no digest`);
-    clusterDetails = parseTriageDigest(digest);
-  } else {
-    throw new Error(`Editor pile #${pileId} has neither triage_run_id nor grouping_run_id`);
+  if (pile.grouping_run_id === null) {
+    throw new Error(`Editor pile #${pileId} has no grouping_run_id`);
   }
+  const { rows: digestRows } = await pool.query<{ digest: string | null }>(
+    "SELECT digest FROM grouping_runs WHERE id = $1",
+    [pile.grouping_run_id],
+  );
+  const digest = digestRows[0]?.digest;
+  if (!digest) throw new Error(`Grouping run #${pile.grouping_run_id} has no digest`);
+  const clusterDetails: Map<number, DigestClusterDetail> = new Map(
+    parseGroupingDigest(digest).map((c) => [
+      c.clusterIndex,
+      { title: c.title, summary: c.summary, itemCount: c.memberIds.length },
+    ]),
+  );
 
   // 3. Load cluster pile items (by index, for digest resolution).
   const { rows: clusterRows } = await pool.query<{

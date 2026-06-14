@@ -33,7 +33,7 @@ The paper is produced by a daily cron running seven stages. Four are software, t
    ↓
 2. Preprocessor (software)
    ↓
-3. Triage (one LLM call)
+3. Grouping (embedding-based clustering)
    ↓
 4. Researcher (agentic LLM loop)
    ↓
@@ -52,7 +52,7 @@ Cross-source duplication is preserved here because later stages use it as signal
 
 ### Stage 2: Preprocessor (software)
 
-Sits between collector and triage. Does the obvious mechanical work the LLM shouldn't be wasting tokens on:
+Sits between collector and grouping. Does the obvious mechanical work the LLM shouldn't be wasting tokens on:
 
 - URL canonicalization (strip tracking params, normalize AMP, etc.)
 - Exact-URL deduplication
@@ -64,17 +64,17 @@ Sits between collector and triage. Does the obvious mechanical work the LLM shou
 
 The LLM should never be the first entity to notice that ten articles have nearly identical headlines. Software handles it deterministically.
 
-### Stage 3: Triage (one LLM call)
+### Stage 3: Grouping (embedding-based clustering)
 
-Single call, large context. Reads the preprocessed pile and produces an analytical digest for the researcher. Its job is interpretation, not exploration — no tools, no looping.
+Clusters the kept news items into same-story groups. Each item's title and body excerpt is embedded; a cosine-similarity graph plus union-find produces candidate clusters, an LLM attach pass pulls in near-miss singletons, and a final LLM describe pass writes a neutral title and summary for each multi-item cluster. The output is a flat digest of clusters and singletons.
 
-Output covers: cluster meaning and angle, cross-source synthesis, representative quotes, prominence scoring beyond raw source counts, continuity flags against yesterday, gap analysis, anomaly notes, items that didn't cluster but might matter.
+Mostly software, with two cheap bounded LLM passes (attach, describe). The primary tuning lever is the similarity threshold: higher means fewer, tighter groups; lower means more, looser groups.
 
-Not agentic. Single interpretive pass.
+(This replaces the original conception of an LLM "triage" digest. The earlier LLM-based triage clusterer was removed once embedding-based grouping proved out — see `docs/decisions.md`.)
 
 ### Stage 4: Researcher (agentic LLM loop)
 
-Reads the triage digest, decides what's worth investigating deeper, fetches full text where useful, follows threads via search when context is needed beyond the configured sources. Produces a stack of article ideas — self-contained units with title, category, prominence tag, source list, image references, cliffs-notes summary, and a note on why flagged.
+Reads the grouping digest, decides what's worth investigating deeper, fetches full text where useful, follows threads via search when context is needed beyond the configured sources. Produces a stack of article ideas — self-contained units with title, category, prominence tag, source list, image references, cliffs-notes summary, and a note on why flagged.
 
 The researcher clusters during research, since it has the article texts available — three sources covering one story becomes one idea with three source entries.
 
@@ -113,7 +113,7 @@ The publisher is designed to be tolerant: structured metadata (story order, size
 
 Postgres. Already running for Fritterflix on the same box, so this is a reuse rather than new infrastructure.
 
-Tables roughly: raw items (collector output), preprocessed clusters, triage digests, article ideas (researcher output), writing packages, finished stories, papers, sources, feeds, feedback, generation logs. Raw items get a retention window (rolling deletion); everything else is durable.
+Tables roughly: raw items (collector output), preprocessed clusters, grouping digests, article ideas (researcher output), writing packages, finished stories, papers, sources, feeds, feedback, generation logs. Raw items get a retention window (rolling deletion); everything else is durable.
 
 Schema details are not decided. The point is: structured data through the pipeline, full lineage from raw input to published story, every LLM call logged with model, prompts, outputs, token counts.
 
@@ -125,7 +125,7 @@ Every LLM stage is independently configurable via a config file. The pipeline is
 
 Current thinking on assignments (subject to revision once we see how each stage actually performs):
 
-- **Triage:** Gemini 3 Flash Preview — large context handles the full preprocessed pile
+- **Grouping:** embedding model (`qwen/qwen3-embedding-8b`) for clustering, plus a cheap LLM (GLM) for the attach and describe passes
 - **Researcher:** Kimi K2.6 — strong synthesizer, low hallucination, manageable in loops with explicit stopping criteria
 - **Editor:** Kimi K2.6 or GLM — the most important assignment, may warrant tuning per phase
 - **Writers:** GLM — strong prose quality, comfortable in the editorial register
