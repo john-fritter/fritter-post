@@ -380,7 +380,10 @@ export async function runEditor(
           ref: e.ref,
           itemType: "cluster" as const,
           clusterIndex: e.clusterIndex,
-          preprocessedItemId: null,
+          // Promoted-singleton merges (clusterIndex null) have no digest entry.
+          // Carry preprocessedItemId so the identity survives into editor_stories
+          // and the writer stage can resolve source articles via originalRefs.
+          preprocessedItemId: e.clusterIndex === null ? e.preprocessedItemId : null,
           pass1Score: null,
         })),
       ...mergedPile

@@ -577,10 +577,17 @@ async function main() {
             console.log(`\n── RANKED LIST (${storyRows.length})`);
             const flagged: EditorStoryRow[] = [];
             for (const row of storyRows) {
-              const ref = row.item_type === "cluster" ? `C${row.cluster_index}` : `S${row.preprocessed_item_id}`;
-              const title =
+              // Promoted-singleton merged entries have item_type='cluster' but
+              // cluster_index=null; fall back to the singleton ref/title path.
+              const ref =
                 row.item_type === "cluster"
-                  ? clusterTitles.get(row.cluster_index ?? -1) ?? "(cluster title unresolved)"
+                  ? (row.cluster_index !== null
+                      ? `C${row.cluster_index}`
+                      : `S${row.preprocessed_item_id ?? "?"}`)
+                  : `S${row.preprocessed_item_id}`;
+              const title =
+                row.item_type === "cluster" && row.cluster_index !== null
+                  ? clusterTitles.get(row.cluster_index) ?? "(cluster title unresolved)"
                   : row.resolved_title ?? "(item title unresolved)";
               const tier = row.tier.padEnd(8);
               console.log(`  ${String(row.rank).padStart(3)}. [${tier}] ${ref.padEnd(7)} ${title}`);
@@ -591,7 +598,12 @@ async function main() {
             if (flagged.length > 0) {
               console.log(`\n── FAIL-SAFE FLAGS (${flagged.length})`);
               for (const row of flagged) {
-                const ref = row.item_type === "cluster" ? `C${row.cluster_index}` : `S${row.preprocessed_item_id}`;
+                const ref =
+                  row.item_type === "cluster"
+                    ? (row.cluster_index !== null
+                        ? `C${row.cluster_index}`
+                        : `S${row.preprocessed_item_id ?? "?"}`)
+                    : `S${row.preprocessed_item_id}`;
                 console.log(`  rank ${row.rank}: ${ref} — ${row.reason}`);
               }
             }
