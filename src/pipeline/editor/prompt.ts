@@ -19,28 +19,33 @@ export interface EditorSingletonPileItem {
 // Static task spec: rank/tier every pile item for a one-reader newspaper.
 // Bio and pile travel in the user message (see buildUserPrompt / buildMergedUserPrompt).
 export function buildSystemPrompt(): string {
-  return `You are an editor for a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier triage and scoring — your job is to put them in final order and decide how much space each one earns.
+  return `You are applying a relevance floor to news items for a personal daily newspaper, before they reach the clustering and editing stages. For each item, return a three-way verdict — CUT, NEWS, or OPINION — with a short reason.
 
-You will see the whole pile at once: every multi-source cluster and every single-source item that made today's cut. Ranking is relational — weigh each item against every other item in the pile, not in isolation. Then:
+## READER BIO
+${bioContent}
 
-1. RANK every item, best first. The lead story goes at the top.
-2. ASSIGN each item a tier:
-   - **feature** — the day's biggest story or stories. Earns substantial treatment. Aim 8-15 on a typical day; you may exceed that on a heavy news day.
-   - **standard** — real developments worth their own space; the working body of the paper. Largest tier.
-   - **brief** — a short acknowledgment; a line or a small card. Aim for a minority of the pile.
-3. Give each item a short reason — a phrase for an inspection log, not prose for the reader.
+## STEP 1: KEEP OR CUT
+This is a floor, not a ranking. Cut only items this reader has affirmatively no interest in; downstream stages judge relative importance. When unsure, KEEP — an over-inclusive floor is recoverable, a wrongly-cut story is not. Judge each item on its own merit against the bio, independent of what else appears in the batch.
 
-OUTPUT CONTRACT:
+Cut routine, angle-free filler: sports results and box scores, celebrity and tabloid gossip, market-movement noise, consumer-product and gadget marketing. Cut non-article material outright: event listings and calendars, horoscopes, weather forecasts, photo galleries, video-only posts, house ads, and link-dump roundups.
 
-Output ONLY lines of this exact form, one per pile item, ranked best-first:
+A low-interest topic becomes a KEEP the moment it carries a substantive angle — a labor dispute, a funding or governance fight, an immigration or civil-liberties case, corruption, a culture-war flashpoint. Cut the box score, not the story behind it.
 
-tier;;ref;;reason
+Substantive foreign coverage is a KEEP regardless of geography or an obvious reader tie: governance and politics, economic disruption, and science or health with real substance all clear the floor.
 
-  tier: one of feature, standard, brief
-  ref: the item reference exactly as given (e.g. C0 or S4821)
-  reason: a short phrase
+## STEP 2: NEWS OR OPINION
+For items you keep, decide:
+- OPINION — an argument, analysis, or personal take about events: columns, op-eds, commentary, first-person essays. Its value is the author's view, not a report of what happened.
+- NEWS — reporting of what happened, even with a clear angle.
+When unsure, choose NEWS.
 
-Every pile item must appear on exactly one line. Do not omit any item. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts, no candidate listing.`;
+## OUTPUT
+Output one line per item and nothing else — no JSON, brackets, markdown, headers, or prose. Each line:
+id;;verdict;;reason
+- id: integer matching the input id
+- verdict: exactly one of "cut", "news", "opinion"
+- reason: short phrase, 3–8 words
+Return exactly one line per input item; omit no id.`;
 }
 
 function formatCluster(item: EditorClusterPileItem): string {
