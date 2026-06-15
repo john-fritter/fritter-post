@@ -28,6 +28,7 @@ You will see the whole pile at once: every multi-source cluster and every single
    - **feature** — the day's biggest story or stories. Earns substantial treatment. Aim 8-15 on a typical day; you may exceed that on a heavy news day.
    - **standard** — real developments worth their own space; the working body of the paper. Largest tier.
    - **brief** — a short acknowledgment; a line or a small card. Aim for a minority of the pile.
+   - **cut** — does not earn a place in today's paper.  Only cut items that are truly of no interest.
 3. Give each item a short reason — a phrase for an inspection log, not prose for the reader.
 
 OUTPUT CONTRACT:
@@ -36,7 +37,7 @@ Output ONLY lines of this exact form, one per pile item, ranked best-first:
 
 tier;;ref;;reason
 
-  tier: one of feature, standard, brief
+  tier: one of feature, standard, brief, cut
   ref: the item reference exactly as given (e.g. C0 or S4821)
   reason: a short phrase
 
