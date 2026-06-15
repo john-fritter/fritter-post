@@ -59,6 +59,7 @@ interface PreprocessorRunRow {
   items_dropped_recency: number;
   items_dropped_duplicate: number;
   items_dropped_parent_dedup: number;
+  items_dropped_cross_run: number;
   notes: string | null;
 }
 
@@ -374,6 +375,7 @@ async function main() {
           console.log(`  Dropped (recency):       ${run.items_dropped_recency}`);
           console.log(`  Dropped (duplicate):     ${run.items_dropped_duplicate}`);
           console.log(`  Dropped (parent-dedup):  ${run.items_dropped_parent_dedup}`);
+          console.log(`  Dropped (cross-run):     ${run.items_dropped_cross_run}`);
           if (run.notes) console.log(`  Notes: ${run.notes}`);
         } else {
           // Summary list of recent runs.
@@ -382,7 +384,7 @@ async function main() {
             `SELECT id, started_at, completed_at, collector_run_id,
                     raw_items_considered, items_kept,
                     items_dropped_recency, items_dropped_duplicate,
-                    items_dropped_parent_dedup, notes
+                    items_dropped_parent_dedup, items_dropped_cross_run, notes
              FROM preprocessor_runs
              ORDER BY started_at DESC
              LIMIT $1`,

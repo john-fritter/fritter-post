@@ -5,6 +5,17 @@ import { z } from "zod";
 
 const ProviderSchema = z.enum(["ollama-cloud", "nanogpt", "openrouter"]);
 
+// Deterministic preprocessor tuning (recency window + dedup lookback).
+const PreprocessorConfigSchema = z.object({
+  recency: z.object({
+    fallback_hours: z.number().int().positive(),
+    max_age_days: z.number().int().positive().nullable(),
+  }),
+  dedup: z.object({
+    lookback_days: z.number().int().positive(),
+  }),
+});
+
 const StageConfigSchema = z.object({
   model: z.string(),
   temperature: z.number(),
@@ -91,6 +102,7 @@ const ModelsConfigSchema = z.object({
   grouping: GroupingStageConfigSchema,
 });
 
+export type PreprocessorConfig = z.infer<typeof PreprocessorConfigSchema>;
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
