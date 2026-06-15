@@ -7,7 +7,7 @@ export interface EditorPass1BatchItem {
 }
 
 export function buildSystemPrompt(bioContent: string): string {
-  return `You are scoring news items for a personal daily newspaper. For each item, produce one integer score (0–100) representing how much this specific item matters to this specific reader, and a short reason string.
+  return `You are scoring news items for a personal daily newspaper. For each item, produce one integer score representing how much this specific item matters to this specific reader, and a short reason string.
 
 ## READER BIO
 ${bioContent}
