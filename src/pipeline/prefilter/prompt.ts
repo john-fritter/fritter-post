@@ -23,8 +23,8 @@ Substantive foreign coverage is a KEEP regardless of geography or an obvious rea
 
 ## STEP 2: NEWS OR OPINION
 For items you keep, decide:
-- OPINION — an argument, analysis, or personal take about events: columns, op-eds, commentary, first-person essays. Its value is the author's view, not a report of what happened.
-- NEWS — reporting of what happened, even with a clear angle.
+- OPINION — a piece whose value is the piece itself rather than a report of something that happened: columns, op-eds, commentary, first-person essays, analysis and think-pieces, how-to guides and tutorials, and personal projects or technical write-ups.
+- NEWS — reporting of what happened, even with a clear angle. A release, ruling, launch, or announcement is news even when brief: something occurred.
 When unsure, choose NEWS.
 
 ## OUTPUT
