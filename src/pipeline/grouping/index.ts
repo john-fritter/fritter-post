@@ -6,11 +6,8 @@ import type { GroupingDescribeConfig, GroupingAttachConfig } from "../../config/
 import { embed, callLLM } from "../../llm/index.js";
 import { getClusteringItems, formatItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
-import { parseFlatClusterOutput } from "../../lib/cluster.js";
 import type { Cluster } from "../../lib/cluster.js";
 import {
-  buildRefineSystemPrompt,
-  buildRefineUserPrompt,
   buildDescribeSystemPrompt,
   buildDescribeUserPrompt,
   buildAttachSystemPrompt,
@@ -504,7 +501,7 @@ export async function runGrouping(
   console.log(`[grouping] run #${runId}: preprocessor_run_id=${preprocessorRunId}, model=${model}`);
   console.log(
     `[grouping] config: similarity_threshold=${threshold}, top_k=${topK}, ` +
-      `attach=${groupingConfig.attach.enabled}, refine=${groupingConfig.refine.enabled}`,
+      `attach=${groupingConfig.attach.enabled}`,
   );
 
   try {
@@ -724,118 +721,11 @@ export async function runGrouping(
       );
     }
 
-    // --- STEP 4 (optional): BOUNDARY REFINE ---
-    // When disabled, clusters from step 3 pass through as-is.
-    let finalClusters: Cluster[];
+    // Connected-component clusters (after the attach pass) are the final
+    // clusters; the describe pass names them next.
+    let finalClusters: Cluster[] = preClusters;
 
-    if (!groupingConfig.refine.enabled) {
-      console.log(
-        `[grouping] step 4 refine: disabled — ${preClusters.length} clusters pass through as-is`,
-      );
-      finalClusters = preClusters;
-    } else {
-      const minGroupSize = groupingConfig.refine.min_group_size;
-      const inputIds = new Set<number>(itemIds);
-      const refineLimit = pLimit(groupingConfig.refine.concurrency);
-
-      type RefineResult = {
-        clusters: Cluster[];
-        inputTokens: number | null;
-        outputTokens: number | null;
-        generationLogId: bigint | null;
-      };
-
-      const refineResults = await Promise.all(
-        preClusters.map((cluster) =>
-          refineLimit(async (): Promise<RefineResult> => {
-            if (cluster.item_ids.length < minGroupSize) {
-              return {
-                clusters: [cluster],
-                inputTokens: null,
-                outputTokens: null,
-                generationLogId: null,
-              };
-            }
-
-            const groupItems = cluster.item_ids
-              .map((id) => itemById.get(id))
-              .filter((i): i is PreprocessedItemRow => i !== undefined);
-            const itemBlocks = formatItemBlocks(groupItems);
-
-            try {
-              const result = await callLLM({
-                stage: "grouping",
-                stageRunId: runId,
-                model,
-                systemPrompt: buildRefineSystemPrompt(),
-                userPrompt: buildRefineUserPrompt(itemBlocks),
-                temperature: groupingConfig.temperature,
-                maxTokens: groupingConfig.max_tokens,
-                reasoningEffort: groupingConfig.reasoning_effort,
-                provider: groupingConfig.provider,
-                timeoutMs: groupingConfig.timeout_ms,
-                stream: groupingConfig.stream,
-              });
-
-              const parsed = parseFlatClusterOutput(result.text, inputIds);
-              if (parsed === null || parsed.clusters.length === 0) {
-                console.warn(
-                  `[grouping] refine parse failed for cluster of ${cluster.item_ids.length} items — keeping intact`,
-                );
-                return {
-                  clusters: [cluster],
-                  inputTokens: result.inputTokens,
-                  outputTokens: result.outputTokens,
-                  generationLogId: result.generationLogId,
-                };
-              }
-
-              return {
-                clusters: parsed.clusters,
-                inputTokens: result.inputTokens,
-                outputTokens: result.outputTokens,
-                generationLogId: result.generationLogId,
-              };
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              console.warn(
-                `[grouping] refine call failed for cluster of ${cluster.item_ids.length} items — keeping intact: ${msg}`,
-              );
-              return {
-                clusters: [cluster],
-                inputTokens: null,
-                outputTokens: null,
-                generationLogId: null,
-              };
-            }
-          }),
-        ),
-      );
-
-      finalClusters = [];
-      let refinedGroupCount = 0;
-      let passedThroughCount = 0;
-
-      for (let i = 0; i < preClusters.length; i++) {
-        const r = refineResults[i]!;
-        finalClusters.push(...r.clusters);
-
-        if (preClusters[i]!.item_ids.length >= minGroupSize) {
-          refinedGroupCount++;
-        } else {
-          passedThroughCount++;
-        }
-
-        accumulateTokens(r.inputTokens, r.outputTokens, r.generationLogId);
-      }
-
-      console.log(
-        `[grouping] step 4 refine: refined=${refinedGroupCount}, passed_through=${passedThroughCount}, ` +
-          `final_clusters=${finalClusters.length}`,
-      );
-    }
-
-    // --- STEP 5: DESCRIBE ---
+    // --- STEP 4: DESCRIBE ---
     // Batch LLM pass that writes a neutral title + short summary for every
     // multi-item cluster. Singletons skip this pass.
     const describeResult = await describeGroups(
@@ -853,7 +743,7 @@ export async function runGrouping(
     );
 
     console.log(
-      `[grouping] step 5 describe: ${finalClusters.length} clusters described, ` +
+      `[grouping] step 4 describe: ${finalClusters.length} clusters described, ` +
         `${remainingSingletonIds.size} singletons pass through unchanged`,
     );
 
