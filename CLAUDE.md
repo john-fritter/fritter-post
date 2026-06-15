@@ -96,11 +96,7 @@ Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
 grouping proved out; see `docs/decisions.md`.)
 
 ```
-collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-                                                               ↓
-                                                       pile-merge (optional)
-                                                               ↓
-                                                            editor
+collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1  →  editor
 ```
 
 ### collector
@@ -148,10 +144,6 @@ steps:
    `title;;summary` for every multi-item cluster. Singletons skip this pass.
    Controlled by `grouping.describe.*` in `models.yaml`.
 
-An optional **boundary-refine** step (one LLM call per large candidate group
-asking "same event or split?") exists in the code behind `refine.enabled`
-(default `false`). Keep the code; toggle the flag to re-enable.
-
 Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
 **primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
 higher = fewer, tighter groups; lower = more, looser groups.
@@ -173,28 +165,10 @@ top `grouping.pile_target` (config: 150), and writes to `editor_piles` (with
 `grouping_run_id` set) + `editor_pile_items`. Source count travels to the
 editor via the grouping digest's id-list length.
 
-### pile-merge
-Optional same-story dedup pass that runs after pile assembly and before the
-editor. Presents the assembled pile to a reasoning model (`moonshotai/kimi-k2.6:
-thinking`, nanogpt) and asks it to identify items that cover the same specific
-event. For each flagged merge group, one primary item is kept (cluster over
-singleton, then highest source count, then lex ref for determinism) and
-secondary items are absorbed: their source IDs are merged in and the excerpt of
-a merged singleton is promoted to the summary field of the surviving entry.
-Items not flagged survive unchanged.
-
-Output: `pile_merge_runs` table (model used, items in/out, groups merged,
-`merged_pile` JSONB). The pile's `pile_merge_run_id` FK is set; the editor
-checks this column first and, when set, reads the merged pile directly from
-`pile_merge_runs.merged_pile` instead of resolving digest rows from scratch.
-Threshold is strictly same-specific-event — the same clustering standard the
-grouping stage applies. Conservative bias: when in doubt, keep separate.
-Controlled by `pile_merge.*` in `models.yaml`.
-
 ### editor
 Whole-pile single LLM call. Reads all clusters and singletons from the editor
-pile (or the merged pile, if pile-merge ran), ranks and tiers them: `feature`,
-`standard`, or `brief`. Emits `tier;;ref;;reason` lines in rank order;
+pile, ranks and tiers them: `feature`, `standard`, or `brief`. Emits
+`tier;;ref;;reason` lines in rank order;
 software derives rank from line position. Streaming always on (`stream: true`).
 Retry-once-then-fallback resilience: primary → retry primary once → optional
 fallback model (`editor.fallback` in `models.yaml`). Reads `docs/bio.md`.
@@ -206,11 +180,9 @@ each `;;`-delimited line is scanned for a tier keyword (`feature`, `standard`,
 column position, so format variation from the model (swapped columns, leading
 numbering) doesn't break parsing.
 
-Consumes piles from **two paths**: when `editor_piles.pile_merge_run_id` is
-set it reads the merged pile JSONB directly; otherwise it resolves cluster
-details from `grouping_runs.digest` via `grouping_run_id`. Both paths produce
-the same prompt structure (`MergedPileBlock` list for the merged path,
-`EditorClusterPileItem` + `EditorSingletonPileItem` for the digest path).
+Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`,
+then presents the pile to the model as `EditorClusterPileItem` +
+`EditorSingletonPileItem` blocks.
 
 ---
 
@@ -314,7 +286,6 @@ anything with quoted arguments).
   embed items, build candidate groups, run attach + describe passes, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
   score all clusters + singletons on 0–100 bio-relevance scale, assemble pile
-- `npm run pile-merge [-- --pile-id <n>]` — same-story dedup pass on assembled pile
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Inspection**
