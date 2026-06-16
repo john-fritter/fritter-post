@@ -1,34 +1,10 @@
 import "dotenv/config";
-import { readFileSync } from "fs";
-import path from "path";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMCallOptions } from "../../llm/index.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import { normalizeRef } from "../../lib/refs.js";
-import {
-  buildSystemPrompt,
-  buildUserPrompt,
-  type EditorClusterPileItem,
-  type EditorSingletonPileItem,
-} from "./prompt.js";
-
-const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
-
-const BIO_FALLBACK =
-  "(Reader bio not yet written. Apply generic editorial judgment: weight " +
-  "substantive accountability journalism and stories with direct stakes for an " +
-  "ordinary reader; send routine sports, celebrity, and market-noise items toward " +
-  "the bottom tiers or cut them outright.)";
-
-function loadTextFile(filePath: string, fallback: string): string {
-  try {
-    const content = readFileSync(filePath, "utf-8").trim();
-    return content.length > 0 ? content : fallback;
-  } catch {
-    return fallback;
-  }
-}
+import { buildSystemPrompt, buildUserPrompt, type EditorPileEntry } from "./prompt.js";
 
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
 const VALID_TIERS = new Set<EditorTier>(["feature", "standard", "brief", "cut"]);
@@ -45,8 +21,6 @@ const SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD = 70;
 interface DigestCluster {
   index: number;
   title: string;
-  summary: string;
-  notes: string | null;
   itemCount: number;
 }
 
@@ -301,13 +275,6 @@ export async function runEditor(
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
   const groupingRunId = pile.grouping_run_id;
 
-  const bio = loadTextFile(BIO_PATH, BIO_FALLBACK);
-
-  let clusterItems: EditorClusterPileItem[];
-  let singletonItems: EditorSingletonPileItem[];
-  let pileItems: EditorPileItem[];
-  let userPrompt: string;
-
   // Resolve cluster details from the grouping run's digest, then load and
   // present items from editor_pile_items.
   if (groupingRunId === null) {
@@ -327,40 +294,43 @@ export async function runEditor(
   const digestClusters: DigestCluster[] = parseGroupingDigest(digest).map((c) => ({
     index: c.clusterIndex,
     title: c.title,
-    summary: c.summary,
-    notes: null,
     itemCount: c.memberIds.length,
   }));
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
-  // 3. Load in-pile items: clusters (by grouping digest index) and singletons
-  //    (joined to preprocessed_items for title/body, carrying pass-1 score + reason).
-  const { rows: clusterPileRows } = await pool.query<{ cluster_index: number }>(
-    `SELECT cluster_index FROM editor_pile_items
-     WHERE pile_id = $1 AND item_type = 'cluster' AND in_pile = true
-     ORDER BY cluster_index ASC`,
+  // 3. Load in-pile items: clusters (carrying the pass-1 score stored on the
+  //    pile item; title + source count come from the digest) and singletons
+  //    (joined to preprocessed_items for the title, source count is always 1).
+  const { rows: clusterPileRows } = await pool.query<{
+    cluster_index: number;
+    score: number;
+  }>(
+    `SELECT cluster_index, score FROM editor_pile_items
+     WHERE pile_id = $1 AND item_type = 'cluster' AND in_pile = true`,
     [pileId],
   );
 
   const { rows: singletonPileRows } = await pool.query<{
     preprocessed_item_id: string;
     score: number;
-    reason: string;
     title: string;
-    body_text: string | null;
   }>(
-    `SELECT epi.preprocessed_item_id, epi.score, epi.reason, pi.title, pi.body_text
+    `SELECT epi.preprocessed_item_id, epi.score, pi.title
      FROM editor_pile_items epi
      JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
-     WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true
-     ORDER BY epi.score DESC, epi.preprocessed_item_id ASC`,
+     WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true`,
     [pileId],
   );
 
-  // 4. Build presentation lists in stable order: clusters by source count desc,
-  //    then singletons by pass-1 score desc (already the query order).
-  clusterItems = clusterPileRows
-    .map((row): EditorClusterPileItem | null => {
+  // 4. Merge clusters and singletons into one list and sort by score descending
+  //    so the editor receives the pile pre-ranked, best-first (its prompt depends
+  //    on this). Each entry carries both the presentation fields (title, score,
+  //    source count) and the parser fields (item type, refs, pass-1 score for the
+  //    fail-safe). Tiebreak by ref for a deterministic order at equal scores.
+  type CombinedPileItem = EditorPileEntry & EditorPileItem;
+
+  const clusterCombined: CombinedPileItem[] = clusterPileRows
+    .map((row): CombinedPileItem | null => {
       const detail = clusterByIndex.get(row.cluster_index);
       if (!detail) {
         console.warn(
@@ -370,45 +340,48 @@ export async function runEditor(
       }
       return {
         ref: `C${row.cluster_index}`,
-        clusterIndex: row.cluster_index,
         title: detail.title,
-        summary: detail.summary,
-        notes: detail.notes,
+        score: row.score,
         sourceCount: detail.itemCount,
+        itemType: "cluster",
+        clusterIndex: row.cluster_index,
+        preprocessedItemId: null,
+        // Clusters fail safe by item type, not score (see failSafeTierForMissingItem).
+        pass1Score: null,
       };
     })
-    .filter((c): c is EditorClusterPileItem => c !== null)
-    .sort(
-      (a, b) => b.sourceCount - a.sourceCount || (a.clusterIndex ?? 0) - (b.clusterIndex ?? 0),
-    );
+    .filter((c): c is CombinedPileItem => c !== null);
 
-  singletonItems = singletonPileRows.map((row) => ({
+  const singletonCombined: CombinedPileItem[] = singletonPileRows.map((row) => ({
     ref: `S${row.preprocessed_item_id}`,
-    preprocessedItemId: Number(row.preprocessed_item_id),
     title: row.title,
-    bodyExcerpt: (row.body_text ?? "").replace(/\s+/g, " ").trim().slice(0, 50),
+    score: row.score,
+    sourceCount: 1,
+    itemType: "singleton",
+    clusterIndex: null,
+    preprocessedItemId: Number(row.preprocessed_item_id),
     pass1Score: row.score,
-    pass1Reason: row.reason,
   }));
 
-  pileItems = [
-    ...clusterItems.map((c) => ({
-      ref: c.ref,
-      itemType: "cluster" as const,
-      clusterIndex: c.clusterIndex,
-      preprocessedItemId: null,
-      pass1Score: null,
-    })),
-    ...singletonItems.map((s) => ({
-      ref: s.ref,
-      itemType: "singleton" as const,
-      clusterIndex: null,
-      preprocessedItemId: s.preprocessedItemId,
-      pass1Score: s.pass1Score,
-    })),
-  ];
+  const combined: CombinedPileItem[] = [...clusterCombined, ...singletonCombined].sort(
+    (a, b) => b.score - a.score || a.ref.localeCompare(b.ref),
+  );
 
-  userPrompt = buildUserPrompt(clusterItems, singletonItems, bio);
+  const entries: EditorPileEntry[] = combined.map((c) => ({
+    ref: c.ref,
+    title: c.title,
+    score: c.score,
+    sourceCount: c.sourceCount,
+  }));
+  const pileItems: EditorPileItem[] = combined.map((c) => ({
+    ref: c.ref,
+    itemType: c.itemType,
+    clusterIndex: c.clusterIndex,
+    preprocessedItemId: c.preprocessedItemId,
+    pass1Score: c.pass1Score,
+  }));
+
+  const userPrompt = buildUserPrompt(entries);
 
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
@@ -428,8 +401,8 @@ export async function runEditor(
   const systemPrompt = buildSystemPrompt();
 
   console.log(
-    `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
-      `${pileItems.length} items total — one whole-pile call`,
+    `[editor] pile #${pileId}: ${clusterCombined.length} clusters, ${singletonCombined.length} singletons, ` +
+      `${pileItems.length} items total (pre-ranked by score) — one whole-pile call`,
   );
 
   // 6. Create editor_runs row, recording the grouping run the pile came from.

@@ -93,6 +93,7 @@ const GroupingStageConfigSchema = StageConfigSchema.extend({
 });
 
 const ModelsConfigSchema = z.object({
+  preprocessor: PreprocessorConfigSchema,
   prefilter: BatchStageConfigSchema,
   researcher: StageConfigSchema,
   editor: EditorStageConfigSchema,
