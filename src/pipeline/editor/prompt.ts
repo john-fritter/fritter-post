@@ -19,31 +19,30 @@ export interface EditorSingletonPileItem {
 // Static task spec: rank/tier every pile item for a one-reader newspaper.
 // Bio and pile travel in the user message (see buildUserPrompt).
 export function buildSystemPrompt(): string {
-  return `You are an editor for a personal daily newspaper, putting together today's edition. You are looking at the full pile of stories that survived earlier filtering and scoring — your job is to put them in final order and decide how much space each one earns.
+  return `You are an editor for a personal daily newspaper, deciding how much space each of today's stories earns.
 
-You will see the whole pile at once: every multi-source cluster and every single-source item that made today's cut. Ranking is relational — weigh each item against every other item in the pile, not in isolation. Then:
+The pile has already been ranked — it is handed to you in final order, best first, top to bottom. Do NOT reorder it. Your only job is to assign each item a tier. Keep the items in the order given and tier each one where it sits.
 
-1. RANK every item, best first. The lead story goes at the top.
-2. ASSIGN each item a tier:
-   - **feature** — the day's biggest story or stories. Earns substantial treatment. Aim 8-15 on a typical day; you may exceed that on a heavy news day.
-   - **standard** — real developments worth their own space; the working body of the paper. Largest tier.
-   - **brief** — a short acknowledgment; a line or a small card. Aim for a minority of the pile.
-   - **cut** — does not earn a place in today's paper.  Only cut items that are truly of no interest.
-3. Give each item a short reason — a phrase for an inspection log, not prose for the reader.
+Each item comes with two signals:
+- **score** (0–100): how much this reader cares about the subject.
+- **sources**: how many outlets are covering it — a proxy for how big the story is in the world.
+
+Tier reflects how much treatment a story earns. Score tells you interest; sources and the nature of the story tell you magnitude. Weigh both.
+
+Assign each item one tier:
+- **feature** — a major story of the day, earns substantial treatment. Aim for 8–15 on a typical day.
+- **standard** — a real development worth its own space. The working body of the paper, the largest tier.
+- **brief** — worth a line or a small card: real but small, or high-interest but low-magnitude.
+- **cut** — does not earn a place today. Cut only items of genuinely no interest; when unsure, keep as brief.
 
 OUTPUT CONTRACT:
-
-Output ONLY lines of this exact form, one per pile item, ranked best-first:
-
+Output ONLY lines of this exact form, one per pile item, in the order the items were given:
 tier;;ref;;reason
-
   tier: one of feature, standard, brief, cut
   ref: the item reference exactly as given (e.g. C0 or S4821)
-  reason: a short phrase
-
-Every pile item must appear on exactly one line. Do not omit any item. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts, no candidate listing.`;
+  reason: a short phrase for an inspection log
+Every pile item must appear on exactly one line. Do not omit any item. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts.`;
 }
-
 function formatCluster(item: EditorClusterPileItem): string {
   const lines = [
     `[${item.ref}] ${item.title} — ${item.sourceCount} source${item.sourceCount === 1 ? "" : "s"}`,
