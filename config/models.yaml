@@ -64,6 +64,18 @@ editor:
     feature: 15
     standard: 60
     brief: 75
+  # Bio-aware tie-break: one small LLM call per group of items that share an
+  # identical combined score, ranking them against each other by reader relevance.
+  # Cheap fast model; groups are small; calls run concurrently.
+  tie_break:
+    model: zai-org/glm-5.1
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 512
+    concurrency: 10
+    reasoning_effort: "none"
+    stream: false
+    timeout_ms: 60000
 
 # Unbuilt placeholder — stage not yet implemented; model id is not real.
 writers:

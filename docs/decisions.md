@@ -20,6 +20,23 @@ Entry format:
 
 ---
 
+## 2026-06-16 — Editor tie-break: bio-aware LLM ranking for identical combined scores
+
+**Decision:** After computing the combined formula score (`relevance + W×ln(sources)`), any group of 2+ items that land on the same combined score is passed to a small, cheap LLM call (glm-5.1, nanogpt, `max_tokens: 512`) that reads `docs/bio.md` and ranks them against each other best-first. The model's within-group order becomes the tiebreaker in the final sort: `combined desc → llm_tie_rank asc → ref asc`. `ref` stays as the last-resort fallback if a call fails or returns an incomplete list — any item the LLM omits gets effective rank Infinity (sorted to the end of its group, then by ref), logged by name. A failed call (exception) produces an empty rank map for that group, which degrades cleanly to ref order for all members without dropping any item. Tied groups are independent and run concurrently (p-limit at `editor.tie_break.concurrency`). `editor_runs.model_used` is updated to `formula:combined-score+tie-rank:{model}` if any tie-break calls were made; it stays `formula:combined-score` if there were no ties. Items that went through a tie-break call include `tie-rank:N` in their `editor_stories.reason` field for inspection.
+
+**Context:** The previous formula's tiebreaker for equal combined scores was ref order — `C3` before `S17566` — which is alphabetically arbitrary and produces a different ordering each time the grouping run produces different cluster indices. Where two singletons have the same relevance score and both have `sourceCount=1` (which makes their combined scores identical), or where two clusters with the same score happen to have the same size, the paper's ordering at those positions is effectively random.
+
+**Rationale:**
+- **The formula handles the easy cases; the LLM handles only the hard ones.** The vast majority of items are resolved by the combined score alone. Tie-break calls happen only where the formula genuinely cannot distinguish. On a typical 150-item pile the number of tied groups is small (often zero or low single digits); the cost is proportional to how often the formula produces exact ties.
+- **Bio-aware ranking is the right judgment for ties.** At a tie, the formula has no information; the only signal left is what this reader cares about. That's exactly what `docs/bio.md` encodes. Sending the reader's profile and a handful of similarly-scored items to a cheap model is the minimal LLM call that adds real value.
+- **Graceful degradation.** A failed call or incomplete output falls back to ref order for that group — deterministic, logged, and no items are dropped. The paper is always complete; the tie-break only improves ordering, it doesn't gatekeep.
+- **Small-call shape, not whole-pile reasoning.** Each call sees only 2–N items from a single tied group, not the full pile. This keeps individual calls cheap and fast, and bounds the cost by the number of actual ties rather than pile size.
+- **Same call pattern as the scorer.** `callLLM`, `p-limit`, `generation_logs`, flat ref output parseable by `normalizeRef` — same conventions as `editor-pass-1` and `grouping`.
+
+**Supersedes:** The ref-order-as-tiebreak portion of "Editor replaced with deterministic formula" (2026-06-16), which fell back to `localeCompare` on refs after exhausting combined and relevance as tiebreakers.
+
+---
+
 ## 2026-06-16 — Editor replaced with deterministic formula; LLM tierer dropped
 
 **Decision:** Remove the whole-pile LLM call from the editor stage and replace it with a deterministic combined-score formula. For each pile item:

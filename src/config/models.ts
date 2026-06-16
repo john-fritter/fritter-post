@@ -36,6 +36,17 @@ const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
 });
 
+const EditorTieBreakConfigSchema = z.object({
+  model: z.string(),
+  provider: ProviderSchema.optional(),
+  temperature: z.number(),
+  max_tokens: z.number().int(),
+  concurrency: z.number().int(),
+  reasoning_effort: z.string().optional(),
+  stream: z.boolean().optional(),
+  timeout_ms: z.number().int().optional(),
+});
+
 const EditorStageConfigSchema = z.object({
   source_weight: z.number(),
   tiers: z.object({
@@ -43,6 +54,7 @@ const EditorStageConfigSchema = z.object({
     standard: z.number().int().positive(),
     brief: z.number().int().positive(),
   }),
+  tie_break: EditorTieBreakConfigSchema,
 });
 
 const EmbeddingsConfigSchema = z.object({
@@ -106,6 +118,7 @@ export type PreprocessorConfig = z.infer<typeof PreprocessorConfigSchema>;
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
+export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;

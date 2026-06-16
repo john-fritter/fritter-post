@@ -1,13 +1,32 @@
 import "dotenv/config";
+import { readFileSync } from "fs";
+import path from "path";
+import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
-import { loadModelConfig } from "../../config/models.js";
+import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
+import { callLLM } from "../../llm/index.js";
+import { normalizeRef } from "../../lib/refs.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
 
+const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
+const BIO_FALLBACK =
+  "(Reader bio unavailable. Apply generic editorial judgment: rank by newsworthiness and likely reader interest.)";
+
+function loadBio(): string {
+  try {
+    const content = readFileSync(BIO_PATH, "utf-8").trim();
+    return content.length > 0 ? content : BIO_FALLBACK;
+  } catch {
+    return BIO_FALLBACK;
+  }
+}
+
 interface DigestCluster {
   index: number;
   title: string;
+  summary: string;
   itemCount: number;
 }
 
@@ -18,7 +37,11 @@ interface EditorPileItem {
   preprocessedItemId: number | null;
   score: number;       // grouping-pass-1 relevance score (0–100)
   sourceCount: number; // cluster member count; 1 for singleton
+  title: string;
+  bodyText: string;    // cluster summary or singleton body excerpt, for tie-break prompt
 }
+
+const BODY_CAP = 300;
 
 /**
  * combined = relevance + W * ln(sources)
@@ -38,6 +61,101 @@ export function assignTier(rank0: number, featureCount: number, standardCount: n
   if (rank0 < featureCount) return "feature";
   if (rank0 < featureCount + standardCount) return "standard";
   return "brief";
+}
+
+/**
+ * Parse the tie-break LLM output: one ref per line, in ranked order.
+ * Returns a Map from ref → 0-based rank within the group.
+ * Refs absent from the output are not in the map — callers treat them as Infinity.
+ */
+export function parseTieBreakOutput(text: string, groupRefs: string[]): Map<string, number> {
+  const refSet = new Set(groupRefs);
+  const tieRanks = new Map<string, number>();
+  let rank = 0;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const ref = normalizeRef(line);
+    if (ref && refSet.has(ref) && !tieRanks.has(ref)) {
+      tieRanks.set(ref, rank++);
+    }
+  }
+  return tieRanks;
+}
+
+/**
+ * Sort items by (combined desc, tieRank asc, ref asc).
+ * Items not in tieRanksByRef get effective tieRank Infinity — they sort to the
+ * end of their tied group, with ref as the final deterministic fallback.
+ * Items with unique combined scores never compare tieRanks (the first term
+ * resolves), so absent tie ranks are harmless for non-tied items.
+ */
+export function applySortWithTieRanks<T extends { ref: string; combined: number }>(
+  items: T[],
+  tieRanksByRef: Map<string, number>,
+): T[] {
+  return [...items].sort(
+    (a, b) =>
+      b.combined - a.combined ||
+      (tieRanksByRef.get(a.ref) ?? Infinity) - (tieRanksByRef.get(b.ref) ?? Infinity) ||
+      a.ref.localeCompare(b.ref),
+  );
+}
+
+function buildTieBreakSystemPrompt(): string {
+  return `You are ordering a small group of news items for a specific reader. The items have been scored identically by a formula — your job is to decide which the reader should see first.
+
+Output the item refs in ranked order, best first, one per line. Every ref must appear exactly once. No prose, no numbering, no explanation — just the refs.`;
+}
+
+function buildTieBreakUserPrompt(bio: string, items: EditorPileItem[]): string {
+  const lines = items.map((item) => {
+    const body = item.bodyText.length > 0 ? ` — ${item.bodyText}` : "";
+    return `[${item.ref}] ${item.title}${body}`;
+  });
+  return ["The reader:", "", bio, "", "---", "", "Rank these items best-first:", "", ...lines].join("\n");
+}
+
+async function callTieBreakForGroup(
+  group: EditorPileItem[],
+  groupIndex: number,
+  bio: string,
+  runId: number,
+  tieCfg: EditorTieBreakConfig,
+): Promise<Map<string, number>> {
+  const groupRefs = group.map((item) => item.ref);
+  try {
+    const result = await callLLM({
+      stage: "editor-tie-break",
+      stageRunId: runId,
+      model: tieCfg.model,
+      systemPrompt: buildTieBreakSystemPrompt(),
+      userPrompt: buildTieBreakUserPrompt(bio, group),
+      temperature: tieCfg.temperature,
+      maxTokens: tieCfg.max_tokens,
+      reasoningEffort: tieCfg.reasoning_effort,
+      provider: tieCfg.provider,
+      timeoutMs: tieCfg.timeout_ms,
+      stream: tieCfg.stream,
+    });
+
+    const tieRanks = parseTieBreakOutput(result.text, groupRefs);
+    const missing = groupRefs.filter((r) => !tieRanks.has(r));
+    if (missing.length > 0) {
+      console.warn(
+        `[editor] tie-break group ${groupIndex}: LLM omitted ${missing.length} ref(s), falling back to ref order for: ${missing.join(", ")}`,
+      );
+    } else {
+      console.log(`[editor] tie-break group ${groupIndex}: ranked ${groupRefs.length} items`);
+    }
+    return tieRanks;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[editor] tie-break group ${groupIndex}: call failed (${msg}) — falling back to ref order for all ${group.length} items`,
+    );
+    return new Map(); // empty → all items get Infinity → fall back to ref order
+  }
 }
 
 export interface EditorRun {
@@ -115,11 +233,13 @@ export async function runEditor(
   const digestClusters: DigestCluster[] = parseGroupingDigest(digest).map((c) => ({
     index: c.clusterIndex,
     title: c.title,
+    summary: c.summary,
     itemCount: c.memberIds.length,
   }));
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
-  // 4. Load in-pile items.
+  // 4. Load in-pile items. Singleton query joins preprocessed_items for title
+  //    and body_text — both are needed for the tie-break prompt.
   const { rows: clusterPileRows } = await pool.query<{
     cluster_index: number;
     score: number;
@@ -132,9 +252,12 @@ export async function runEditor(
   const { rows: singletonPileRows } = await pool.query<{
     preprocessed_item_id: string;
     score: number;
+    title: string;
+    body_text: string | null;
   }>(
-    `SELECT epi.preprocessed_item_id, epi.score
+    `SELECT epi.preprocessed_item_id, epi.score, pi.title, pi.body_text
      FROM editor_pile_items epi
+     JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
      WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true`,
     [pileId],
   );
@@ -156,6 +279,8 @@ export async function runEditor(
         preprocessedItemId: null,
         score: row.score,
         sourceCount: detail.itemCount,
+        title: detail.title,
+        bodyText: detail.summary.slice(0, BODY_CAP),
       };
     })
     .filter((c): c is EditorPileItem => c !== null);
@@ -167,6 +292,8 @@ export async function runEditor(
     preprocessedItemId: Number(row.preprocessed_item_id),
     score: row.score,
     sourceCount: 1,
+    title: row.title,
+    bodyText: (row.body_text ?? "").slice(0, BODY_CAP),
   }));
 
   const pileItems: EditorPileItem[] = [...clusterItems, ...singletonItems];
@@ -181,23 +308,28 @@ export async function runEditor(
   const featureCount = cfg.tiers.feature;
   const standardCount = cfg.tiers.standard;
 
-  // 7. Sort by combined score descending; tiebreak by relevance descending,
-  //    then ref ascending for determinism.
-  const sorted = pileItems
-    .map((item) => ({ ...item, combined: combinedScore(item.score, item.sourceCount, W) }))
-    .sort(
-      (a, b) =>
-        b.combined - a.combined ||
-        b.score - a.score ||
-        a.ref.localeCompare(b.ref),
-    );
+  // 7. Compute combined scores and identify tied groups (2+ items with the
+  //    same combined score).
+  const scoredItems = pileItems.map((item) => ({
+    ...item,
+    combined: combinedScore(item.score, item.sourceCount, W),
+  }));
+
+  const byScore = new Map<number, typeof scoredItems>();
+  for (const item of scoredItems) {
+    const group = byScore.get(item.combined) ?? [];
+    group.push(item);
+    byScore.set(item.combined, group);
+  }
+  const tiedGroups = [...byScore.values()].filter((g) => g.length >= 2);
 
   console.log(
     `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
-      `${pileItems.length} items total — formula W=${W}, tiers=${featureCount}/${standardCount}/...`,
+      `${pileItems.length} items total — formula W=${W}, tiers=${featureCount}/${standardCount}/..., ` +
+      `${tiedGroups.length} tied group(s)`,
   );
 
-  // 8. Create editor_runs row.
+  // 8. Create editor_runs row now so the tie-break LLM calls can log against runId.
   const { rows: runRows } = await pool.query<{ id: number }>(
     `INSERT INTO editor_runs (started_at, pile_id, grouping_run_id, model_used, items_in)
      VALUES (NOW(), $1, $2, $3, $4)
@@ -207,7 +339,39 @@ export async function runEditor(
   const runId = runRows[0]!.id;
 
   try {
-    // 9. Assign tiers and persist stories in rank order (1-based).
+    // 9. Run bio-aware tie-break calls for each tied group, concurrently.
+    const tieRanksByRef = new Map<string, number>();
+    let tieBreakCallsMade = false;
+
+    if (tiedGroups.length > 0) {
+      const tieCfg = cfg.tie_break;
+      const bio = loadBio();
+      const limit = pLimit(tieCfg.concurrency);
+
+      const groupResults = await Promise.all(
+        tiedGroups.map((group, idx) =>
+          limit(() => callTieBreakForGroup(group, idx, bio, runId, tieCfg)),
+        ),
+      );
+
+      for (const groupRanks of groupResults) {
+        for (const [ref, rank] of groupRanks) {
+          tieRanksByRef.set(ref, rank);
+        }
+      }
+      tieBreakCallsMade = true;
+    }
+
+    // 10. Update model_used if tie-break calls were made.
+    if (tieBreakCallsMade) {
+      const sentinel = `formula:combined-score+tie-rank:${cfg.tie_break.model}`;
+      await pool.query(`UPDATE editor_runs SET model_used = $1 WHERE id = $2`, [sentinel, runId]);
+    }
+
+    // 11. Final sort: combined desc → tie-rank asc → ref asc.
+    const sorted = applySortWithTieRanks(scoredItems, tieRanksByRef);
+
+    // 12. Assign tiers and persist stories in rank order (1-based).
     const tierCounts: Record<EditorTier, number> = { feature: 0, standard: 0, brief: 0, cut: 0 };
     const INSERT_CHUNK = 500;
     for (let i = 0; i < sorted.length; i += INSERT_CHUNK) {
@@ -223,7 +387,10 @@ export async function runEditor(
         const rank = i + j + 1;
         const tier = assignTier(rank - 1, featureCount, standardCount);
         tierCounts[tier]++;
-        const reason = `combined=${r.combined.toFixed(2)} (score=${r.score}, sources=${r.sourceCount})`;
+        const tieRank = tieRanksByRef.get(r.ref);
+        const reason =
+          `combined=${r.combined.toFixed(2)} (score=${r.score}, sources=${r.sourceCount})` +
+          (tieRank !== undefined ? ` tie-rank:${tieRank}` : "");
         params.push(runId, r.itemType, r.clusterIndex, r.preprocessedItemId, tier, rank, reason);
       });
       await pool.query(
@@ -234,7 +401,7 @@ export async function runEditor(
       );
     }
 
-    // 10. Finalize run with per-tier counts.
+    // 13. Finalize run with per-tier counts.
     await pool.query(
       `UPDATE editor_runs
        SET completed_at   = NOW(),
