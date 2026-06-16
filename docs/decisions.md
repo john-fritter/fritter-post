@@ -20,6 +20,26 @@ Entry format:
 
 ---
 
+## 2026-06-16 — Grouping attach pass reworked: title-only embeddings + singleton↔singleton pairing
+
+**Decision:** Rework the grouping attach pass (step 3) along two axes:
+
+1. **Title-only embeddings for candidate scoring.** Step 1 now embeds each item twice — a body embedding (`title + body[:2000]`, unchanged, used for step-2 connected-components) and a new title-only embedding (`title` alone), stored in a new `title_embedding vector(4096)` column (migration 027). The attach pass generates and scores candidates on `title_embedding` cosine similarity rather than body cosine. Config: `grouping.attach.candidate_floor` (default 0.55) replaces the old `attach_floor` (0.50); `candidate_top_k` (default 8) caps the candidate list per anchor. The old `[attach_floor, similarity_threshold)` near-miss band is retired — there is no upper cutoff and no auto-accept tier; the LLM decides all candidates.
+
+2. **Singleton↔singleton pairing.** The old attach pass grew existing clusters only; two same-event singletons could never merge. The new pass is anchor-centric: for each singleton anchor (processed in descending best-title-sim order), candidates include both existing clusters and other remaining singletons above `candidate_floor`. A confirmed singleton↔singleton match forms a new 2-item cluster visible to subsequent anchors (enabling cascade attachment in the same run). Sequential union-find ensures each consumed singleton is not reprocessed.
+
+**Context:** Measured on a scratch run: the EN/EN Ebola article pair scored 0.587 on `title+body[:2000]` (body text buries the headline signal, leaving the pair below the 0.66 step-2 threshold and both stuck as singletons) but 0.908 on title-only. The pair was correctly identified as the same event and would have been confirmed by the LLM — but the old attach pass was cluster-anchored, so two singletons never saw each other. Cross-language same-event matching (EN/PT Ebola pair: 0.508 even on title-only) remains below any reasonable floor and is out of scope.
+
+**Rationale:**
+- **Title dominates same-event signal; body adds noise.** An article's body elaborates on context, quotes, and background — material that two reports on the same event write differently. The headline is the purest same-event signal. Separating them lets step 2 use the richer body embedding (better for topic-level connected-components) and step 3 use the title embedding (better for same-event precision at the attach stage).
+- **No auto-accept tier.** Measured pairs: same-event title-only sims run 0.78–0.91; the Wear OS 7 / Android 17 false pair scores 0.785. There is no threshold that separates confirmed pairs from junk — only the LLM can distinguish them. The floor exists solely to skip true orphans and limit prompt length.
+- **Singleton↔singleton closes a structural gap.** The prior design was incapable of merging two same-event singletons regardless of similarity, because the pass was anchored to existing clusters. The new design treats every singleton as a potential anchor, so two orphan articles on the same event can be caught without requiring either to have clustered in step 2.
+- **Sequential union-find preserves cascade.** Processing anchors in best-sim order and updating state between rounds ensures that a pair formed in round N is visible as a cluster candidate in round N+1. This is intentionally sequential — the state update is the point.
+
+**Supersedes:** The `attach_floor / [floor, threshold)` near-miss band design in "Grouping clusterer: validated threshold 0.72, attach pass design, operational lessons" (2026-06-12). The band logic, threshold-as-upper-bound, and per-cluster-anchor structure are all replaced by the anchor-centric title-embedding design above.
+
+---
+
 ## 2026-06-16 — Editor tie-break: bio-aware LLM ranking for identical combined scores
 
 **Decision:** After computing the combined formula score (`relevance + W×ln(sources)`), any group of 2+ items that land on the same combined score is passed to a small, cheap LLM call (glm-5.1, nanogpt, `max_tokens: 512`) that reads `docs/bio.md` and ranks them against each other best-first. The model's within-group order becomes the tiebreaker in the final sort: `combined desc → llm_tie_rank asc → ref asc`. `ref` stays as the last-resort fallback if a call fails or returns an incomplete list — any item the LLM omits gets effective rank Infinity (sorted to the end of its group, then by ref), logged by name. A failed call (exception) produces an empty rank map for that group, which degrades cleanly to ref order for all members without dropping any item. Tied groups are independent and run concurrently (p-limit at `editor.tie_break.concurrency`). `editor_runs.model_used` is updated to `formula:combined-score+tie-rank:{model}` if any tie-break calls were made; it stays `formula:combined-score` if there were no ties. Items that went through a tie-break call include `tie-rank:N` in their `editor_stories.reason` field for inspection.

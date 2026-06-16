@@ -135,16 +135,23 @@ grouping:
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
     top_k: 10
-  # Attach pass: for each multi-item cluster, find singletons whose max cosine
-  # similarity to any cluster member falls in [attach_floor, similarity_threshold)
-  # — the near-miss band — and make one LLM call per cluster to confirm which
-  # (if any) belong to the same specific event. Runs after connected-components,
-  # before describe. Attach-only; never splits clusters.
+  # Attach pass: for each singleton anchor (processed in descending best title-sim
+  # order), generate candidate clusters and other singletons whose title-only
+  # cosine similarity to the anchor is >= candidate_floor, offer them to a cheap
+  # LLM, and confirm which cover the same news event. Two outcomes: attach anchor
+  # to an existing cluster, or pair two singletons into a new 2-item cluster.
+  # Sequential union-find ensures a consumed anchor/singleton is not reprocessed.
+  # Runs after connected-components, before describe. Attach-only; never splits.
   attach:
     enabled: true
-    # Lower bound of the near-miss band. Singletons below this floor are too
-    # dissimilar to be worth offering to the LLM.
-    attach_floor: 0.50
+    # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
+    # 0.55 catches same-event pairs (measured at 0.78+) and cross-event near-misses
+    # (e.g. Samsung pair at 0.635) while skipping true orphans. The LLM is the
+    # precision gate — there is no auto-accept tier.
+    candidate_floor: 0.55
+    # Max candidates per anchor LLM call. Limits prompt length; anchors with more
+    # candidates above the floor see only the top-K by title cosine sim.
+    candidate_top_k: 8
     model: zai-org/glm-5.1:thinking
     provider: nanogpt
     temperature: 0.1

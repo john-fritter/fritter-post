@@ -60,18 +60,90 @@ function buildAutoCluster(groupItems: PreprocessedItemRow[]): Cluster {
 
 // --- ATTACH PASS ---
 
-function formatAttachCandidateBlocks(
-  candidates: Array<{ id: number }>,
+// A candidate for the attach pass: either an existing cluster or a standalone singleton.
+export type AttachCandidate =
+  | { type: "cluster"; clusterIdx: number; maxSim: number }
+  | { type: "singleton"; id: number; sim: number };
+
+// Pure function: given an anchor singleton, produce an ordered candidate list from
+// the current cluster set and remaining singletons, scored by title-only cosine.
+// Exported for testing.
+export function buildAttachCandidates(
+  anchorId: number,
+  clusters: ReadonlyArray<Cluster>,
+  availableSingletonIds: ReadonlySet<number>,
+  titleNormalizedVectors: ReadonlyMap<number, number[]>,
+  candidateFloor: number,
+  candidateTopK: number,
+): AttachCandidate[] {
+  const anchorVec = titleNormalizedVectors.get(anchorId);
+  if (!anchorVec) return [];
+
+  const candidates: AttachCandidate[] = [];
+
+  for (let cIdx = 0; cIdx < clusters.length; cIdx++) {
+    const cluster = clusters[cIdx]!;
+    let maxSim = 0;
+    for (const memberId of cluster.item_ids) {
+      const memberVec = titleNormalizedVectors.get(memberId);
+      if (!memberVec) continue;
+      const sim = dotProduct(anchorVec, memberVec);
+      if (sim > maxSim) maxSim = sim;
+    }
+    if (maxSim >= candidateFloor) {
+      candidates.push({ type: "cluster", clusterIdx: cIdx, maxSim });
+    }
+  }
+
+  for (const sId of availableSingletonIds) {
+    if (sId === anchorId) continue;
+    const sVec = titleNormalizedVectors.get(sId);
+    if (!sVec) continue;
+    const sim = dotProduct(anchorVec, sVec);
+    if (sim >= candidateFloor) {
+      candidates.push({ type: "singleton", id: sId, sim });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    const simA = a.type === "cluster" ? a.maxSim : a.sim;
+    const simB = b.type === "cluster" ? b.maxSim : b.sim;
+    return simB - simA;
+  });
+
+  return candidates.slice(0, candidateTopK);
+}
+
+function formatAnchorBlock(item: PreprocessedItemRow): string {
+  const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
+  return body.length > 0 ? `${item.title}\n${body}` : item.title;
+}
+
+function formatMixedCandidateBlocks(
+  candidates: AttachCandidate[],
+  clusters: ReadonlyArray<Cluster>,
   itemById: Map<number, PreprocessedItemRow>,
 ): string {
   return candidates
-    .map(({ id }, idx) => {
-      const item = itemById.get(id);
-      if (!item) return `(${idx + 1}) [item ${id} not found]`;
-      const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
-      return body.length > 0
-        ? `(${idx + 1}) ${item.title}\n    ${body}`
-        : `(${idx + 1}) ${item.title}`;
+    .map((cand, idx) => {
+      const num = idx + 1;
+      if (cand.type === "cluster") {
+        const cluster = clusters[cand.clusterIdx]!;
+        const memberLines = cluster.item_ids.slice(0, 3).map((id) => {
+          const item = itemById.get(id);
+          return `    - ${item ? item.title : `[item ${id}]`}`;
+        });
+        const extra =
+          cluster.item_ids.length > 3 ? `\n    (+ ${cluster.item_ids.length - 3} more)` : "";
+        return `(${num}) [Cluster: ${cluster.item_ids.length} articles]\n${memberLines.join("\n")}${extra}`;
+      } else {
+        const item = itemById.get(cand.id);
+        if (!item) return `(${num}) [Article] [item ${cand.id} not found]`;
+        const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
+        return body.length > 0
+          ? `(${num}) [Article] ${item.title}\n    ${body}`
+          : `(${num}) [Article] ${item.title}`;
+      }
     })
     .join("\n");
 }
@@ -90,209 +162,217 @@ function parseAttachOutput(text: string, candidateCount: number): Set<number> {
 interface AttachPassResult {
   clusters: Cluster[];
   remainingSingletonIds: Set<number>;
-  clustersWithCandidates: number;
   candidatesOffered: number;
-  attached: number;
+  attachedToCluster: number;
+  newPairsFormed: number;
   inputTokens: number | null;
   outputTokens: number | null;
   firstGenerationLogId: bigint | null;
 }
 
+// Reworked attach pass: anchor-centric, title-embedding-based, covers both
+// singleton→cluster and singleton↔singleton pairing. Processes anchors in
+// descending best-title-sim order; consumed singletons are not reprocessed.
+// New singleton pairs form 2-item clusters that subsequent anchors can attach to.
 async function attachSingletons(
   clusters: Cluster[],
   singletonIds: Set<number>,
-  normalizedVectors: Map<number, number[]>,
+  titleNormalizedVectors: Map<number, number[]>,
   itemById: Map<number, PreprocessedItemRow>,
   config: GroupingAttachConfig,
-  threshold: number,
   runId: number,
 ): Promise<AttachPassResult> {
-  if (clusters.length === 0 || singletonIds.size === 0) {
+  if (singletonIds.size === 0) {
     return {
       clusters,
-      remainingSingletonIds: new Set(singletonIds),
-      clustersWithCandidates: 0,
+      remainingSingletonIds: new Set(),
       candidatesOffered: 0,
-      attached: 0,
+      attachedToCluster: 0,
+      newPairsFormed: 0,
       inputTokens: 0,
       outputTokens: 0,
       firstGenerationLogId: null,
     };
   }
 
-  // For each cluster, find singletons whose max cosine sim to any cluster member
-  // falls in [attach_floor, threshold) — the near-miss band.
-  const clusterCandidates: Array<Array<{ id: number; maxSim: number }>> = clusters.map(
-    (cluster) => {
-      const candidates: Array<{ id: number; maxSim: number }> = [];
-      for (const sId of singletonIds) {
-        const sVec = normalizedVectors.get(sId);
-        if (!sVec) continue;
-        let maxSim = 0;
-        for (const cId of cluster.item_ids) {
-          const cVec = normalizedVectors.get(cId);
-          if (!cVec) continue;
-          const sim = dotProduct(sVec, cVec);
-          if (sim > maxSim) maxSim = sim;
-        }
-        if (maxSim >= config.attach_floor && maxSim < threshold) {
-          candidates.push({ id: sId, maxSim });
-        }
+  // Pre-compute best title-sim for each singleton to determine processing order.
+  // Best-sim = max cosine(anchor, X) across all cluster members and other singletons.
+  const allSingletonIds = [...singletonIds];
+  type AnchorInfo = { id: number; bestSim: number };
+  const anchorInfos: AnchorInfo[] = [];
+
+  for (const anchorId of allSingletonIds) {
+    const anchorVec = titleNormalizedVectors.get(anchorId);
+    if (!anchorVec) {
+      anchorInfos.push({ id: anchorId, bestSim: 0 });
+      continue;
+    }
+    let bestSim = 0;
+    for (const cluster of clusters) {
+      for (const memberId of cluster.item_ids) {
+        const mv = titleNormalizedVectors.get(memberId);
+        if (!mv) continue;
+        const s = dotProduct(anchorVec, mv);
+        if (s > bestSim) bestSim = s;
       }
-      candidates.sort((a, b) => b.maxSim - a.maxSim);
-      return candidates;
-    },
-  );
+    }
+    for (const otherId of allSingletonIds) {
+      if (otherId === anchorId) continue;
+      const ov = titleNormalizedVectors.get(otherId);
+      if (!ov) continue;
+      const s = dotProduct(anchorVec, ov);
+      if (s > bestSim) bestSim = s;
+    }
+    anchorInfos.push({ id: anchorId, bestSim });
+  }
 
-  const clustersWithCandidates = clusterCandidates.filter((c) => c.length > 0).length;
-  const totalCandidatesOffered = clusterCandidates.reduce((acc, c) => acc + c.length, 0);
+  anchorInfos.sort((a, b) => b.bestSim - a.bestSim);
+  const eligibleAnchors = anchorInfos.filter((a) => a.bestSim >= config.candidate_floor);
 
-  if (clustersWithCandidates === 0) {
+  if (eligibleAnchors.length === 0) {
     return {
       clusters,
       remainingSingletonIds: new Set(singletonIds),
-      clustersWithCandidates: 0,
       candidatesOffered: 0,
-      attached: 0,
+      attachedToCluster: 0,
+      newPairsFormed: 0,
       inputTokens: 0,
       outputTokens: 0,
       firstGenerationLogId: null,
     };
   }
 
+  // Mutable state threaded through the sequential loop.
+  const currentClusters: Cluster[] = [...clusters];
+  const remainingSingletonIds = new Set(singletonIds);
+
+  let totalCandidatesOffered = 0;
+  let attachedToCluster = 0;
+  let newPairsFormed = 0;
+  let totalInputTokens: number | null = 0;
+  let totalOutputTokens: number | null = 0;
+  let firstGenerationLogId: bigint | null = null;
+
+  // Sequential processing: high-best-sim anchors are processed first. Each
+  // confirmed match updates currentClusters and remainingSingletonIds before
+  // the next anchor's candidates are built, so singleton pairs formed in an
+  // earlier round are visible as cluster candidates in later rounds.
   const limit = pLimit(config.concurrency);
 
-  type AttachLLMResult = {
-    clusterIdx: number;
-    attachedIds: Set<number>;
-    candidateMaxSims: Map<number, number>;
-    inputTokens: number | null;
-    outputTokens: number | null;
-    generationLogId: bigint | null;
-  };
+  for (const { id: anchorId } of eligibleAnchors) {
+    if (!remainingSingletonIds.has(anchorId)) continue;
 
-  const llmResults = await Promise.all(
-    clusters.map((cluster, clusterIdx) =>
-      limit(async (): Promise<AttachLLMResult> => {
-        const candidates = clusterCandidates[clusterIdx]!;
-        const candidateMaxSims = new Map(candidates.map((c) => [c.id, c.maxSim]));
+    const availableSingletons = new Set(remainingSingletonIds);
+    availableSingletons.delete(anchorId);
 
-        if (candidates.length === 0) {
-          return {
-            clusterIdx,
-            attachedIds: new Set(),
-            candidateMaxSims,
-            inputTokens: null,
-            outputTokens: null,
-            generationLogId: null,
-          };
+    const candidates = buildAttachCandidates(
+      anchorId,
+      currentClusters,
+      availableSingletons,
+      titleNormalizedVectors,
+      config.candidate_floor,
+      config.candidate_top_k,
+    );
+
+    if (candidates.length === 0) continue;
+
+    totalCandidatesOffered += candidates.length;
+
+    const anchorItem = itemById.get(anchorId);
+    if (!anchorItem) continue;
+
+    const anchorBlock = formatAnchorBlock(anchorItem);
+    const candidateBlocks = formatMixedCandidateBlocks(candidates, currentClusters, itemById);
+
+    // p-limit wraps the single call; the outer loop awaits each before proceeding.
+    const result = await limit(async () => {
+      try {
+        return await callLLM({
+          stage: "grouping",
+          stageRunId: runId,
+          model: config.model,
+          systemPrompt: buildAttachSystemPrompt(),
+          userPrompt: buildAttachUserPrompt(anchorBlock, candidateBlocks),
+          temperature: config.temperature,
+          maxTokens: config.max_tokens,
+          reasoningEffort: config.reasoning_effort,
+          provider: config.provider,
+          timeoutMs: config.timeout_ms,
+          stream: config.stream,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[grouping] attach: anchor ${anchorId} LLM call failed: ${msg}`);
+        return null;
+      }
+    });
+
+    if (result === null) continue;
+
+    if (result.inputTokens !== null) {
+      totalInputTokens = totalInputTokens !== null ? totalInputTokens + result.inputTokens : null;
+    } else if (result.generationLogId !== null) {
+      totalInputTokens = null;
+    }
+    if (result.outputTokens !== null) {
+      totalOutputTokens =
+        totalOutputTokens !== null ? totalOutputTokens + result.outputTokens : null;
+    } else if (result.generationLogId !== null) {
+      totalOutputTokens = null;
+    }
+    if (result.generationLogId !== null && firstGenerationLogId === null) {
+      firstGenerationLogId = result.generationLogId;
+    }
+
+    const confirmedIndices = parseAttachOutput(result.text, candidates.length);
+    if (confirmedIndices.size === 0) continue;
+
+    const confirmedClusters: Array<{ clusterIdx: number; maxSim: number }> = [];
+    const confirmedSingletonIds: number[] = [];
+
+    for (const idx of confirmedIndices) {
+      const cand = candidates[idx - 1]!;
+      if (cand.type === "cluster") {
+        confirmedClusters.push({ clusterIdx: cand.clusterIdx, maxSim: cand.maxSim });
+      } else {
+        if (remainingSingletonIds.has(cand.id)) {
+          confirmedSingletonIds.push(cand.id);
         }
-
-        const clusterItems = cluster.item_ids
-          .map((id) => itemById.get(id))
-          .filter((i): i is PreprocessedItemRow => i !== undefined);
-        const clusterBlocks = formatItemBlocks(clusterItems);
-        const candidateBlocks = formatAttachCandidateBlocks(candidates, itemById);
-
-        try {
-          const result = await callLLM({
-            stage: "grouping",
-            stageRunId: runId,
-            model: config.model,
-            systemPrompt: buildAttachSystemPrompt(),
-            userPrompt: buildAttachUserPrompt(clusterBlocks, candidateBlocks),
-            temperature: config.temperature,
-            maxTokens: config.max_tokens,
-            reasoningEffort: config.reasoning_effort,
-            provider: config.provider,
-            timeoutMs: config.timeout_ms,
-            stream: config.stream,
-          });
-
-          const confirmedIndices = parseAttachOutput(result.text, candidates.length);
-          const attachedIds = new Set(
-            [...confirmedIndices].map((i) => candidates[i - 1]!.id),
-          );
-
-          return {
-            clusterIdx,
-            attachedIds,
-            candidateMaxSims,
-            inputTokens: result.inputTokens,
-            outputTokens: result.outputTokens,
-            generationLogId: result.generationLogId,
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[grouping] attach: cluster ${clusterIdx} LLM call failed — no attachments: ${msg}`,
-          );
-          return {
-            clusterIdx,
-            attachedIds: new Set(),
-            candidateMaxSims,
-            inputTokens: null,
-            outputTokens: null,
-            generationLogId: null,
-          };
-        }
-      }),
-    ),
-  );
-
-  // Dedup: if a singleton was claimed by multiple clusters, assign to the one
-  // with the highest max cosine similarity.
-  const singletonWinner = new Map<number, { clusterIdx: number; maxSim: number }>();
-  for (const r of llmResults) {
-    for (const sId of r.attachedIds) {
-      const maxSim = r.candidateMaxSims.get(sId) ?? 0;
-      const current = singletonWinner.get(sId);
-      if (current === undefined || maxSim > current.maxSim) {
-        singletonWinner.set(sId, { clusterIdx: r.clusterIdx, maxSim });
       }
     }
-  }
 
-  const updatedClusters = clusters.map((cluster, clusterIdx) => {
-    const toAttach = [...singletonWinner.entries()]
-      .filter(([, v]) => v.clusterIdx === clusterIdx)
-      .map(([sId]) => sId);
-    if (toAttach.length === 0) return cluster;
-    return { ...cluster, item_ids: [...cluster.item_ids, ...toAttach] };
-  });
-
-  const remainingSingletonIds = new Set(singletonIds);
-  for (const sId of singletonWinner.keys()) remainingSingletonIds.delete(sId);
-
-  let attachInputTokens: number | null = 0;
-  let attachOutputTokens: number | null = 0;
-  let attachFirstLogId: bigint | null = null;
-  for (const r of llmResults) {
-    if (r.inputTokens !== null) {
-      attachInputTokens = attachInputTokens !== null ? attachInputTokens + r.inputTokens : null;
-    } else if (r.generationLogId !== null) {
-      attachInputTokens = null;
-    }
-    if (r.outputTokens !== null) {
-      attachOutputTokens =
-        attachOutputTokens !== null ? attachOutputTokens + r.outputTokens : null;
-    } else if (r.generationLogId !== null) {
-      attachOutputTokens = null;
-    }
-    if (r.generationLogId !== null && attachFirstLogId === null) {
-      attachFirstLogId = r.generationLogId;
+    if (confirmedClusters.length > 0) {
+      // Attach anchor (and any confirmed singletons) to the highest-sim cluster.
+      confirmedClusters.sort((a, b) => b.maxSim - a.maxSim);
+      const bestIdx = confirmedClusters[0]!.clusterIdx;
+      const target = currentClusters[bestIdx]!;
+      const toAdd = [anchorId, ...confirmedSingletonIds];
+      currentClusters[bestIdx] = { ...target, item_ids: [...target.item_ids, ...toAdd] };
+      for (const id of toAdd) {
+        remainingSingletonIds.delete(id);
+        attachedToCluster++;
+      }
+    } else if (confirmedSingletonIds.length > 0) {
+      // Pair anchor with confirmed singletons — form a new cluster.
+      const newMembers = [anchorId, ...confirmedSingletonIds];
+      const groupItems = newMembers
+        .map((id) => itemById.get(id))
+        .filter((i): i is PreprocessedItemRow => i !== undefined);
+      currentClusters.push(buildAutoCluster(groupItems));
+      for (const id of newMembers) remainingSingletonIds.delete(id);
+      newPairsFormed++;
     }
   }
 
   return {
-    clusters: updatedClusters,
+    clusters: currentClusters,
     remainingSingletonIds,
-    clustersWithCandidates,
     candidatesOffered: totalCandidatesOffered,
-    attached: singletonWinner.size,
-    inputTokens: attachInputTokens,
-    outputTokens: attachOutputTokens,
-    firstGenerationLogId: attachFirstLogId,
+    attachedToCluster,
+    newPairsFormed,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    firstGenerationLogId,
   };
 }
 
@@ -508,21 +588,28 @@ export async function runGrouping(
     const stageStartedAt = Date.now();
 
     // --- STEP 1: EMBED ---
+    // Compute two embeddings per item in the same batched loop:
+    //   body embedding  = title + body[:body_cap]  (used for step-2 connected-components)
+    //   title embedding = title only               (used for step-3 attach pass)
     const items = await getClusteringItems(preprocessorRunId);
     console.log(`[grouping] step 1 embed: ${items.length} items to embed`);
-
-    const embedTexts = items.map((item) => {
-      const body = item.body_text?.replace(/\s+/g, " ").trim() ?? "";
-      return body.length > 0 ? `${item.title}\n${body.slice(0, bodyCap)}` : item.title;
-    });
 
     const batchSize = embConfig.batch_size;
     let embeddedCount = 0;
     for (let offset = 0; offset < items.length; offset += batchSize) {
       const batch = items.slice(offset, offset + batchSize);
-      const batchTexts = embedTexts.slice(offset, offset + batchSize);
 
-      const vectors = await embed(batchTexts, {
+      // Build body and title texts for every item in the batch.
+      const bodyTexts = batch.map((item) => {
+        const body = item.body_text?.replace(/\s+/g, " ").trim() ?? "";
+        return body.length > 0 ? `${item.title}\n${body.slice(0, bodyCap)}` : item.title;
+      });
+      const titleTexts = batch.map((item) => item.title);
+
+      // Interleave [body0, title0, body1, title1, ...] so one API call covers both.
+      const interleavedTexts = batch.flatMap((_, i) => [bodyTexts[i]!, titleTexts[i]!]);
+
+      const vectors = await embed(interleavedTexts, {
         stage: "grouping",
         stageRunId: runId,
         model: embConfig.model,
@@ -532,16 +619,19 @@ export async function runGrouping(
 
       for (let i = 0; i < batch.length; i++) {
         const itemId = Number(batch[i]!.id);
-        const vec = vectors[i]!;
-        const vecStr = `[${vec.join(",")}]`;
+        const bodyVec = vectors[2 * i]!;
+        const titleVec = vectors[2 * i + 1]!;
+        const bodyVecStr = `[${bodyVec.join(",")}]`;
+        const titleVecStr = `[${titleVec.join(",")}]`;
         await pool.query(
-          `INSERT INTO item_embeddings (preprocessed_item_id, model, dims, embedding)
-           VALUES ($1, $2, $3, $4::vector)
+          `INSERT INTO item_embeddings (preprocessed_item_id, model, dims, embedding, title_embedding)
+           VALUES ($1, $2, $3, $4::vector, $5::vector)
            ON CONFLICT (preprocessed_item_id) DO UPDATE
-             SET model      = EXCLUDED.model,
-                 dims       = EXCLUDED.dims,
-                 embedding  = EXCLUDED.embedding`,
-          [itemId, embConfig.model, embConfig.dims, vecStr],
+             SET model           = EXCLUDED.model,
+                 dims            = EXCLUDED.dims,
+                 embedding       = EXCLUDED.embedding,
+                 title_embedding = EXCLUDED.title_embedding`,
+          [itemId, embConfig.model, embConfig.dims, bodyVecStr, titleVecStr],
         );
         embeddedCount++;
       }
@@ -549,13 +639,16 @@ export async function runGrouping(
     }
 
     // --- STEP 2: CANDIDATE GROUPS ---
+    // First-pass clustering runs on body embeddings at similarity_threshold,
+    // deliberately conservative to keep a low false-merge rate.
     const itemIds = items.map((i) => Number(i.id));
 
     const { rows: embRows } = await pool.query<{
       preprocessed_item_id: string;
       embedding: string;
+      title_embedding: string | null;
     }>(
-      `SELECT preprocessed_item_id, embedding::text
+      `SELECT preprocessed_item_id, embedding::text, title_embedding::text
        FROM item_embeddings
        WHERE preprocessed_item_id = ANY($1)`,
       [itemIds],
@@ -568,11 +661,19 @@ export async function runGrouping(
     }
 
     const normalizedVectors = new Map<number, number[]>();
+    const titleNormalizedVectors = new Map<number, number[]>();
     for (const row of embRows) {
       const id = Number(row.preprocessed_item_id);
+      // Body embedding — used for connected-components (step 2).
       const v = parseVectorText(row.embedding);
       const norm = l2Norm(v);
       if (norm > 0) normalizedVectors.set(id, v.map((x) => x / norm));
+      // Title embedding — used for the attach pass (step 3).
+      if (row.title_embedding) {
+        const tv = parseVectorText(row.title_embedding);
+        const tnorm = l2Norm(tv);
+        if (tnorm > 0) titleNormalizedVectors.set(id, tv.map((x) => x / tnorm));
+      }
     }
 
     const embeddedIds = [...normalizedVectors.keys()];
@@ -685,10 +786,16 @@ export async function runGrouping(
     }
 
     // --- STEP 3: ATTACH ---
-    // For each multi-item cluster, offer near-miss singletons ([attach_floor, threshold))
-    // to a cheap LLM call. Confirmed singletons are absorbed; others remain isolated.
+    // Anchor-centric, title-embedding-based. Covers two cases:
+    //   singleton → existing cluster  (LLM confirms same event as cluster)
+    //   singleton ↔ singleton         (LLM confirms same event; forms new cluster)
+    // Sequential union-find: anchors processed in descending best-title-sim order;
+    // consumed singletons are not reprocessed; newly formed pairs are available
+    // as cluster candidates for subsequent anchors.
     let preClusters: Cluster[];
     let remainingSingletonIds: Set<number>;
+
+    const singletonsBefore = singletonIds.size;
 
     if (!groupingConfig.attach.enabled) {
       console.log(
@@ -701,10 +808,9 @@ export async function runGrouping(
       const attachResult = await attachSingletons(
         initialClusters,
         singletonIds,
-        normalizedVectors,
+        titleNormalizedVectors,
         itemById,
         groupingConfig.attach,
-        threshold,
         runId,
       );
       preClusters = attachResult.clusters;
@@ -715,14 +821,13 @@ export async function runGrouping(
         attachResult.firstGenerationLogId,
       );
       console.log(
-        `[grouping] step 3 attach: clusters_with_candidates=${attachResult.clustersWithCandidates}, ` +
-          `candidates_offered=${attachResult.candidatesOffered}, attached=${attachResult.attached}, ` +
-          `singletons=${singletonIds.size}→${remainingSingletonIds.size}`,
+        `[grouping] step 3 attach: candidates_offered=${attachResult.candidatesOffered}, ` +
+          `attached_to_cluster=${attachResult.attachedToCluster}, ` +
+          `new_pairs_formed=${attachResult.newPairsFormed}, ` +
+          `singletons=${singletonsBefore}→${remainingSingletonIds.size}`,
       );
     }
 
-    // Connected-component clusters (after the attach pass) are the final
-    // clusters; the describe pass names them next.
     let finalClusters: Cluster[] = preClusters;
 
     // --- STEP 4: DESCRIBE ---

@@ -21,9 +21,9 @@ export function buildDescribeUserPrompt(clusterBlocks: string): string {
   return `Here are today's news clusters. Write a title and summary for each one.\n\n${clusterBlocks}`;
 }
 
-const ATTACH_SYSTEM_PROMPT = `You are deciding whether individual news items should be attached to an existing news cluster.
+const ATTACH_SYSTEM_PROMPT = `You are deciding which candidates cover the SAME NEWS EVENT as an anchor article.
 
-The cluster items all report on THE SAME STORY. The candidates are similar in embedding space but fell below the automatic clustering threshold — they are near-misses, not confirmed matches. Attach a candidate when it belongs to the same story as the cluster.
+The ANCHOR is a single news article. Each CANDIDATE is either an existing news cluster (a group of articles already confirmed to be the same story) or a standalone article — similar to the anchor in title space but not yet confirmed as the same event. Attach a candidate when it covers the same specific event as the anchor.
 
 THE SAME STORY:
 - The same event — a strike, ruling, vote, announcement, disaster — reported by any outlet, in any language.
@@ -33,17 +33,17 @@ THE SAME STORY:
 A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same story; do not attach it. Read each candidate for what happened, not how it is worded; language never hides a match.
 
 OUTPUT
-If no candidates should be attached: output "none" and nothing else.
-If one or more should be attached: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
+If no candidates belong with the anchor: output "none" and nothing else.
+If one or more belong: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
 No explanation. No JSON. No prose.`;
 
 export function buildAttachSystemPrompt(): string {
   return ATTACH_SYSTEM_PROMPT;
 }
 
-export function buildAttachUserPrompt(clusterBlocks: string, candidateBlocks: string): string {
+export function buildAttachUserPrompt(anchorBlock: string, candidateBlocks: string): string {
   return (
-    `CLUSTER ITEMS:\n${clusterBlocks}\n\nCANDIDATE ITEMS (near-misses):\n${candidateBlocks}\n\n` +
-    `Which candidate numbers (if any) report on the same specific event as the cluster items?`
+    `ANCHOR ARTICLE:\n${anchorBlock}\n\nCANDIDATES:\n${candidateBlocks}\n\n` +
+    `Which candidate numbers (if any) cover the same specific event as the ANCHOR ARTICLE?`
   );
 }
