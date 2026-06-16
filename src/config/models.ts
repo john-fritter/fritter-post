@@ -36,14 +36,13 @@ const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
 });
 
-const EditorFallbackConfigSchema = z.object({
-  model: z.string(),
-  provider: ProviderSchema.optional(),
-  reasoning_effort: z.string().optional(),
-});
-
-const EditorStageConfigSchema = StageConfigSchema.extend({
-  fallback: EditorFallbackConfigSchema.optional(),
+const EditorStageConfigSchema = z.object({
+  source_weight: z.number(),
+  tiers: z.object({
+    feature: z.number().int().positive(),
+    standard: z.number().int().positive(),
+    brief: z.number().int().positive(),
+  }),
 });
 
 const EmbeddingsConfigSchema = z.object({
@@ -107,7 +106,6 @@ export type PreprocessorConfig = z.infer<typeof PreprocessorConfigSchema>;
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
-export type EditorFallbackConfig = z.infer<typeof EditorFallbackConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;

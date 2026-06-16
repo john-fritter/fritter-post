@@ -20,6 +20,31 @@ Entry format:
 
 ---
 
+## 2026-06-16 — Editor replaced with deterministic formula; LLM tierer dropped
+
+**Decision:** Remove the whole-pile LLM call from the editor stage and replace it with a deterministic combined-score formula. For each pile item:
+
+```
+combined = relevance + W × ln(sources)
+```
+
+where `relevance` is the grouping-pass-1 score already on the pile item, `sources` is the source count (cluster member-id-list length for clusters, 1 for singletons), and `W` is a tunable weight constant (configured at `editor.source_weight`, starting at 9). `ln(1) = 0` so a single-source item gets no source lift; a 53-source cluster gets roughly +35 points at W=9. Items are sorted by combined score descending, with tiebreak by relevance descending then ref ascending for determinism. Tiers are assigned by position: the top `editor.tiers.feature` (15) items are `feature`, the next `editor.tiers.standard` (60) are `standard`, and the rest are `brief`. If the pile has fewer items than the tier total, features fill first, then standard, then brief — the last tier absorbs the shortfall. `cut` is not produced by the formula but is retained in the `EditorTier` type for schema compatibility. Output and storage are unchanged: `editor_runs` and `editor_stories` are written with the same columns; `model_used` is set to the sentinel `"formula:combined-score"`.
+
+The deleted code: `callLLM` and `LLMCallOptions` imports; `buildSystemPrompt` and `buildUserPrompt` from `prompt.ts`; `normalizeRef` import; the `SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD` constant; `failSafeTierForMissingItem()`; `attemptEditorCall()`; `parseEditorOutput()`; `EditorStoryResult` and `EditorParseResult` interfaces; the entire primary-retry-fallback call block; and `src/pipeline/editor/prompt.ts` in full (nothing outside the editor imported it). `EditorStageConfigSchema` in `src/config/models.ts` is replaced with a simple two-field schema (`source_weight`, `tiers`); `EditorFallbackConfigSchema` and `EditorFallbackConfig` are deleted.
+
+**Context:** A bake-off on pile #43 showed the LLM tier-assignment call is unstable across identical runs: the standard/brief split varied 29/112, 55/84, 129/8, and 136/6 on the same pile with the same model. The assignment the model makes in one run has no relationship to what it makes in the next. This makes the paper's structure non-reproducible and makes A/B comparison of pipeline changes impossible, because the tier distribution shifts between runs for reasons unrelated to any pipeline change being tested. The instability also defeats the goal of a fixed-size paper: the writers stage needs a stable amount of content each day, but a tier split that swings by 130 items run-to-run cannot deliver that.
+
+**Rationale:**
+- **The tier split is a fixed-paper-size policy, not an editorial judgment.** The point is a predictable daily artifact with a stable amount of content for the writers stage. A formula that produces the same tier split on the same pile every time is strictly better than an LLM that swings 130 positions between runs for the same input.
+- **Relevance is already scored.** Grouping-pass-1 produces a calibrated 0–100 bio-relevance score for every item. The LLM was re-deriving an ordering signal already present in the pile; the formula uses it directly.
+- **Source count as a magnitude proxy.** A cluster covered by 53 sources is almost certainly a bigger story than one covered by 2. The `W × ln(sources)` term gives multi-source clusters a lift that reflects genuine world coverage without requiring a model to make that judgment.
+- **Free and instant.** No tokens, no latency, no provider dependency for this stage.
+- **Unit-testable.** The formula is deterministic: a fixed pile with known scores and source counts produces known combined scores, known sort order, and known tier cuts. The test lives in `tests/editor-formula.test.ts`.
+
+**Supersedes:** "Editor repurposed: tier-only, pile arrives pre-ranked, lightweight pile presentation" (2026-06-16) — the LLM is now entirely removed; tier assignment is deterministic. Also supersedes "Editor model: kimi-k2.6:thinking primary, glm-5.1:thinking fallback, retry-once-then-fallback resilience" (2026-06-09) — the model, retry, and fallback logic are all deleted.
+
+---
+
 ## 2026-06-16 — Editor repurposed: tier-only, pile arrives pre-ranked, lightweight pile presentation
 
 **Decision:** The editor no longer ranks the pile. The pile now arrives
