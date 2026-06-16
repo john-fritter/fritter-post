@@ -20,6 +20,63 @@ Entry format:
 
 ---
 
+## 2026-06-16 — Editor repurposed: tier-only, pile arrives pre-ranked, lightweight pile presentation
+
+**Decision:** The editor no longer ranks the pile. The pile now arrives
+pre-ranked by grouping-pass-1 score (descending), and the editor's sole job is
+to assign each item a tier (`feature`/`standard`/`brief`/`cut`) in the order
+given, without reordering. Three concrete changes:
+1. **No bio in the editor prompt.** The system prompt (rewritten in commit
+   `b27229c`) is fully static and tier-only; the bio is removed from the user
+   message entirely. `docs/bio.md` is no longer read by the editor — tiering
+   reads off score + sources, not reader context.
+2. **Lightweight, unified pile presentation.** Clusters and singletons are
+   merged into one list, sorted by score descending (tiebreak by ref for
+   determinism), and presented as one line each: `[ref] title — score N, M
+   source(s)`. Summaries, body excerpts, and notes are dropped — tiering needs
+   only headline + score + source count. Source count is the cluster's
+   member-id-list length (from the grouping digest) for clusters, and 1 for
+   singletons.
+3. **Score + source count wired through to the formatter.** No schema change:
+   `editor_pile_items.score` already holds the grouping-pass-1 score for both
+   item types (assembly inserts it for clusters and singletons alike); the
+   editor's cluster query simply hadn't been selecting it. The cluster query now
+   selects `score`; source count was already reachable (digest id-list for
+   clusters, constant 1 for singletons).
+
+**Context:** Ranking had been the editor's headline job since the stage was
+built (2026-06-07), and the prompt grew around it — bio in the user message
+(2026-06-13), separate cluster/singleton sections each in their own order, and
+the heavier scorer-grade context (summaries, body excerpts) the editor used to
+make relational ranking calls. With grouping-pass-1 producing a reliable 0–100
+relevance score and the pile already assembled in score order, that relational
+judgment is redundant: the editor was re-deriving an order the pile already
+encodes. Stripping it to tier-only makes the call shorter, cheaper, and easier
+to reason about.
+
+**Rationale:** Tiering off an existing score is a smaller, better-specified task
+than whole-pile ranking, and it removes a place where the editor could silently
+disagree with the scorer and scramble the order. The bio belongs at the
+relevance-scoring choke points (prefilter, grouping-pass-1) that already read it;
+the editor only needs the two signals the prompt names (score, sources). The
+recognition-based output parser is unchanged — output is still `tier;;ref;;reason`
+parsed by recognizing the tier word and the C/S ref by pattern, not by column
+position. `cut` remains a valid tier (it was retained in `VALID_TIERS` and
+`editor_runs.items_cut` even after being dropped from the prompt vocabulary on
+2026-06-13, and is back in the prompt now): a cut item is recorded in
+`editor_stories` but excluded from the published paper. Resilience
+(retry-once-then-fallback), streaming, `timeout_ms`, and `max_tokens` are left
+as-is — the shorter output sits well within the existing ceilings, and the
+ceilings are not lowered.
+
+**Supersedes:** The line-order ranking design in "Editor stage: whole-pile single
+call, three tiers + cut, line-order ranking" (2026-06-07) — the editor no longer
+derives rank from line position; it tiers a pile that is already ranked. Also
+supersedes "Editor tier vocabulary simplified to three tiers (cut removed from
+prompt)" (2026-06-13) — `cut` is restored to the editor's prompt vocabulary.
+
+---
+
 ## 2026-06-14 — Recency window keyed off previous run; cross-run dedup added
 
 **Decision:** Two preprocessor changes. (1) Replace the fixed

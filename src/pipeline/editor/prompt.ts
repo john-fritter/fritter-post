@@ -1,23 +1,17 @@
-export interface EditorClusterPileItem {
-  ref: string; // C{cluster_index}
-  clusterIndex: number | null;
+// A single pile entry as presented to the editor: just what tiering needs —
+// the headline, its ref, the grouping-pass-1 relevance score, and how many
+// sources are covering it. No summaries, body excerpts, or notes: the editor
+// no longer ranks, so it doesn't need the heavier context the scorer used.
+export interface EditorPileEntry {
+  ref: string; // C{cluster_index} or S{preprocessed_item_id}
   title: string;
-  summary: string;
-  notes: string | null;
-  sourceCount: number;
+  score: number; // grouping-pass-1 relevance score, 0–100
+  sourceCount: number; // cluster member count; 1 for a singleton
 }
 
-export interface EditorSingletonPileItem {
-  ref: string; // S{preprocessed_item_id}
-  preprocessedItemId: number;
-  title: string;
-  bodyExcerpt: string;
-  pass1Score: number;
-  pass1Reason: string;
-}
-
-// Static task spec: rank/tier every pile item for a one-reader newspaper.
-// Bio and pile travel in the user message (see buildUserPrompt).
+// Static task spec: tier each pile item for a one-reader newspaper, in the
+// order given. The pile arrives pre-ranked (score descending); the editor does
+// not reorder. No bio in the prompt — tiering reads off score + sources alone.
 export function buildSystemPrompt(): string {
   return `You are an editor for a personal daily newspaper, deciding how much space each of today's stories earns.
 
@@ -43,55 +37,18 @@ tier;;ref;;reason
   reason: a short phrase for an inspection log
 Every pile item must appear on exactly one line. Do not omit any item. Do not number the lines. Begin immediately with the first output line — no preamble, no explanation, no counts.`;
 }
-function formatCluster(item: EditorClusterPileItem): string {
-  const lines = [
-    `[${item.ref}] ${item.title} — ${item.sourceCount} source${item.sourceCount === 1 ? "" : "s"}`,
-    item.summary,
-  ];
-  if (item.notes) lines.push(`Notes: ${item.notes}`);
-  return lines.join("\n");
+
+function formatEntry(item: EditorPileEntry): string {
+  return (
+    `[${item.ref}] ${item.title} — score ${item.score}, ` +
+    `${item.sourceCount} source${item.sourceCount === 1 ? "" : "s"}`
+  );
 }
 
-function formatSingleton(item: EditorSingletonPileItem): string {
-  return [
-    `[${item.ref}] ${item.title} — pass-1 score ${item.pass1Score} (${item.pass1Reason})`,
-    item.bodyExcerpt,
-  ].join("\n");
-}
-
-function buildPileSection(
-  clusters: EditorClusterPileItem[],
-  singletons: EditorSingletonPileItem[],
-): string {
-  const total = clusters.length + singletons.length;
-  const sections: string[] = [
-    `Today's pile: ${total} item${total === 1 ? "" : "s"} — ` +
-      `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} (multi-source stories) and ` +
-      `${singletons.length} singleton${singletons.length === 1 ? "" : "s"} (single-source items). ` +
-      `Rank and tier all ${total} of them.`,
-  ];
-
-  if (clusters.length > 0) {
-    sections.push(
-      [`## CLUSTERS (ordered by source count, descending)`, ...clusters.map(formatCluster)].join("\n\n"),
-    );
-  }
-
-  if (singletons.length > 0) {
-    sections.push(
-      [`## SINGLETONS (ordered by pass-1 score, descending)`, ...singletons.map(formatSingleton)].join(
-        "\n\n",
-      ),
-    );
-  }
-
-  return sections.join("\n\n");
-}
-
-export function buildUserPrompt(
-  clusters: EditorClusterPileItem[],
-  singletons: EditorSingletonPileItem[],
-  bio: string,
-): string {
-  return `The reader:\n\n${bio}\n\n---\n\n${buildPileSection(clusters, singletons)}`;
+export function buildUserPrompt(entries: EditorPileEntry[]): string {
+  const total = entries.length;
+  const header =
+    `Today's pile: ${total} item${total === 1 ? "" : "s"}, already ranked best-first ` +
+    `(highest score at the top). Assign each one a tier, in this order — do not reorder.`;
+  return [header, "", ...entries.map(formatEntry)].join("\n");
 }
