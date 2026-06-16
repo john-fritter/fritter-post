@@ -1,15 +1,13 @@
 /**
- * CLI entry point for the editor stage (whole-pile ranking + tiering).
+ * CLI entry point for the editor stage (deterministic combined-score formula).
  *
  * Usage:
  *   npm run editor
  *   npm run editor -- --pile-id 3
- *   npm run editor -- --model qwen3.5:397b
  */
 
 import "dotenv/config";
 import { runEditor } from "../src/pipeline/editor/index.js";
-import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -39,31 +37,24 @@ async function main() {
     process.exit(1);
   }
 
-  const modelOverride = flags["model"];
-
-  const modelConfig = loadModelConfig();
-  const effectiveModel = modelOverride ?? modelConfig.editor.model;
-
   console.log("Starting editor…");
   if (pileId !== undefined) {
     console.log(`  pile-id: ${pileId}`);
   }
-  console.log(`  model: ${effectiveModel}${modelOverride ? " (override)" : " (default)"}`);
   console.log("");
 
-  const run = await runEditor({ pileId, modelOverride });
+  const run = await runEditor({ pileId });
 
   console.log(`\nEditor run #${run.id} complete.`);
-  console.log(`  Pile:        #${run.pileId}`);
+  console.log(`  Pile:         #${run.pileId}`);
   if (run.groupingRunId !== null) {
     console.log(`  Grouping run: #${run.groupingRunId}`);
   }
-  console.log(`  Model:       ${run.modelUsed}`);
-  console.log(`  Items in:    ${run.itemsIn}`);
-  console.log(`  Feature:     ${run.itemsFeature}`);
-  console.log(`  Standard:    ${run.itemsStandard}`);
-  console.log(`  Brief:       ${run.itemsBrief}`);
-  console.log(`  Cut:         ${run.itemsCut}`);
+  console.log(`  Items in:     ${run.itemsIn}`);
+  console.log(`  Feature:      ${run.itemsFeature}`);
+  console.log(`  Standard:     ${run.itemsStandard}`);
+  console.log(`  Brief:        ${run.itemsBrief}`);
+  console.log(`  Cut:          ${run.itemsCut}`);
 
   process.exit(0);
 }

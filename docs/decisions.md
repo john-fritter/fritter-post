@@ -20,6 +20,48 @@ Entry format:
 
 ---
 
+## 2026-06-16 — Editor tie-break: bio-aware LLM ranking for identical combined scores
+
+**Decision:** After computing the combined formula score (`relevance + W×ln(sources)`), any group of 2+ items that land on the same combined score is passed to a small, cheap LLM call (glm-5.1, nanogpt, `max_tokens: 512`) that reads `docs/bio.md` and ranks them against each other best-first. The model's within-group order becomes the tiebreaker in the final sort: `combined desc → llm_tie_rank asc → ref asc`. `ref` stays as the last-resort fallback if a call fails or returns an incomplete list — any item the LLM omits gets effective rank Infinity (sorted to the end of its group, then by ref), logged by name. A failed call (exception) produces an empty rank map for that group, which degrades cleanly to ref order for all members without dropping any item. Tied groups are independent and run concurrently (p-limit at `editor.tie_break.concurrency`). `editor_runs.model_used` is updated to `formula:combined-score+tie-rank:{model}` if any tie-break calls were made; it stays `formula:combined-score` if there were no ties. Items that went through a tie-break call include `tie-rank:N` in their `editor_stories.reason` field for inspection.
+
+**Context:** The previous formula's tiebreaker for equal combined scores was ref order — `C3` before `S17566` — which is alphabetically arbitrary and produces a different ordering each time the grouping run produces different cluster indices. Where two singletons have the same relevance score and both have `sourceCount=1` (which makes their combined scores identical), or where two clusters with the same score happen to have the same size, the paper's ordering at those positions is effectively random.
+
+**Rationale:**
+- **The formula handles the easy cases; the LLM handles only the hard ones.** The vast majority of items are resolved by the combined score alone. Tie-break calls happen only where the formula genuinely cannot distinguish. On a typical 150-item pile the number of tied groups is small (often zero or low single digits); the cost is proportional to how often the formula produces exact ties.
+- **Bio-aware ranking is the right judgment for ties.** At a tie, the formula has no information; the only signal left is what this reader cares about. That's exactly what `docs/bio.md` encodes. Sending the reader's profile and a handful of similarly-scored items to a cheap model is the minimal LLM call that adds real value.
+- **Graceful degradation.** A failed call or incomplete output falls back to ref order for that group — deterministic, logged, and no items are dropped. The paper is always complete; the tie-break only improves ordering, it doesn't gatekeep.
+- **Small-call shape, not whole-pile reasoning.** Each call sees only 2–N items from a single tied group, not the full pile. This keeps individual calls cheap and fast, and bounds the cost by the number of actual ties rather than pile size.
+- **Same call pattern as the scorer.** `callLLM`, `p-limit`, `generation_logs`, flat ref output parseable by `normalizeRef` — same conventions as `editor-pass-1` and `grouping`.
+
+**Supersedes:** The ref-order-as-tiebreak portion of "Editor replaced with deterministic formula" (2026-06-16), which fell back to `localeCompare` on refs after exhausting combined and relevance as tiebreakers.
+
+---
+
+## 2026-06-16 — Editor replaced with deterministic formula; LLM tierer dropped
+
+**Decision:** Remove the whole-pile LLM call from the editor stage and replace it with a deterministic combined-score formula. For each pile item:
+
+```
+combined = relevance + W × ln(sources)
+```
+
+where `relevance` is the grouping-pass-1 score already on the pile item, `sources` is the source count (cluster member-id-list length for clusters, 1 for singletons), and `W` is a tunable weight constant (configured at `editor.source_weight`, starting at 9). `ln(1) = 0` so a single-source item gets no source lift; a 53-source cluster gets roughly +35 points at W=9. Items are sorted by combined score descending, with tiebreak by relevance descending then ref ascending for determinism. Tiers are assigned by position: the top `editor.tiers.feature` (15) items are `feature`, the next `editor.tiers.standard` (60) are `standard`, and the rest are `brief`. If the pile has fewer items than the tier total, features fill first, then standard, then brief — the last tier absorbs the shortfall. `cut` is not produced by the formula but is retained in the `EditorTier` type for schema compatibility. Output and storage are unchanged: `editor_runs` and `editor_stories` are written with the same columns; `model_used` is set to the sentinel `"formula:combined-score"`.
+
+The deleted code: `callLLM` and `LLMCallOptions` imports; `buildSystemPrompt` and `buildUserPrompt` from `prompt.ts`; `normalizeRef` import; the `SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD` constant; `failSafeTierForMissingItem()`; `attemptEditorCall()`; `parseEditorOutput()`; `EditorStoryResult` and `EditorParseResult` interfaces; the entire primary-retry-fallback call block; and `src/pipeline/editor/prompt.ts` in full (nothing outside the editor imported it). `EditorStageConfigSchema` in `src/config/models.ts` is replaced with a simple two-field schema (`source_weight`, `tiers`); `EditorFallbackConfigSchema` and `EditorFallbackConfig` are deleted.
+
+**Context:** A bake-off on pile #43 showed the LLM tier-assignment call is unstable across identical runs: the standard/brief split varied 29/112, 55/84, 129/8, and 136/6 on the same pile with the same model. The assignment the model makes in one run has no relationship to what it makes in the next. This makes the paper's structure non-reproducible and makes A/B comparison of pipeline changes impossible, because the tier distribution shifts between runs for reasons unrelated to any pipeline change being tested. The instability also defeats the goal of a fixed-size paper: the writers stage needs a stable amount of content each day, but a tier split that swings by 130 items run-to-run cannot deliver that.
+
+**Rationale:**
+- **The tier split is a fixed-paper-size policy, not an editorial judgment.** The point is a predictable daily artifact with a stable amount of content for the writers stage. A formula that produces the same tier split on the same pile every time is strictly better than an LLM that swings 130 positions between runs for the same input.
+- **Relevance is already scored.** Grouping-pass-1 produces a calibrated 0–100 bio-relevance score for every item. The LLM was re-deriving an ordering signal already present in the pile; the formula uses it directly.
+- **Source count as a magnitude proxy.** A cluster covered by 53 sources is almost certainly a bigger story than one covered by 2. The `W × ln(sources)` term gives multi-source clusters a lift that reflects genuine world coverage without requiring a model to make that judgment.
+- **Free and instant.** No tokens, no latency, no provider dependency for this stage.
+- **Unit-testable.** The formula is deterministic: a fixed pile with known scores and source counts produces known combined scores, known sort order, and known tier cuts. The test lives in `tests/editor-formula.test.ts`.
+
+**Supersedes:** "Editor repurposed: tier-only, pile arrives pre-ranked, lightweight pile presentation" (2026-06-16) — the LLM is now entirely removed; tier assignment is deterministic. Also supersedes "Editor model: kimi-k2.6:thinking primary, glm-5.1:thinking fallback, retry-once-then-fallback resilience" (2026-06-09) — the model, retry, and fallback logic are all deleted.
+
+---
+
 ## 2026-06-16 — Editor repurposed: tier-only, pile arrives pre-ranked, lightweight pile presentation
 
 **Decision:** The editor no longer ranks the pile. The pile now arrives

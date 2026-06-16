@@ -55,21 +55,27 @@ researcher:
   step_limit: 20
 
 editor:
-  model: moonshotai/kimi-k2.6:thinking
-  provider: nanogpt
-  temperature: 0.2
-  max_tokens: 48000
-  reasoning_effort: "medium"
-  stream: true
-  timeout_ms: 900000
-  # stream: true — keeps the HTTP connection alive past undici's ~300s headers
-  # timeout when a reasoning model thinks before emitting the first token.
-  # timeout_ms: 600000 — generous body/stream timeout for long reasoning calls.
-  # provider: nanogpt — uses NANOGPT_BASE_URL / NANOGPT_API_KEY.
-  fallback:
+  # Deterministic formula: combined = relevance + source_weight * ln(sources)
+  # ln(1)=0 so singletons get no lift; a 53-source cluster gets ~+35 at W=9.
+  source_weight: 9
+  # Tier counts for a 150-item pile (15+60+75=150). Features fill first, then
+  # standard, then brief — the last tier absorbs the shortfall on smaller piles.
+  tiers:
+    feature: 15
+    standard: 60
+    brief: 75
+  # Bio-aware tie-break: one small LLM call per group of items that share an
+  # identical combined score, ranking them against each other by reader relevance.
+  # Cheap fast model; groups are small; calls run concurrently.
+  tie_break:
     model: zai-org/glm-5.1:thinking
     provider: nanogpt
-    reasoning_effort: "medium"
+    temperature: 0.1
+    max_tokens: 24000
+    concurrency: 10
+    reasoning_effort: "xhigh"
+    stream: true
+    timeout_ms: 300000
 
 # Unbuilt placeholder — stage not yet implemented; model id is not real.
 writers:

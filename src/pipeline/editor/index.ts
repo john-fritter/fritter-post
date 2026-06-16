@@ -1,26 +1,32 @@
 import "dotenv/config";
+import { readFileSync } from "fs";
+import path from "path";
+import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
-import { loadModelConfig } from "../../config/models.js";
-import { callLLM, type LLMCallOptions } from "../../llm/index.js";
-import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
+import { callLLM } from "../../llm/index.js";
 import { normalizeRef } from "../../lib/refs.js";
-import { buildSystemPrompt, buildUserPrompt, type EditorPileEntry } from "./prompt.js";
+import { parseGroupingDigest } from "../editor-pass-1/index.js";
 
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
-const VALID_TIERS = new Set<EditorTier>(["feature", "standard", "brief", "cut"]);
 
-/**
- * Pass-1 relevance score at/above which a missing singleton fails safe to
- * 'standard' rather than 'brief'. ~70 is where the editor's own standard/brief
- * placements cluster — close enough to use as the fail-safe line. Fail-safe
- * is deliberately capped at 'standard': promoting a dropped item to 'feature'
- * requires the editor's actual judgment, not a heuristic.
- */
-const SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD = 70;
+const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
+const BIO_FALLBACK =
+  "(Reader bio unavailable. Apply generic editorial judgment: rank by newsworthiness and likely reader interest.)";
+
+function loadBio(): string {
+  try {
+    const content = readFileSync(BIO_PATH, "utf-8").trim();
+    return content.length > 0 ? content : BIO_FALLBACK;
+  } catch {
+    return BIO_FALLBACK;
+  }
+}
 
 interface DigestCluster {
   index: number;
   title: string;
+  summary: string;
   itemCount: number;
 }
 
@@ -29,189 +35,127 @@ interface EditorPileItem {
   itemType: "cluster" | "singleton";
   clusterIndex: number | null;
   preprocessedItemId: number | null;
-  // Singleton-only: pass-1 relevance score, used to pick a sensible fail-safe
-  // tier if the editor drops the item from its output. Null for clusters.
-  pass1Score: number | null;
+  score: number;       // grouping-pass-1 relevance score (0–100)
+  sourceCount: number; // cluster member count; 1 for singleton
+  title: string;
+  bodyText: string;    // cluster summary or singleton body excerpt, for tie-break prompt
+}
+
+const BODY_CAP = 300;
+
+/**
+ * combined = relevance + W * ln(sources)
+ * ln(1) = 0, so a single-source item gets no lift.
+ * A 53-source cluster gets roughly +35 at W=9.
+ */
+export function combinedScore(score: number, sourceCount: number, sourceWeight: number): number {
+  return score + sourceWeight * Math.log(sourceCount);
 }
 
 /**
- * Picks the tier a pile item fails safe to when the editor's output omits it.
- * Clusters reach the pile on multi-source pickup alone — inherently
- * higher-signal than a residual singleton — so they fail safe to 'standard'.
- * Singletons fail safe based on the one piece of relevance signal we already
- * have (the pass-1 score): high-scoring drops land at 'standard', everything
- * else at 'brief'. Never 'feature' — that tier is the editor's call alone.
+ * Assign a tier by 0-based rank in the combined-score sort.
+ * Features fill first, then standard, then brief. The last tier absorbs the
+ * shortfall when the pile has fewer than featureCount + standardCount items.
  */
-function failSafeTierForMissingItem(item: EditorPileItem): EditorTier {
-  if (item.itemType === "cluster") return "standard";
-  if (item.pass1Score !== null && item.pass1Score >= SINGLETON_FAILSAFE_STANDARD_SCORE_THRESHOLD) {
-    return "standard";
-  }
+export function assignTier(rank0: number, featureCount: number, standardCount: number): EditorTier {
+  if (rank0 < featureCount) return "feature";
+  if (rank0 < featureCount + standardCount) return "standard";
   return "brief";
 }
 
 /**
- * Single call attempt: invokes callLLM, parses the result, and checks whether
- * the parse collapsed (< 50% of pile items produced valid output lines).
- * Returns the EditorParseResult on success, null on any failure including
- * thrown exceptions and collapse. A paper with fail-safed missing items but
- * >= 50% parsed lines is a success — do not retry a merely-imperfect paper.
+ * Parse the tie-break LLM output: one ref per line, in ranked order.
+ * Returns a Map from ref → 0-based rank within the group.
+ * Refs absent from the output are not in the map — callers treat them as Infinity.
  */
-async function attemptEditorCall(
-  runId: number,
-  callOptions: LLMCallOptions,
-  pileItems: EditorPileItem[],
-  label: string,
-): Promise<EditorParseResult | null> {
-  console.log(
-    `[editor] run #${runId}: ${label} — model=${callOptions.model} provider=${callOptions.provider ?? "ollama-cloud"}`,
-  );
-  try {
-    const llmResult = await callLLM(callOptions);
-    const parsed = parseEditorOutput(llmResult.text, pileItems);
-
-    const collapseThreshold = Math.floor(pileItems.length * 0.5);
-    if (pileItems.length > 0 && parsed.parsedLineCount < collapseThreshold) {
-      console.warn(
-        `[editor] run #${runId}: ${label} — COLLAPSE: ` +
-          `parsed ${parsed.parsedLineCount}/${pileItems.length} lines (< 50% threshold)`,
-      );
-      return null;
+export function parseTieBreakOutput(text: string, groupRefs: string[]): Map<string, number> {
+  const refSet = new Set(groupRefs);
+  const tieRanks = new Map<string, number>();
+  let rank = 0;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const ref = normalizeRef(line);
+    if (ref && refSet.has(ref) && !tieRanks.has(ref)) {
+      tieRanks.set(ref, rank++);
     }
-
-    console.log(
-      `[editor] run #${runId}: ${label} — SUCCESS: ` +
-        `parsed ${parsed.parsedLineCount}/${pileItems.length}, missing=${parsed.missingCount}`,
-    );
-    return parsed;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[editor] run #${runId}: ${label} — FAILED: ${msg}`);
-    return null;
   }
-}
-
-export interface EditorStoryResult extends EditorPileItem {
-  tier: EditorTier;
-  reason: string;
-}
-
-export interface EditorParseResult {
-  results: EditorStoryResult[]; // final rank order: parsed lines, then fail-safed missing items
-  parsedLineCount: number;
-  missingCount: number;
-  unknownRefCount: number;
-  duplicateRefCount: number;
-  badTierCount: number;
+  return tieRanks;
 }
 
 /**
- * Recognition-based parser for the editor's ranked output.
- *
- * The contract with the model is `tier;;ref;;reason`, but reasoning models
- * routinely reorder fields, add line numbers, or bracket refs. This parser
- * finds tier and ref by RECOGNITION rather than position:
- *   - tier:  the first ;;-segment whose lowercased content is in VALID_TIERS
- *   - ref:   the first non-tier ;;-segment containing a C/S pattern (via normalizeRef)
- *   - reason: all remaining segments joined back with ;;
- *
- * All these shapes for the same item parse correctly:
- *   "feature;;C3;;reason"       (specified format)
- *   "C3;;feature;;reason"       (swapped — kimi does this)
- *   "1. C3;;feature;;reason"    (numbered + swapped)
- *   "feature;;[C3];;reason"     (bracketed ref)
- *
- * A line is only valid if both tier and ref are found; lines with neither are
- * silently skipped — they do not inflate parsedLineCount or trigger badTier
- * accounting. The fail-safe for genuinely-absent items is applied at the end,
- * unchanged.
+ * Sort items by (combined desc, tieRank asc, ref asc).
+ * Items not in tieRanksByRef get effective tieRank Infinity — they sort to the
+ * end of their tied group, with ref as the final deterministic fallback.
+ * Items with unique combined scores never compare tieRanks (the first term
+ * resolves), so absent tie ranks are harmless for non-tied items.
  */
-export function parseEditorOutput(text: string, pileItems: EditorPileItem[]): EditorParseResult {
-  const byRef = new Map<string, EditorPileItem>();
-  for (const item of pileItems) byRef.set(item.ref, item);
+export function applySortWithTieRanks<T extends { ref: string; combined: number }>(
+  items: T[],
+  tieRanksByRef: Map<string, number>,
+): T[] {
+  return [...items].sort(
+    (a, b) =>
+      b.combined - a.combined ||
+      (tieRanksByRef.get(a.ref) ?? Infinity) - (tieRanksByRef.get(b.ref) ?? Infinity) ||
+      a.ref.localeCompare(b.ref),
+  );
+}
 
-  const seen = new Set<string>();
-  const ordered: EditorStoryResult[] = [];
-  let parsedLineCount = 0;
-  let unknownRefCount = 0;
-  let duplicateRefCount = 0;
+function buildTieBreakSystemPrompt(): string {
+  return `You are ordering a small group of news items for a specific reader. The items have been scored identically by a formula — your job is to decide which the reader should see first.
 
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0 || !line.includes(";;")) continue;
+Output the item refs in ranked order, best first, one per line. Every ref must appear exactly once. No prose, no numbering, no explanation — just the refs.`;
+}
 
-    const parts = line.split(";;");
-    if (parts.length < 3) continue;
+function buildTieBreakUserPrompt(bio: string, items: EditorPileItem[]): string {
+  const lines = items.map((item) => {
+    const body = item.bodyText.length > 0 ? ` — ${item.bodyText}` : "";
+    return `[${item.ref}] ${item.title}${body}`;
+  });
+  return ["The reader:", "", bio, "", "---", "", "Rank these items best-first:", "", ...lines].join("\n");
+}
 
-    // Find tier: first segment that matches a valid tier word exactly.
-    let tier: EditorTier | null = null;
-    let tierIdx = -1;
-    for (let i = 0; i < parts.length; i++) {
-      const lower = parts[i]!.trim().toLowerCase();
-      if (VALID_TIERS.has(lower as EditorTier)) {
-        tier = lower as EditorTier;
-        tierIdx = i;
-        break;
-      }
+async function callTieBreakForGroup(
+  group: EditorPileItem[],
+  groupIndex: number,
+  bio: string,
+  runId: number,
+  tieCfg: EditorTieBreakConfig,
+): Promise<Map<string, number>> {
+  const groupRefs = group.map((item) => item.ref);
+  try {
+    const result = await callLLM({
+      stage: "editor-tie-break",
+      stageRunId: runId,
+      model: tieCfg.model,
+      systemPrompt: buildTieBreakSystemPrompt(),
+      userPrompt: buildTieBreakUserPrompt(bio, group),
+      temperature: tieCfg.temperature,
+      maxTokens: tieCfg.max_tokens,
+      reasoningEffort: tieCfg.reasoning_effort,
+      provider: tieCfg.provider,
+      timeoutMs: tieCfg.timeout_ms,
+      stream: tieCfg.stream,
+    });
+
+    const tieRanks = parseTieBreakOutput(result.text, groupRefs);
+    const missing = groupRefs.filter((r) => !tieRanks.has(r));
+    if (missing.length > 0) {
+      console.warn(
+        `[editor] tie-break group ${groupIndex}: LLM omitted ${missing.length} ref(s), falling back to ref order for: ${missing.join(", ")}`,
+      );
+    } else {
+      console.log(`[editor] tie-break group ${groupIndex}: ranked ${groupRefs.length} items`);
     }
-    if (tier === null) continue; // no valid tier word in any segment → skip
-
-    // Find ref: first non-tier segment containing a C/S pattern.
-    let ref: string | null = null;
-    let refIdx = -1;
-    for (let i = 0; i < parts.length; i++) {
-      if (i === tierIdx) continue;
-      const r = normalizeRef(parts[i]!);
-      if (r) {
-        ref = r;
-        refIdx = i;
-        break;
-      }
-    }
-    if (ref === null) continue; // no ref token in any segment → skip
-
-    // Reason: remaining segments (everything that's neither tier nor ref).
-    const reason = parts
-      .filter((_, i) => i !== tierIdx && i !== refIdx)
-      .join(";;")
-      .trim();
-    if (reason.length === 0) continue;
-
-    // Count this line: it had a recognizable tier and ref token.
-    parsedLineCount++;
-
-    const pileItem = byRef.get(ref);
-    if (!pileItem) {
-      console.warn(`[editor] unknown ref in output (dropped): ${ref}`);
-      unknownRefCount++;
-      continue;
-    }
-    if (seen.has(ref)) {
-      console.warn(`[editor] duplicate ref in output (kept first occurrence): ${ref}`);
-      duplicateRefCount++;
-      continue;
-    }
-    seen.add(ref);
-    ordered.push({ ...pileItem, tier, reason });
+    return tieRanks;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[editor] tie-break group ${groupIndex}: call failed (${msg}) — falling back to ref order for all ${group.length} items`,
+    );
+    return new Map(); // empty → all items get Infinity → fall back to ref order
   }
-
-  let missingCount = 0;
-  for (const item of pileItems) {
-    if (seen.has(item.ref)) continue;
-    const tier = failSafeTierForMissingItem(item);
-    console.warn(`[editor] pile item missing from output — fail-safe to ${tier}: ${item.ref}`);
-    missingCount++;
-    ordered.push({ ...item, tier, reason: "fail-safe: missing from editor output" });
-  }
-
-  return {
-    results: ordered,
-    parsedLineCount,
-    missingCount,
-    unknownRefCount,
-    duplicateRefCount,
-    badTierCount: 0, // no longer meaningful with recognition-based parsing
-  };
 }
 
 export interface EditorRun {
@@ -242,10 +186,11 @@ interface EditorRunRow {
   items_cut: number;
 }
 
+const FORMULA_MODEL_SENTINEL = "formula:combined-score";
+
 export async function runEditor(
   options: {
     pileId?: number;
-    modelOverride?: string;
   } = {},
 ): Promise<EditorRun> {
   const pool = getPool();
@@ -262,8 +207,7 @@ export async function runEditor(
     pileId = rows[0].id;
   }
 
-  // 2. Load the pile and resolve its cluster source. A pile comes from the
-  //    embedding-based grouping stage (grouping_run_id set).
+  // 2. Load the pile and confirm it has a grouping run.
   const { rows: pileRows } = await pool.query<{
     id: number;
     grouping_run_id: number | null;
@@ -274,16 +218,11 @@ export async function runEditor(
   const pile = pileRows[0];
   if (!pile) throw new Error(`Editor pile #${pileId} not found`);
   const groupingRunId = pile.grouping_run_id;
-
-  // Resolve cluster details from the grouping run's digest, then load and
-  // present items from editor_pile_items.
   if (groupingRunId === null) {
     throw new Error(`Editor pile #${pileId} references no grouping run`);
   }
-  // Resolve cluster details from the grouping run's digest using the SAME
-  // parser the scorer used to assign editor_pile_items.cluster_index, so
-  // indices align by construction. Source count per cluster is its
-  // member-id count.
+
+  // 3. Resolve cluster details from the grouping run's digest.
   const { rows: groupingRows } = await pool.query<{ digest: string | null }>(
     "SELECT digest FROM grouping_runs WHERE id = $1",
     [groupingRunId],
@@ -294,13 +233,13 @@ export async function runEditor(
   const digestClusters: DigestCluster[] = parseGroupingDigest(digest).map((c) => ({
     index: c.clusterIndex,
     title: c.title,
+    summary: c.summary,
     itemCount: c.memberIds.length,
   }));
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
-  // 3. Load in-pile items: clusters (carrying the pass-1 score stored on the
-  //    pile item; title + source count come from the digest) and singletons
-  //    (joined to preprocessed_items for the title, source count is always 1).
+  // 4. Load in-pile items. Singleton query joins preprocessed_items for title
+  //    and body_text — both are needed for the tie-break prompt.
   const { rows: clusterPileRows } = await pool.query<{
     cluster_index: number;
     score: number;
@@ -314,23 +253,18 @@ export async function runEditor(
     preprocessed_item_id: string;
     score: number;
     title: string;
+    body_text: string | null;
   }>(
-    `SELECT epi.preprocessed_item_id, epi.score, pi.title
+    `SELECT epi.preprocessed_item_id, epi.score, pi.title, pi.body_text
      FROM editor_pile_items epi
      JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
      WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true`,
     [pileId],
   );
 
-  // 4. Merge clusters and singletons into one list and sort by score descending
-  //    so the editor receives the pile pre-ranked, best-first (its prompt depends
-  //    on this). Each entry carries both the presentation fields (title, score,
-  //    source count) and the parser fields (item type, refs, pass-1 score for the
-  //    fail-safe). Tiebreak by ref for a deterministic order at equal scores.
-  type CombinedPileItem = EditorPileEntry & EditorPileItem;
-
-  const clusterCombined: CombinedPileItem[] = clusterPileRows
-    .map((row): CombinedPileItem | null => {
+  // 5. Build combined item list.
+  const clusterItems: EditorPileItem[] = clusterPileRows
+    .map((row): EditorPileItem | null => {
       const detail = clusterByIndex.get(row.cluster_index);
       if (!detail) {
         console.warn(
@@ -340,164 +274,108 @@ export async function runEditor(
       }
       return {
         ref: `C${row.cluster_index}`,
-        title: detail.title,
-        score: row.score,
-        sourceCount: detail.itemCount,
         itemType: "cluster",
         clusterIndex: row.cluster_index,
         preprocessedItemId: null,
-        // Clusters fail safe by item type, not score (see failSafeTierForMissingItem).
-        pass1Score: null,
+        score: row.score,
+        sourceCount: detail.itemCount,
+        title: detail.title,
+        bodyText: detail.summary.slice(0, BODY_CAP),
       };
     })
-    .filter((c): c is CombinedPileItem => c !== null);
+    .filter((c): c is EditorPileItem => c !== null);
 
-  const singletonCombined: CombinedPileItem[] = singletonPileRows.map((row) => ({
+  const singletonItems: EditorPileItem[] = singletonPileRows.map((row) => ({
     ref: `S${row.preprocessed_item_id}`,
-    title: row.title,
-    score: row.score,
-    sourceCount: 1,
-    itemType: "singleton",
+    itemType: "singleton" as const,
     clusterIndex: null,
     preprocessedItemId: Number(row.preprocessed_item_id),
-    pass1Score: row.score,
+    score: row.score,
+    sourceCount: 1,
+    title: row.title,
+    bodyText: (row.body_text ?? "").slice(0, BODY_CAP),
   }));
 
-  const combined: CombinedPileItem[] = [...clusterCombined, ...singletonCombined].sort(
-    (a, b) => b.score - a.score || a.ref.localeCompare(b.ref),
-  );
-
-  const entries: EditorPileEntry[] = combined.map((c) => ({
-    ref: c.ref,
-    title: c.title,
-    score: c.score,
-    sourceCount: c.sourceCount,
-  }));
-  const pileItems: EditorPileItem[] = combined.map((c) => ({
-    ref: c.ref,
-    itemType: c.itemType,
-    clusterIndex: c.clusterIndex,
-    preprocessedItemId: c.preprocessedItemId,
-    pass1Score: c.pass1Score,
-  }));
-
-  const userPrompt = buildUserPrompt(entries);
+  const pileItems: EditorPileItem[] = [...clusterItems, ...singletonItems];
 
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
   }
 
-  // 5. Load model config and build the (whole-pile, single-call) prompts.
-  const modelConfig = loadModelConfig();
-  const stageConfig = modelConfig.editor;
-  const model = options.modelOverride ?? stageConfig.model;
-  const temperature = stageConfig.temperature;
-  const maxTokens = stageConfig.max_tokens;
-  const reasoningEffort = stageConfig.reasoning_effort;
-  const provider = stageConfig.provider;
-  const timeoutMs = stageConfig.timeout_ms;
-  const stream = stageConfig.stream;
+  // 6. Load formula config.
+  const { editor: cfg } = loadModelConfig();
+  const W = cfg.source_weight;
+  const featureCount = cfg.tiers.feature;
+  const standardCount = cfg.tiers.standard;
 
-  const systemPrompt = buildSystemPrompt();
+  // 7. Compute combined scores and identify tied groups (2+ items with the
+  //    same combined score).
+  const scoredItems = pileItems.map((item) => ({
+    ...item,
+    combined: combinedScore(item.score, item.sourceCount, W),
+  }));
+
+  const byScore = new Map<number, typeof scoredItems>();
+  for (const item of scoredItems) {
+    const group = byScore.get(item.combined) ?? [];
+    group.push(item);
+    byScore.set(item.combined, group);
+  }
+  const tiedGroups = [...byScore.values()].filter((g) => g.length >= 2);
 
   console.log(
-    `[editor] pile #${pileId}: ${clusterCombined.length} clusters, ${singletonCombined.length} singletons, ` +
-      `${pileItems.length} items total (pre-ranked by score) — one whole-pile call`,
+    `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
+      `${pileItems.length} items total — formula W=${W}, tiers=${featureCount}/${standardCount}/..., ` +
+      `${tiedGroups.length} tied group(s)`,
   );
 
-  // 6. Create editor_runs row, recording the grouping run the pile came from.
+  // 8. Create editor_runs row now so the tie-break LLM calls can log against runId.
   const { rows: runRows } = await pool.query<{ id: number }>(
     `INSERT INTO editor_runs (started_at, pile_id, grouping_run_id, model_used, items_in)
      VALUES (NOW(), $1, $2, $3, $4)
      RETURNING id`,
-    [pileId, groupingRunId, model, pileItems.length],
+    [pileId, groupingRunId, FORMULA_MODEL_SENTINEL, pileItems.length],
   );
   const runId = runRows[0]!.id;
 
   try {
-    // 7. Whole-pile call with primary-retry + fallback resilience.
-    //    stream: true keeps the HTTP connection alive past undici's ~300s headers
-    //    timeout — non-streaming calls don't send headers until the model finishes.
-    //    Retry + fallback logic: attempt primary → retry primary once → fallback once.
-    //    A parse collapse (< 50% lines) counts as failure; an imperfect-but-parsed
-    //    paper does not. The fallback model is only invoked on genuine failure.
-    const primaryCallOptions: LLMCallOptions = {
-      stage: "editor",
-      stageRunId: runId,
-      model,
-      systemPrompt,
-      userPrompt,
-      temperature,
-      maxTokens,
-      reasoningEffort,
-      provider,
-      timeoutMs,
-      stream,
-    };
+    // 9. Run bio-aware tie-break calls for each tied group, concurrently.
+    const tieRanksByRef = new Map<string, number>();
+    let tieBreakCallsMade = false;
 
-    const fallbackConfig = stageConfig.fallback;
-    let actualModelUsed = model;
+    if (tiedGroups.length > 0) {
+      const tieCfg = cfg.tie_break;
+      const bio = loadBio();
+      const limit = pLimit(tieCfg.concurrency);
 
-    let parsed = await attemptEditorCall(runId, primaryCallOptions, pileItems, "primary attempt 1/2");
-
-    if (parsed === null) {
-      console.warn(`[editor] run #${runId}: primary attempt 1/2 failed — retrying primary`);
-      parsed = await attemptEditorCall(runId, primaryCallOptions, pileItems, "primary attempt 2/2 (retry)");
-    }
-
-    if (parsed === null) {
-      if (!fallbackConfig) {
-        throw new Error(`primary model failed twice and no fallback is configured`);
-      }
-      const fallbackCallOptions: LLMCallOptions = {
-        ...primaryCallOptions,
-        model: fallbackConfig.model,
-        provider: fallbackConfig.provider,
-        reasoningEffort: fallbackConfig.reasoning_effort,
-      };
-      console.warn(
-        `[editor] run #${runId}: primary model failed twice — invoking fallback model "${fallbackConfig.model}"`,
+      const groupResults = await Promise.all(
+        tiedGroups.map((group, idx) =>
+          limit(() => callTieBreakForGroup(group, idx, bio, runId, tieCfg)),
+        ),
       );
-      parsed = await attemptEditorCall(runId, fallbackCallOptions, pileItems, "fallback attempt");
-      if (parsed !== null) {
-        actualModelUsed = fallbackConfig.model;
+
+      for (const groupRanks of groupResults) {
+        for (const [ref, rank] of groupRanks) {
+          tieRanksByRef.set(ref, rank);
+        }
       }
+      tieBreakCallsMade = true;
     }
 
-    if (parsed === null) {
-      throw new Error(`all attempts failed (primary ×2 + fallback ×1) — no acceptable paper produced`);
+    // 10. Update model_used if tie-break calls were made.
+    if (tieBreakCallsMade) {
+      const sentinel = `formula:combined-score+tie-rank:${cfg.tie_break.model}`;
+      await pool.query(`UPDATE editor_runs SET model_used = $1 WHERE id = $2`, [sentinel, runId]);
     }
 
-    // Record which model actually produced the accepted output.
-    if (actualModelUsed !== model) {
-      await pool.query(`UPDATE editor_runs SET model_used = $1 WHERE id = $2`, [actualModelUsed, runId]);
-      console.log(
-        `[editor] run #${runId}: fallback model "${actualModelUsed}" produced accepted output — model_used updated`,
-      );
-    } else {
-      console.log(`[editor] run #${runId}: primary model "${actualModelUsed}" produced accepted output`);
-    }
+    // 11. Final sort: combined desc → tie-rank asc → ref asc.
+    const sorted = applySortWithTieRanks(scoredItems, tieRanksByRef);
 
-    const logParts = [
-      `model=${actualModelUsed}`,
-      `parsed-lines=${parsed.parsedLineCount}/${pileItems.length}`,
-      `missing=${parsed.missingCount}`,
-      `unknown-refs=${parsed.unknownRefCount}`,
-      `duplicates=${parsed.duplicateRefCount}`,
-      `bad-tier=${parsed.badTierCount}`,
-    ];
-    const log = `[editor] run #${runId}: ${logParts.join(", ")}`;
-    if (parsed.missingCount > 0 || parsed.unknownRefCount > 0 || parsed.duplicateRefCount > 0 || parsed.badTierCount > 0) {
-      console.warn(log);
-    } else {
-      console.log(log);
-    }
-
-    // 8. Persist stories in final rank order (1-based), counting tiers along the way.
+    // 12. Assign tiers and persist stories in rank order (1-based).
     const tierCounts: Record<EditorTier, number> = { feature: 0, standard: 0, brief: 0, cut: 0 };
     const INSERT_CHUNK = 500;
-    for (let i = 0; i < parsed.results.length; i += INSERT_CHUNK) {
-      const chunk = parsed.results.slice(i, i + INSERT_CHUNK);
+    for (let i = 0; i < sorted.length; i += INSERT_CHUNK) {
+      const chunk = sorted.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_r, j) => {
           const base = j * 7;
@@ -507,8 +385,13 @@ export async function runEditor(
       const params: Array<number | string | null> = [];
       chunk.forEach((r, j) => {
         const rank = i + j + 1;
-        tierCounts[r.tier]++;
-        params.push(runId, r.itemType, r.clusterIndex, r.preprocessedItemId, r.tier, rank, r.reason);
+        const tier = assignTier(rank - 1, featureCount, standardCount);
+        tierCounts[tier]++;
+        const tieRank = tieRanksByRef.get(r.ref);
+        const reason =
+          `combined=${r.combined.toFixed(2)} (score=${r.score}, sources=${r.sourceCount})` +
+          (tieRank !== undefined ? ` tie-rank:${tieRank}` : "");
+        params.push(runId, r.itemType, r.clusterIndex, r.preprocessedItemId, tier, rank, reason);
       });
       await pool.query(
         `INSERT INTO editor_stories
@@ -518,7 +401,7 @@ export async function runEditor(
       );
     }
 
-    // 9. Finalize run with per-tier counts.
+    // 13. Finalize run with per-tier counts.
     await pool.query(
       `UPDATE editor_runs
        SET completed_at   = NOW(),
@@ -528,6 +411,10 @@ export async function runEditor(
            items_cut      = $4
        WHERE id = $5`,
       [tierCounts.feature, tierCounts.standard, tierCounts.brief, tierCounts.cut, runId],
+    );
+
+    console.log(
+      `[editor] run #${runId}: feature=${tierCounts.feature}, standard=${tierCounts.standard}, brief=${tierCounts.brief}`,
     );
 
     return await fetchEditorRun(pool, runId);
