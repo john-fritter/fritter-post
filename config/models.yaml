@@ -137,21 +137,20 @@ grouping:
     top_k: 10
   # Attach pass: for each singleton anchor (processed in descending best title-sim
   # order), generate candidate clusters and other singletons whose title-only
-  # cosine similarity to the anchor is >= candidate_floor, offer them to a cheap
-  # LLM, and confirm which cover the same news event. Two outcomes: attach anchor
-  # to an existing cluster, or pair two singletons into a new 2-item cluster.
+  # cosine similarity to the anchor is >= candidate_floor, offer ALL of them to a
+  # cheap LLM, and confirm which cover the same news event. Two outcomes: attach
+  # anchor to an existing cluster, or pair two singletons into a new 2-item cluster.
   # Sequential union-find ensures a consumed anchor/singleton is not reprocessed.
   # Runs after connected-components, before describe. Attach-only; never splits.
+  # candidate_floor is the sole candidate filter — no per-anchor cap. Silently
+  # dropping a candidate above the floor could miss a genuine duplicate.
   attach:
     enabled: true
     # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
     # 0.55 catches same-event pairs (measured at 0.78+) and cross-event near-misses
     # (e.g. Samsung pair at 0.635) while skipping true orphans. The LLM is the
-    # precision gate — there is no auto-accept tier.
+    # precision gate — there is no auto-accept tier and no per-anchor cap.
     candidate_floor: 0.55
-    # Max candidates per anchor LLM call. Limits prompt length; anchors with more
-    # candidates above the floor see only the top-K by title cosine sim.
-    candidate_top_k: 8
     model: zai-org/glm-5.1:thinking
     provider: nanogpt
     temperature: 0.1

@@ -38,6 +38,8 @@ Entry format:
 
 **Supersedes:** The `attach_floor / [floor, threshold)` near-miss band design in "Grouping clusterer: validated threshold 0.72, attach pass design, operational lessons" (2026-06-12). The band logic, threshold-as-upper-bound, and per-cluster-anchor structure are all replaced by the anchor-centric title-embedding design above.
 
+**Correction (2026-06-16):** `candidate_top_k` (initially added as part of this design) was removed immediately after: a per-anchor cap can silently drop genuine same-event candidates that clear `candidate_floor`, violating dedup-completeness. `candidate_floor` is the sole candidate filter.
+
 ---
 
 ## 2026-06-16 — Editor tie-break: bio-aware LLM ranking for identical combined scores

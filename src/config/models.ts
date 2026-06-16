@@ -74,7 +74,6 @@ const GroupingEmbeddingConfigSchema = z.object({
 const GroupingAttachConfigSchema = z.object({
   enabled: z.boolean(),
   candidate_floor: z.number().min(0).max(1),
-  candidate_top_k: z.number().int(),
   model: z.string(),
   provider: ProviderSchema.optional(),
   temperature: z.number(),

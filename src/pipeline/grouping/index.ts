@@ -67,6 +67,11 @@ export type AttachCandidate =
 
 // Pure function: given an anchor singleton, produce an ordered candidate list from
 // the current cluster set and remaining singletons, scored by title-only cosine.
+// Returns ALL candidates with title cosine >= candidateFloor, sorted by sim desc.
+// candidate_floor is the sole per-anchor filter — no top-K cap. Dropping a genuine
+// duplicate to save prompt space would violate dedup completeness. If prompt size
+// for a very dense cluster ever becomes a real issue, the fix is batched LLM calls
+// that union their confirmations, not a silent drop here.
 // Exported for testing.
 export function buildAttachCandidates(
   anchorId: number,
@@ -74,7 +79,6 @@ export function buildAttachCandidates(
   availableSingletonIds: ReadonlySet<number>,
   titleNormalizedVectors: ReadonlyMap<number, number[]>,
   candidateFloor: number,
-  candidateTopK: number,
 ): AttachCandidate[] {
   const anchorVec = titleNormalizedVectors.get(anchorId);
   if (!anchorVec) return [];
@@ -111,7 +115,7 @@ export function buildAttachCandidates(
     return simB - simA;
   });
 
-  return candidates.slice(0, candidateTopK);
+  return candidates;
 }
 
 function formatAnchorBlock(item: PreprocessedItemRow): string {
@@ -271,7 +275,6 @@ async function attachSingletons(
       availableSingletons,
       titleNormalizedVectors,
       config.candidate_floor,
-      config.candidate_top_k,
     );
 
     if (candidates.length === 0) continue;
