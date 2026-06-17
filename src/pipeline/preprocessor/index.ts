@@ -1,11 +1,10 @@
 import "dotenv/config";
-import pLimit from "p-limit";
 import { convert, type HtmlToTextOptions } from "html-to-text";
 import { loadSources } from "../../config/sources.js";
 import { loadModelConfig } from "../../config/models.js";
 import { getPool } from "../../db/index.js";
 import { canonicalizeUrl } from "./canonicalize.js";
-import { buildEnglishFields } from "./translation.js";
+import { batchTranslateItems } from "./translation.js";
 
 export interface PreprocessorRun {
   id: number;
@@ -272,28 +271,32 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
 
     // 6. Language detection + translation: build english_title / english_body for
     //    every surviving item. English items are copied through; non-English items
-    //    are translated. Failures fall back to the original text so no item is lost.
+    //    are translated in batches. Failures fall back to the original text so no
+    //    item is ever lost.
     const { translation: translationConfig } = loadModelConfig().preprocessor;
-    const translationLimit = pLimit(translationConfig.concurrency);
-    let translationFailures = 0;
+    const itemsForTranslation = finalSurviving.map((item) => ({
+      id: item.rawItemId,
+      title: item.title,
+      bodyText: item.bodyText,
+    }));
 
-    const englishFields = await Promise.all(
-      finalSurviving.map((item) =>
-        translationLimit(async () => {
-          const fields = await buildEnglishFields(
-            { title: item.title, bodyText: item.bodyText },
-            translationConfig,
-            runId,
-          );
-          if (fields.failed) translationFailures++;
-          return fields;
-        }),
-      ),
+    const { fields: translationFields, stats: translationStats } = await batchTranslateItems(
+      itemsForTranslation,
+      translationConfig,
+      runId,
     );
 
-    if (translationFailures > 0) {
+    if (translationStats.nonEnglish > 0) {
       console.log(
-        `[preprocessor] translation failures: ${translationFailures} item(s) fell back to original-language embedding`,
+        `[preprocessor] translation: ${translationStats.nonEnglish} non-English → ` +
+        `${translationStats.batches} batch(es), ${translationStats.translated} translated, ` +
+        `${translationStats.splitRetries} split-retries, ${translationStats.fallbacks} fallback(s)`,
+      );
+    }
+    if (translationStats.fallbacks > 0) {
+      console.warn(
+        `[preprocessor] WARNING: ${translationStats.fallbacks} item(s) fell back to ` +
+        `original-language text for embedding`,
       );
     }
 
@@ -304,7 +307,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
 
       for (let i = 0; i < finalSurviving.length; i++) {
         const item = finalSurviving[i]!;
-        const eng = englishFields[i]!;
+        const eng = translationFields.get(item.rawItemId)!;
         await client.query(
           `INSERT INTO preprocessed_items
              (preprocessor_run_id, raw_item_id, source_name, source_type, track, "group",

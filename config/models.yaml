@@ -32,7 +32,15 @@ preprocessor:
     reasoning_effort: "none"
     stream: false
     timeout_ms: 60000
-    concurrency: 5
+    # One LLM call per batch covers both title and body for all N items. Reduces
+    # total calls from 2×items to ceil(non_english/batch_size). Alignment safety
+    # via id-keyed JSONL output and recursive split-on-failure retry.
+    translation_batch_size: 10
+    # 2 concurrent batch calls at a time — enough throughput, avoids 429 bursts.
+    concurrency: 2
+    # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
 
 filter:
   model: deepseek/deepseek-v4-flash  # NanoGPT model id (confirmed nano-gpt.com/models)

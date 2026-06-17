@@ -13,7 +13,10 @@ const TranslationConfigSchema = z.object({
   reasoning_effort: z.string().optional(),
   stream: z.boolean().optional(),
   timeout_ms: z.number().int().optional(),
+  translation_batch_size: z.number().int(),
   concurrency: z.number().int(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 // Deterministic preprocessor tuning (recency window + dedup lookback) plus

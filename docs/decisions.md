@@ -20,6 +20,36 @@ Entry format:
 
 ---
 
+## 2026-06-17 — Preprocessor translation: batched JSONL calls with split-on-failure retry
+
+**Decision:** Replace the per-item translation design (2 LLM calls per non-English item — title then body) with a batched design: one LLM call covers both title and body for N items (default `translation_batch_size: 10`). Output is JSONL keyed by stable id. Alignment safety: any id missing from the output triggers a recursive split-on-failure — the missing subset is halved and each half is retried, down to a 1-item floor. A 1-item batch that still produces no output falls back to original text. 429/503 errors on any call are retried with exponential backoff + jitter (`callWithBackoff`, shared utility in `src/llm/backoff.ts`) before splitting. The same `callWithBackoff` wrapper is applied to prefilter batch calls.
+
+**Context:** The per-item design produced ~2 LLM calls × ~180 items = ~360 calls/run. At NanoGPT's rate limits this saturated the endpoint and produced cascading 429 errors. The design also had no 429 backoff at the HTTP layer (callLLM sets `maxRetries: 0` by design) and no retry logic in the preprocessor, so 429s immediately fell back to original text.
+
+**Rationale:**
+- **Call reduction.** 180 non-English items at batch size 10 = 18 calls, not 360. Even at full non-English feeds the call count stays manageable.
+- **JSONL keyed by id, not position.** Models may reorder items in the output or omit some. Position-keyed parsing would silently misattribute translations. Id-keyed parsing is robust to ordering and detects missing items cleanly.
+- **Split-on-failure over whole-batch fallback.** When a batch produces partial output, re-sending the full batch wastes tokens and often produces the same partial response. Halving isolates the problematic item and recovers the rest. The recursive split converges to individual items in O(log N) rounds.
+- **Backoff before splitting.** 429/503 is a rate-limit signal, not a model failure. The right response is to wait and retry the same call, not to split. Splitting is reserved for alignment failures (model omits ids). The two recovery mechanisms are orthogonal.
+- **Shared `callWithBackoff` utility.** Prefilter had the same latent 429 vulnerability (10 concurrent calls, no backoff). Wrapping its per-batch `callLLM` with the same utility costs one import and one wrapper; the outer fail-safe catch still handles non-429 errors as before.
+- **Concurrency reduced.** `translation.concurrency` dropped from 5 to 2; with batch size 10, peak in-flight tokens are 10× higher per call than the old per-item calls, so lower concurrency avoids the same burst.
+
+---
+
+## 2026-06-17 — Cross-language clustering: translate non-English items to English at preprocess time
+
+**Decision:** Translate non-English item titles and bodies to English in the preprocessor, store results in `english_title` / `english_body` columns (migration 028), and embed those columns in the grouping stage. All clustering happens in one English vector space. Originals are retained for display, scoring, and editor passes — nothing that the human reader sees is affected by translation. Language detection uses franc-min@6 per item, not per source, with a heuristic that treats `und` (undetermined) + non-Latin script as non-English. Translation failures fall back to original text (item is never dropped). Design is idempotent: items with `english_title` already set are copied through without calling the model.
+
+**Context:** Same-event articles in different languages (e.g., an AP English and an AFP French report on the same story) produce embedding vectors in separate language sub-spaces and score low cosine similarity even for nearly identical content. The grouping stage's similarity threshold and union-find graph then fail to connect them, leaving them as separate singletons or — worse — placing them in separate clusters that the editor sees as two different "stories." Cross-language same-event deduplication was structurally impossible with the old per-language embedding approach.
+
+**Rationale:**
+- **Embedding in one language space.** Multilingual embedding models (like the Qwen3-Embedding-8B in use) have sub-spaces per language that don't fully collapse — same-event pairs in different languages can score 0.4–0.5 even when the threshold for intra-language same-event pairs is 0.66. Translating to English first forces all items into the English sub-space where same-event similarity reliably clears the threshold.
+- **Per-item detection, not per-source.** Some sources publish in multiple languages or mix languages. Per-source classification would require hand-labeling every source and break on mixed feeds. franc-min adds ~0ms per item and is accurate enough for the triage decision.
+- **Originals retained.** Translations are stored alongside originals, not replacing them. The editor, reader, and all display paths use the original title and body. Only the embedding input changes.
+- **Translation model choice.** Qwen3.6-35B-A3B via NanoGPT: fast, cheap, high quality on mechanical translation. Reasoning off (`reasoning_effort: "none"`): this is a copy-and-translate task with no editorial judgment needed.
+
+---
+
 ## 2026-06-16 — Grouping attach pass reworked: title-only embeddings + singleton↔singleton pairing
 
 **Decision:** Rework the grouping attach pass (step 3) along two axes:
