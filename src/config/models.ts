@@ -5,7 +5,19 @@ import { z } from "zod";
 
 const ProviderSchema = z.enum(["ollama-cloud", "nanogpt", "openrouter"]);
 
-// Deterministic preprocessor tuning (recency window + dedup lookback).
+const TranslationConfigSchema = z.object({
+  model: z.string(),
+  provider: ProviderSchema.optional(),
+  temperature: z.number(),
+  max_tokens: z.number().int(),
+  reasoning_effort: z.string().optional(),
+  stream: z.boolean().optional(),
+  timeout_ms: z.number().int().optional(),
+  concurrency: z.number().int(),
+});
+
+// Deterministic preprocessor tuning (recency window + dedup lookback) plus
+// per-item translation config for non-English items.
 const PreprocessorConfigSchema = z.object({
   recency: z.object({
     fallback_hours: z.number().int().positive(),
@@ -14,6 +26,7 @@ const PreprocessorConfigSchema = z.object({
   dedup: z.object({
     lookback_days: z.number().int().positive(),
   }),
+  translation: TranslationConfigSchema,
 });
 
 const StageConfigSchema = z.object({
@@ -114,6 +127,7 @@ const ModelsConfigSchema = z.object({
   grouping: GroupingStageConfigSchema,
 });
 
+export type TranslationConfig = z.infer<typeof TranslationConfigSchema>;
 export type PreprocessorConfig = z.infer<typeof PreprocessorConfigSchema>;
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;

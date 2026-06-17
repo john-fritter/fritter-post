@@ -602,12 +602,15 @@ export async function runGrouping(
     for (let offset = 0; offset < items.length; offset += batchSize) {
       const batch = items.slice(offset, offset + batchSize);
 
-      // Build body and title texts for every item in the batch.
+      // Build body and title embed texts from english_* columns so all clustering
+      // happens in one English embedding space. Fallback to original title/body
+      // for rows that pre-date the migration (english_title IS NULL).
       const bodyTexts = batch.map((item) => {
-        const body = item.body_text?.replace(/\s+/g, " ").trim() ?? "";
-        return body.length > 0 ? `${item.title}\n${body.slice(0, bodyCap)}` : item.title;
+        const title = item.english_title ?? item.title;
+        const body = (item.english_body ?? item.body_text)?.replace(/\s+/g, " ").trim() ?? "";
+        return body.length > 0 ? `${title}\n${body.slice(0, bodyCap)}` : title;
       });
-      const titleTexts = batch.map((item) => item.title);
+      const titleTexts = batch.map((item) => item.english_title ?? item.title);
 
       // Interleave [body0, title0, body1, title1, ...] so one API call covers both.
       const interleavedTexts = batch.flatMap((_, i) => [bodyTexts[i]!, titleTexts[i]!]);
@@ -683,6 +686,7 @@ export async function runGrouping(
     const edges = new Map<number, Set<number>>();
     for (const id of embeddedIds) edges.set(id, new Set());
 
+    let totalPairsAboveThreshold = 0;
     for (let i = 0; i < embeddedIds.length; i++) {
       const idA = embeddedIds[i]!;
       const vA = normalizedVectors.get(idA)!;
@@ -692,6 +696,7 @@ export async function runGrouping(
         const sim = dotProduct(vA, normalizedVectors.get(idB)!);
         if (sim >= threshold) aboveThreshold.push([idB, sim]);
       }
+      totalPairsAboveThreshold += aboveThreshold.length;
       aboveThreshold.sort((a, b) => b[1] - a[1]);
       for (const [idB] of aboveThreshold.slice(0, topK)) {
         edges.get(idA)!.add(idB);
@@ -759,7 +764,8 @@ export async function runGrouping(
       .join(", ");
     console.log(
       `[grouping] step 2 candidate groups: items=${embeddedIds.length}, ` +
-        `groups=${candidateGroups.length}, singletons=${singletonIds.size}` +
+        `groups=${candidateGroups.length}, singletons=${singletonIds.size}, ` +
+        `pairs_above_threshold=${totalPairsAboveThreshold}` +
         (distStr.length > 0 ? `, size_distribution=[${distStr}]` : ""),
     );
 

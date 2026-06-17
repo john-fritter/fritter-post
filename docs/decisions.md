@@ -1879,3 +1879,66 @@ per-stage config). "Use the library for the boring part, write our own
 for the project-specific part."
 
 ---
+
+## 2026-06-17 — Cross-language clustering via English-space embedding
+
+**Decision:** Non-English items are translated to English at the preprocessor
+and the translation is stored alongside the original. The grouping stage
+embeds the English text rather than the original. All other stages (display,
+scoring, the editor, the paper) continue to read the original title and body.
+
+**Problem:** Two sources covering the same event in different languages
+(e.g. Le Monde in French, AP in English) produced embeddings far apart in
+the vector space and therefore never clustered together, even when the
+stories were identical in substance.
+
+**Approach:**
+
+- **Per-item language detection** using `franc-min` (trigram-based,
+  covers CJK and distinguishes English from Latin-script European languages).
+  Non-Latin scripts are detected by Unicode range as a fast path; for
+  Latin-script text, franc's ISO 639-3 code is used (`eng` = English,
+  `und` with only ASCII = treated conservatively as English, anything else
+  = non-English).
+
+- **Per-item translation** of title + body[:2000] with
+  `Qwen/Qwen3.6-35B-A3B` via nanogpt, thinking/reasoning off (mechanical
+  translation, not editorial judgment). Two separate LLM calls per
+  non-English item (title and body) for clean, parseable output. Stored
+  in `preprocessed_items.english_title` and `.english_body` (migration 028).
+
+- **Copy-through for English items:** `english_title = title`,
+  `english_body = body_text` — downstream code reads `english_*` uniformly,
+  no branching.
+
+- **Idempotency:** `english_title IS NOT NULL` check in `buildEnglishFields`
+  skips translation if the fields are already populated. Grouping re-runs are
+  free because the translated text is already stored in the DB.
+
+- **Translation failure fallback:** on any LLM error, the original text is
+  copied into `english_*` (item never lost — it just clusters within its own
+  language as before). A per-run failure count is logged; crashes are never
+  propagated over a single item.
+
+- **Grouping step 1** builds body embed text from
+  `english_title + english_body[:2000]` and title embed from `english_title`,
+  with null-safe fallback to `title`/`body_text` for rows predating migration
+  028.
+
+- **similarity_threshold retained at 0.66.** Translating to one English space
+  shifts the similarity distribution in an unknown direction for this feed
+  mix. The step-2 log now reports `pairs_above_threshold` so the first real
+  run will show whether 0.66 needs adjustment.
+
+**Alternatives considered:**
+
+- Source-level language tagging: rejected because some sources publish in
+  multiple languages (mixed feeds), and per-item detection is more accurate.
+- Multilingual embedding model (e.g. LaBSE): would require replacing the
+  existing 4096-dim Qwen3-Embedding-8B infrastructure and retuning the
+  similarity threshold. The translation approach reuses all existing
+  infrastructure and keeps the embedding space purely English.
+- Translating at grouping time: would re-translate on every grouping re-run.
+  Storing translations in the preprocessor makes re-runs cheap.
+
+---

@@ -1,9 +1,11 @@
 import "dotenv/config";
+import pLimit from "p-limit";
 import { convert, type HtmlToTextOptions } from "html-to-text";
 import { loadSources } from "../../config/sources.js";
 import { loadModelConfig } from "../../config/models.js";
 import { getPool } from "../../db/index.js";
 import { canonicalizeUrl } from "./canonicalize.js";
+import { buildEnglishFields } from "./translation.js";
 
 export interface PreprocessorRun {
   id: number;
@@ -268,18 +270,47 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       }
     }
 
-    // 6. Bulk insert with a transaction.
+    // 6. Language detection + translation: build english_title / english_body for
+    //    every surviving item. English items are copied through; non-English items
+    //    are translated. Failures fall back to the original text so no item is lost.
+    const { translation: translationConfig } = loadModelConfig().preprocessor;
+    const translationLimit = pLimit(translationConfig.concurrency);
+    let translationFailures = 0;
+
+    const englishFields = await Promise.all(
+      finalSurviving.map((item) =>
+        translationLimit(async () => {
+          const fields = await buildEnglishFields(
+            { title: item.title, bodyText: item.bodyText },
+            translationConfig,
+            runId,
+          );
+          if (fields.failed) translationFailures++;
+          return fields;
+        }),
+      ),
+    );
+
+    if (translationFailures > 0) {
+      console.log(
+        `[preprocessor] translation failures: ${translationFailures} item(s) fell back to original-language embedding`,
+      );
+    }
+
+    // 7. Bulk insert with a transaction.
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
-      for (const item of finalSurviving) {
+      for (let i = 0; i < finalSurviving.length; i++) {
+        const item = finalSurviving[i]!;
+        const eng = englishFields[i]!;
         await client.query(
           `INSERT INTO preprocessed_items
              (preprocessor_run_id, raw_item_id, source_name, source_type, track, "group",
-              title, canonical_url, original_url, body_text,
+              title, canonical_url, original_url, body_text, english_title, english_body,
               published_at, fetched_at, also_appeared_in)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [
             runId,
             item.rawItemId,
@@ -291,6 +322,8 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
             item.canonicalUrl,
             item.originalUrl,
             item.bodyText,
+            eng.english_title,
+            eng.english_body,
             item.publishedAt,
             item.fetchedAt,
             item.alsoAppearedIn.length > 0 ? item.alsoAppearedIn.join(", ") : null,
