@@ -155,15 +155,12 @@ grouping:
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
     top_k: 10
-  # Attach pass: for each singleton anchor (processed in descending best title-sim
-  # order), generate candidate clusters and other singletons whose title-only
-  # cosine similarity to the anchor is >= candidate_floor, offer ALL of them to a
-  # cheap LLM, and confirm which cover the same news event. Two outcomes: attach
-  # anchor to an existing cluster, or pair two singletons into a new 2-item cluster.
-  # Sequential union-find ensures a consumed anchor/singleton is not reprocessed.
-  # Runs after connected-components, before describe. Attach-only; never splits.
-  # candidate_floor is the sole candidate filter — no per-anchor cap. Silently
-  # dropping a candidate above the floor could miss a genuine duplicate.
+  # Attach pass: concurrent rounds. Each round snapshots current state, builds
+  # candidates for all eligible anchors, runs all LLM calls concurrently under
+  # pLimit(concurrency), then applies merges deterministically (highest anchorBestSim
+  # wins a contested singleton). Cascade attach: clusters formed in round N are
+  # visible in round N+1. Rounds repeat until a round yields zero new merges.
+  # Attach-only; never splits. candidate_floor is the sole candidate filter.
   attach:
     enabled: true
     # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
@@ -175,6 +172,8 @@ grouping:
     provider: nanogpt
     temperature: 0.1
     max_tokens: 24000
+    # Governs actual in-flight LLM calls within each concurrent round. Must be > 1
+    # to get parallelism — the old sequential loop ignored this setting.
     concurrency: 10
     reasoning_effort: "xhigh"
     stream: true

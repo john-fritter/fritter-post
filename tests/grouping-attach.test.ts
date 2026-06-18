@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { buildAttachCandidates } from "../src/pipeline/grouping/index.js";
-import type { AttachCandidate } from "../src/pipeline/grouping/index.js";
+import { buildAttachCandidates, applyAttachRound } from "../src/pipeline/grouping/index.js";
+import type { AttachCandidate, AttachProposal } from "../src/pipeline/grouping/index.js";
 import type { Cluster } from "../src/lib/cluster.js";
 import type { PreprocessedItemRow } from "../src/pipeline/preprocessor/assembler.js";
 
@@ -272,6 +272,247 @@ function testClusterWithNoVectorsExcluded() {
   assert.equal(candidates.length, 0, "cluster with no member vectors should not appear");
 }
 
+// --- Test 10: contention resolution — higher-sim anchor wins a contested singleton ---
+//
+// Anchors A (anchorBestSim=0.9) and B (anchorBestSim=0.7) both propose to pair
+// with singleton C. A should win; C ends up with A; B remains as a singleton.
+
+function testContentionResolvesToHigherSimAnchor() {
+  const itemA = makeItem(1, "Iran launches missiles at Israel");
+  const itemB = makeItem(2, "Iran fires ballistic missiles");
+  const itemC = makeItem(3, "Iran missile attack overnight");
+  const itemById = new Map([
+    [1, itemA],
+    [2, itemB],
+    [3, itemC],
+  ]);
+
+  const currentClusters: Cluster[] = [];
+  const remainingSingletonIds = new Set([1, 2, 3]);
+
+  const proposals: AttachProposal[] = [
+    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [3] },
+    { anchorId: 2, anchorBestSim: 0.7, confirmedClusters: [], confirmedSingletonIds: [3] },
+  ];
+
+  const { attachedToCluster, newPairsFormed } = applyAttachRound(
+    proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+
+  assert.equal(newPairsFormed, 1, "one pair should form");
+  assert.equal(attachedToCluster, 0, "no attachments to existing clusters");
+  assert.equal(currentClusters.length, 1, "one cluster formed");
+  assert.ok(currentClusters[0]!.item_ids.includes(1), "A should be in the winning cluster");
+  assert.ok(currentClusters[0]!.item_ids.includes(3), "C should be in the winning cluster");
+  assert.ok(!currentClusters[0]!.item_ids.includes(2), "B should not be in the cluster");
+  assert.ok(remainingSingletonIds.has(2), "B remains a singleton after losing the contest");
+  assert.ok(!remainingSingletonIds.has(1), "A consumed");
+  assert.ok(!remainingSingletonIds.has(3), "C consumed by A");
+}
+
+// --- Test 11: cascade across rounds — C sees pair formed in round 1 ---
+//
+// Round 1 apply: A + B form a new cluster {A, B}.
+// Round 2 snapshot includes that cluster; C's buildAttachCandidates call sees it
+// and C attaches to it via a second applyAttachRound call.
+
+function testCascadeAcrossRounds() {
+  const vA = vecAt(0);
+  const vB = vecAt((5 * Math.PI) / 180);
+  const vC = vecAt((7 * Math.PI) / 180);
+
+  const titleVecs = new Map<number, number[]>([
+    [10, vA],
+    [11, vB],
+    [12, vC],
+  ]);
+
+  const itemA = makeItem(10, "Iran launches missiles at Israel");
+  const itemB = makeItem(11, "Iran fires ballistic missiles at Israeli territory");
+  const itemC = makeItem(12, "Iran missile attack overnight");
+  const itemById = new Map([
+    [10, itemA],
+    [11, itemB],
+    [12, itemC],
+  ]);
+
+  const currentClusters: Cluster[] = [];
+  const remainingSingletonIds = new Set([10, 11, 12]);
+
+  // --- Round 1: A and B form a pair ---
+  const round1Proposals: AttachProposal[] = [
+    {
+      anchorId: 10,
+      anchorBestSim: cosineSim(vA, vB),
+      confirmedClusters: [],
+      confirmedSingletonIds: [11],
+    },
+  ];
+  const { newPairsFormed: r1Pairs } = applyAttachRound(
+    round1Proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+  assert.equal(r1Pairs, 1, "round 1 should form one pair");
+  assert.equal(currentClusters.length, 1, "one cluster after round 1");
+  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11]);
+  assert.deepEqual([...remainingSingletonIds], [12], "only C remains after round 1");
+
+  // --- Round 2: C should see {A, B} as a cluster candidate ---
+  // Simulate what the round loop does: snapshot includes the new cluster.
+  const snapshotClusters = currentClusters.slice();
+  const availableForC = new Set(remainingSingletonIds);
+  availableForC.delete(12);
+
+  const candidatesForC = buildAttachCandidates(12, snapshotClusters, availableForC, titleVecs, 0.55);
+  const clusterCandidates = candidatesForC.filter((c) => c.type === "cluster");
+  assert.ok(
+    clusterCandidates.length >= 1,
+    "C should see the {A,B} cluster formed in round 1 as a candidate in round 2",
+  );
+
+  const cc = clusterCandidates[0] as Extract<AttachCandidate, { type: "cluster" }>;
+  const round2Proposals: AttachProposal[] = [
+    {
+      anchorId: 12,
+      anchorBestSim: cc.maxSim,
+      confirmedClusters: [{ clusterIdx: cc.clusterIdx, maxSim: cc.maxSim }],
+      confirmedSingletonIds: [],
+    },
+  ];
+  const { attachedToCluster: r2Attaches } = applyAttachRound(
+    round2Proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+  assert.equal(r2Attaches, 1, "C attaches to the {A,B} cluster in round 2");
+  assert.equal(remainingSingletonIds.size, 0, "no remaining singletons after cascade");
+  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11, 12], "cluster contains A, B, C");
+}
+
+// --- Test 12: empty LLM response yields no merge ---
+//
+// When a proposal has both confirmedClusters and confirmedSingletonIds empty
+// (representing an LLM response of "none" / empty text), applyAttachRound
+// produces no merge for that anchor and leaves it as a singleton.
+
+function testEmptyProposalYieldsNoMerge() {
+  const currentClusters: Cluster[] = [];
+  const remainingSingletonIds = new Set([1, 2, 3]);
+  const itemById = new Map<number, PreprocessedItemRow>([
+    [1, makeItem(1, "Item 1")],
+    [2, makeItem(2, "Item 2")],
+    [3, makeItem(3, "Item 3")],
+  ]);
+
+  const proposals: AttachProposal[] = [
+    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [] },
+    { anchorId: 2, anchorBestSim: 0.8, confirmedClusters: [], confirmedSingletonIds: [] },
+  ];
+
+  const { attachedToCluster, newPairsFormed } = applyAttachRound(
+    proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+
+  assert.equal(attachedToCluster, 0, "no attaches from empty proposals");
+  assert.equal(newPairsFormed, 0, "no pairs from empty proposals");
+  assert.equal(currentClusters.length, 0, "no clusters formed");
+  assert.equal(remainingSingletonIds.size, 3, "all singletons remain");
+}
+
+// --- Test 13: no-contention equivalence — concurrent rounds match sequential result ---
+//
+// Three disjoint pairs (A↔D, B↔E, C↔F) where cross-pair sims are all below the
+// floor. All six proposals fire in one round with no contention; the result must
+// match what sequential processing would produce: three separate 2-item clusters.
+
+function testNoContentionEquivalence() {
+  // A=0°, D=2°, B=60°, E=62°, C=120°, F=122°
+  // Within-pair cos ≈ 0.9994; across-group cos ≤ cos(58°) ≈ 0.53 — below 0.55 floor.
+  const vA = vecAt(0);
+  const vD = vecAt((2 * Math.PI) / 180);
+  const vB = vecAt((60 * Math.PI) / 180);
+  const vE = vecAt((62 * Math.PI) / 180);
+  const vC = vecAt((120 * Math.PI) / 180);
+  const vF = vecAt((122 * Math.PI) / 180);
+
+  const titleVecs = new Map<number, number[]>([
+    [1, vA],
+    [2, vD],
+    [3, vB],
+    [4, vE],
+    [5, vC],
+    [6, vF],
+  ]);
+
+  const floor = 0.55;
+  assert.ok(cosineSim(vA, vD) >= floor, "A-D within floor");
+  assert.ok(cosineSim(vB, vE) >= floor, "B-E within floor");
+  assert.ok(cosineSim(vC, vF) >= floor, "C-F within floor");
+  assert.ok(cosineSim(vA, vB) < floor, "A-B cross-pair below floor");
+  assert.ok(cosineSim(vA, vC) < floor, "A-C cross-pair below floor");
+  assert.ok(cosineSim(vB, vC) < floor, "B-C cross-pair below floor");
+
+  const itemById = new Map<number, PreprocessedItemRow>([
+    [1, makeItem(1, "Item 1")],
+    [2, makeItem(2, "Item 2")],
+    [3, makeItem(3, "Item 3")],
+    [4, makeItem(4, "Item 4")],
+    [5, makeItem(5, "Item 5")],
+    [6, makeItem(6, "Item 6")],
+  ]);
+
+  const singletonIds = new Set([1, 2, 3, 4, 5, 6]);
+  const clusters: Cluster[] = [];
+
+  // Simulate one concurrent round: all 6 anchors build from same snapshot.
+  const proposals: AttachProposal[] = [];
+  for (const anchorId of [1, 2, 3, 4, 5, 6]) {
+    const anchorVec = titleVecs.get(anchorId)!;
+    const available = new Set(singletonIds);
+    available.delete(anchorId);
+    const candidates = buildAttachCandidates(anchorId, clusters, available, titleVecs, floor);
+    if (candidates.length === 0) continue;
+
+    // Compute bestSim (max over all others).
+    let bestSim = 0;
+    for (const otherId of singletonIds) {
+      if (otherId === anchorId) continue;
+      const ov = titleVecs.get(otherId)!;
+      const s = cosineSim(anchorVec, ov);
+      if (s > bestSim) bestSim = s;
+    }
+
+    // Mock LLM: confirm the top singleton candidate (only one exists per anchor above the floor).
+    const topCand = candidates[0];
+    if (topCand && topCand.type === "singleton") {
+      proposals.push({
+        anchorId,
+        anchorBestSim: bestSim,
+        confirmedClusters: [],
+        confirmedSingletonIds: [topCand.id],
+      });
+    }
+  }
+
+  const { newPairsFormed } = applyAttachRound(proposals, clusters, singletonIds, itemById);
+
+  assert.equal(newPairsFormed, 3, "3 disjoint pairs should form with no contention");
+  assert.equal(clusters.length, 3, "3 clusters");
+  assert.equal(singletonIds.size, 0, "no remaining singletons");
+
+  const allPaired = clusters.flatMap((c) => c.item_ids).sort((a, b) => a - b);
+  assert.deepEqual(allPaired, [1, 2, 3, 4, 5, 6], "all 6 items are paired");
+}
+
 // --- Run all tests ---
 
 testSingletonAboveFloorIsCandidate();
@@ -283,5 +524,9 @@ testCandidatesAreSortedBySim();
 testSingletonPairingAndCascadeAttach();
 testAnchorWithNoVectorSkipped();
 testClusterWithNoVectorsExcluded();
+testContentionResolvesToHigherSimAnchor();
+testCascadeAcrossRounds();
+testEmptyProposalYieldsNoMerge();
+testNoContentionEquivalence();
 
 console.log("grouping attach tests passed");

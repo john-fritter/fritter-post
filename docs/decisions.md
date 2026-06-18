@@ -20,6 +20,20 @@ Entry format:
 
 ---
 
+## 2026-06-18 — Attach pass parallelized via concurrent rounds with deterministic post-round apply
+
+**Decision:** Replace the sequential per-anchor loop in `attachSingletons` with concurrent rounds. Each round: (1) snapshot current state (`remainingSingletonIds`, `currentClusters`); (2) compute `anchorBestSim` for all remaining singletons against the snapshot; (3) build candidate lists for all eligible anchors from the snapshot (existing `buildAttachCandidates` logic, `candidate_floor`, no top-k cap — unchanged); (4) run all LLM calls concurrently under `pLimit(config.concurrency)` + `Promise.all` — no state mutation during the round; (5) apply proposed merges deterministically: sort by `anchorBestSim` desc, apply via union-find, skip any anchor or target singleton already consumed by an earlier-applied (higher-sim) merge this round. Newly-formed clusters become valid targets in the **next** round — cascade attach is preserved. Rounds repeat until a round yields zero new attaches and zero new pairs. `applyAttachRound` is exported as a pure function (modulo in-place mutation of the passed arrays) for unit testing.
+
+`grouping.attach.concurrency` (already 10 in `models.yaml`) now governs actual in-flight LLM calls; the old sequential loop held parallelism at 1 regardless of this setting. The comment on the `concurrency` key in `models.yaml` is updated accordingly.
+
+**Context:** With ~520 eligible anchors on a full day and ~12s per LLM call (glm-5.1:thinking at xhigh reasoning effort), the sequential loop produced ~99 minutes of wall time. The serialization was required for correctness in the original design (each anchor's candidates depended on which singletons were already consumed), but the dependency only matters at round granularity, not call granularity: within a round, all anchors build candidates from the same snapshot, making their calls fully independent.
+
+**Rationale:** Concurrent calls within a round recover the throughput lost to sequentialization without breaking correctness. The deterministic post-round apply (highest `anchorBestSim` wins a contested singleton) is equivalent to the sequential approach for the common no-contention case, and produces a principled, reproducible result in the contention case. The sequential loop was the sole cause of the ~99-min runtime — embedding and graph density were not factors.
+
+**Supersedes:** The "sequential union-find" description in "Grouping attach pass reworked: title-only embeddings + singleton↔singleton pairing" (2026-06-16), which described processing anchors serially in descending best-sim order. The round-based approach replaces the serial loop; cascade and correctness guarantees are preserved.
+
+---
+
 ## 2026-06-18 — Preprocessor: opt-in flag to skip cross-run dedup for repeatable testing
 
 **Decision:** Added `--skip-cross-run-dedup` (default `false`) to `scripts/preprocess.ts` and `runPreprocessor()`. When `true`, the cross-run dedup block is bypassed entirely — `freshCandidates` is set directly to `candidates` without querying `preprocessed_items` history. Within-batch dedup (same source+URL collapse) always runs regardless of the flag. The flag triggers a loud console warning banner at run start, is recorded as `cross_run_dedup_skipped BOOLEAN` on the `preprocessor_runs` row (migration 029), and is shown in the end-of-run summary. Pure helpers (`normalizeTitle`, `buildCrossRunKeys`, `isCrossRunDuplicate`) extracted to `src/pipeline/preprocessor/dedup.ts` for testability without a DB connection.
