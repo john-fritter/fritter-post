@@ -20,6 +20,16 @@ Entry format:
 
 ---
 
+## 2026-06-18 — Preprocessor: opt-in flag to skip cross-run dedup for repeatable testing
+
+**Decision:** Added `--skip-cross-run-dedup` (default `false`) to `scripts/preprocess.ts` and `runPreprocessor()`. When `true`, the cross-run dedup block is bypassed entirely — `freshCandidates` is set directly to `candidates` without querying `preprocessed_items` history. Within-batch dedup (same source+URL collapse) always runs regardless of the flag. The flag triggers a loud console warning banner at run start, is recorded as `cross_run_dedup_skipped BOOLEAN` on the `preprocessor_runs` row (migration 029), and is shown in the end-of-run summary. Pure helpers (`normalizeTitle`, `buildCrossRunKeys`, `isCrossRunDuplicate`) extracted to `src/pipeline/preprocessor/dedup.ts` for testability without a DB connection.
+
+**Context:** Cross-run dedup is correct production behaviour — the same article must not appear in two consecutive papers. But it makes the preprocessor non-idempotent: running it twice on the same day's data produces near-empty output on the second run, which makes testing the downstream stages (prefilter, grouping, editor) against today's articles impossible without collecting a fresh batch first.
+
+**Rationale:** A boolean flag with a safe default keeps the production path unchanged. Recording it on the DB row provides an audit trail so it's clear which preprocessor runs seeded the downstream stages with duplicate-suppression off. Extracting the three pure dedup helpers lets the test file import them directly without a DB dependency, keeping the test lightweight and fast.
+
+---
+
 ## 2026-06-18 — Preprocessor input window: fixed 24h on fetched_at, retire previous-run anchor
 
 **Decision:** Replace the preprocessor's previous-run anchor with a fixed `window_hours` window (default 24) on `raw_items.fetched_at`. Every run now selects items fetched in the last 24 hours regardless of how recently the prior run completed. The cross-run dedup block (lookback_days) is retained unchanged: same-day re-runs return near-empty by design because already-processed stories are suppressed, not because the input window shrank. At run start, log `[preprocessor] window: <start> → <end> (<n> raw items selected)`; warn loudly if n=0. The `max_age_days` published_at backstop is unchanged. The config field is renamed from `fallback_hours` (a fallback for the first run) to `window_hours` (the actual window size, always applied).

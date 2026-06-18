@@ -6,6 +6,7 @@ import { getPool } from "../../db/index.js";
 import { canonicalizeUrl } from "./canonicalize.js";
 import { batchTranslateItems } from "./translation.js";
 import { computeWindowStart } from "./window.js";
+import { normalizeTitle, buildCrossRunKeys, isCrossRunDuplicate } from "./dedup.js";
 
 export interface PreprocessorRun {
   id: number;
@@ -18,6 +19,7 @@ export interface PreprocessorRun {
   itemsDroppedDuplicate: number;
   itemsDroppedParentDedup: number;
   itemsDroppedCrossRun: number;
+  crossRunDedupSkipped: boolean;
   notes: string | null;
 }
 
@@ -48,11 +50,7 @@ function stripHtml(raw: string | null): string | null {
   return text.length > 0 ? text : null;
 }
 
-function normalizeTitle(t: string): string {
-  return t.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-export async function runPreprocessor(options: { collectorRunId?: number } = {}): Promise<PreprocessorRun> {
+export async function runPreprocessor(options: { collectorRunId?: number; skipCrossRunDedup?: boolean } = {}): Promise<PreprocessorRun> {
   const pool = getPool();
 
   // Build source-type, source-parent, source-track, and source-group lookup
@@ -68,12 +66,20 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
     groupMap.set(source.name, source.group);
   }
 
+  const skipCrossRunDedup = options.skipCrossRunDedup ?? false;
+
+  if (skipCrossRunDedup) {
+    console.warn(
+      "[preprocessor] CROSS-RUN DEDUP DISABLED — testing mode, not for production",
+    );
+  }
+
   // Create the run record.
   const { rows: runRows } = await pool.query<{ id: number }>(
-    `INSERT INTO preprocessor_runs (started_at, collector_run_id)
-     VALUES (NOW(), $1)
+    `INSERT INTO preprocessor_runs (started_at, collector_run_id, cross_run_dedup_skipped)
+     VALUES (NOW(), $1, $2)
      RETURNING id`,
-    [options.collectorRunId ?? null]
+    [options.collectorRunId ?? null, skipCrossRunDedup]
   );
   const runId = runRows[0]!.id;
 
@@ -164,44 +170,42 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
     //     distinctive enough for a title match. Exact-URL repeats match
     //     regardless of title length. Reworded-headline dupes are left to the
     //     downstream grouping + pile-merge semantic layer.
-    const { rows: historyRows } = await pool.query<{
-      source_name: string;
-      canonical_url: string;
-      title: string;
-    }>(
-      `SELECT source_name, canonical_url, title
-       FROM preprocessed_items
-       WHERE created_at >= NOW() - ($1::int || ' days')::interval`,
-      [dedup.lookback_days]
-    );
-
-    const historyUrlKeys = new Set<string>();   // `${source_name}::${canonical_url}` and `${parent}::${canonical_url}`
-    const historyTitleKeys = new Set<string>(); // `${parent}::${normalized_title}`
-    for (const h of historyRows) {
-      const parent = parentMap.get(h.source_name) ?? h.source_name;
-      historyUrlKeys.add(`${h.source_name}::${h.canonical_url}`);
-      historyUrlKeys.add(`${parent}::${h.canonical_url}`);
-      const nt = normalizeTitle(h.title);
-      if (nt.length >= 30) historyTitleKeys.add(`${parent}::${nt}`);
-    }
-
+    //
+    //     skipCrossRunDedup bypasses this entire step for repeatable testing on
+    //     the same day's data. It is always off in production and is recorded on
+    //     the run row for audit.
     let droppedCrossRun = 0;
-    const freshCandidates = candidates.filter((item) => {
-      const parent = parentMap.get(item.sourceName) ?? item.sourceName;
-      const nt = normalizeTitle(item.title);
-      const seenBefore =
-        historyUrlKeys.has(`${item.sourceName}::${item.canonicalUrl}`) ||
-        historyUrlKeys.has(`${parent}::${item.canonicalUrl}`) ||
-        (nt.length >= 30 && historyTitleKeys.has(`${parent}::${nt}`));
-      if (seenBefore) {
-        console.log(
-          `[preprocessor] cross-run dedup: dropped "${item.sourceName}" | already processed within ${dedup.lookback_days}d | "${item.title}"`
-        );
-        droppedCrossRun++;
-        return false;
-      }
-      return true;
-    });
+    let freshCandidates: typeof candidates;
+
+    if (skipCrossRunDedup) {
+      freshCandidates = candidates;
+    } else {
+      const { rows: historyRows } = await pool.query<{
+        source_name: string;
+        canonical_url: string;
+        title: string;
+      }>(
+        `SELECT source_name, canonical_url, title
+         FROM preprocessed_items
+         WHERE created_at >= NOW() - ($1::int || ' days')::interval`,
+        [dedup.lookback_days]
+      );
+
+      const getParent = (s: string) => parentMap.get(s) ?? s;
+      const historyKeys = buildCrossRunKeys(historyRows, getParent);
+
+      freshCandidates = candidates.filter((item) => {
+        const seenBefore = isCrossRunDuplicate(item, historyKeys, getParent);
+        if (seenBefore) {
+          console.log(
+            `[preprocessor] cross-run dedup: dropped "${item.sourceName}" | already processed within ${dedup.lookback_days}d | "${item.title}"`,
+          );
+          droppedCrossRun++;
+          return false;
+        }
+        return true;
+      });
+    }
 
     // 4. Deduplication: within same source_name, keep earliest by published_at / fetched_at.
     // Cross-source duplicates are kept (signal for clustering).
@@ -351,11 +355,13 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       client.release();
     }
 
-    // Log news/analysis split so routing is verifiable.
+    // Log news/analysis split and cross-run dedup bypass state.
     const newsCount = finalSurviving.filter((i) => i.track === "news").length;
     const analysisCount = finalSurviving.filter((i) => i.track === "analysis").length;
+    const crossRunNote = skipCrossRunDedup ? " [cross-run dedup SKIPPED]" : "";
     console.log(
-      `[preprocessor] track split: ${newsCount} news, ${analysisCount} analysis (of ${finalSurviving.length} kept)`
+      `[preprocessor] track split: ${newsCount} news, ${analysisCount} analysis ` +
+      `(of ${finalSurviving.length} kept)${crossRunNote}`,
     );
 
     // Finalize the run record.
@@ -383,6 +389,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       items_dropped_duplicate: number;
       items_dropped_parent_dedup: number;
       items_dropped_cross_run: number;
+      cross_run_dedup_skipped: boolean;
       notes: string | null;
     }>("SELECT * FROM preprocessor_runs WHERE id = $1", [runId]);
 
@@ -398,6 +405,7 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
       itemsDroppedDuplicate: r.items_dropped_duplicate,
       itemsDroppedParentDedup: r.items_dropped_parent_dedup,
       itemsDroppedCrossRun: r.items_dropped_cross_run,
+      crossRunDedupSkipped: r.cross_run_dedup_skipped,
       notes: r.notes,
     };
   } catch (err) {

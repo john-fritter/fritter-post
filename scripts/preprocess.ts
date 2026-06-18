@@ -40,18 +40,26 @@ async function main() {
     process.exit(1);
   }
 
+  const skipCrossRunDedup = flags["skip-cross-run-dedup"] === "true";
+
   console.log("Starting preprocessor…");
   if (collectorRunId !== undefined) {
     console.log(`  collector-run-id: ${collectorRunId}`);
   }
+  if (skipCrossRunDedup) {
+    console.log(`  skip-cross-run-dedup: true`);
+  }
 
-  const run = await runPreprocessor({ collectorRunId });
+  const run = await runPreprocessor({ collectorRunId, skipCrossRunDedup });
 
   console.log(`\nPreprocessor run #${run.id} complete.`);
   console.log(`  Raw items considered:   ${run.rawItemsConsidered}`);
   console.log(`  Items kept:             ${run.itemsKept}`);
   console.log(`  Dropped (recency):      ${run.itemsDroppedRecency}`);
   console.log(`  Dropped (duplicate):    ${run.itemsDroppedDuplicate}`);
+  if (run.crossRunDedupSkipped) {
+    console.log(`  Cross-run dedup:        SKIPPED (testing mode)`);
+  }
   if (run.notes) console.log(`  Notes: ${run.notes}`);
 
   process.exit(0);
