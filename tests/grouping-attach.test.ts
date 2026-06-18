@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { buildAttachCandidates, applyAttachRound } from "../src/pipeline/grouping/index.js";
+import {
+  buildAttachCandidates,
+  applyAttachRound,
+  computeNextDirty,
+} from "../src/pipeline/grouping/index.js";
 import type { AttachCandidate, AttachProposal } from "../src/pipeline/grouping/index.js";
 import type { Cluster } from "../src/lib/cluster.js";
 import type { PreprocessedItemRow } from "../src/pipeline/preprocessor/assembler.js";
@@ -513,6 +517,142 @@ function testNoContentionEquivalence() {
   assert.deepEqual(allPaired, [1, 2, 3, 4, 5, 6], "all 6 items are paired");
 }
 
+// --- Test 14: dirty tracking excludes unrelated anchors ---
+//
+// After A (1) and B (2) pair in round 1, C (3) and D (4) — which are far from A and B —
+// must NOT appear in nextDirty. Their candidate sets are unchanged; re-judging them
+// would be wasteful and produce the same "none" as round 1.
+
+function testDirtyTrackingExcludesUnrelatedAnchor() {
+  // A=0°, B=2° (close); C=90°, D=92° (far from A/B)
+  const vA = vecAt(0);
+  const vB = vecAt((2 * Math.PI) / 180);
+  const vC = vecAt((90 * Math.PI) / 180);
+  const vD = vecAt((92 * Math.PI) / 180);
+
+  const floor = 0.55;
+  assert.ok(cosineSim(vA, vB) >= floor, "A-B above floor");
+  assert.ok(cosineSim(vA, vC) < floor, "A-C below floor");
+  assert.ok(cosineSim(vA, vD) < floor, "A-D below floor");
+  assert.ok(cosineSim(vB, vC) < floor, "B-C below floor");
+  assert.ok(cosineSim(vB, vD) < floor, "B-D below floor");
+
+  const titleVecs = new Map<number, number[]>([
+    [1, vA],
+    [2, vB],
+    [3, vC],
+    [4, vD],
+  ]);
+
+  // Round 1 result: A (1) and B (2) paired → changedMemberIds = {1, 2}.
+  // C (3) and D (4) remain as singletons.
+  const changedMemberIds = new Set([1, 2]);
+  const remainingSingletonIds = new Set([3, 4]);
+
+  const nextDirty = computeNextDirty(remainingSingletonIds, changedMemberIds, titleVecs, floor);
+
+  assert.equal(nextDirty.size, 0, "C and D are not near changed members; nextDirty should be empty");
+  assert.ok(!nextDirty.has(3), "C should not be dirty");
+  assert.ok(!nextDirty.has(4), "D should not be dirty");
+}
+
+// --- Test 15: dirty tracking includes cascade anchor ---
+//
+// After A (10) and B (11) pair in round 1, C (12) — which IS near A and B —
+// must appear in nextDirty so it can attach to the new cluster in round 2.
+
+function testDirtyTrackingIncludesCascadeAnchor() {
+  const vA = vecAt(0);
+  const vB = vecAt((5 * Math.PI) / 180);
+  const vC = vecAt((7 * Math.PI) / 180);
+
+  const floor = 0.55;
+  assert.ok(cosineSim(vA, vC) >= floor, "A-C above floor");
+  assert.ok(cosineSim(vB, vC) >= floor, "B-C above floor");
+
+  const titleVecs = new Map<number, number[]>([
+    [10, vA],
+    [11, vB],
+    [12, vC],
+  ]);
+
+  const changedMemberIds = new Set([10, 11]); // A and B paired in round 1
+  const remainingSingletonIds = new Set([12]); // C remains
+
+  const nextDirty = computeNextDirty(remainingSingletonIds, changedMemberIds, titleVecs, floor);
+
+  assert.ok(nextDirty.has(12), "C should be dirty — it's near the newly formed {A, B} cluster");
+  assert.equal(nextDirty.size, 1, "only C should be dirty");
+}
+
+// --- Test 16: applyAttachRound returns correct changedMemberIds ---
+//
+// A (1) pairs with B (2). changedMemberIds must contain both 1 and 2.
+
+function testApplyAttachRoundReturnsChangedMemberIds() {
+  const itemA = makeItem(1, "Item A");
+  const itemB = makeItem(2, "Item B");
+  const itemById = new Map([
+    [1, itemA],
+    [2, itemB],
+  ]);
+
+  const currentClusters: Cluster[] = [];
+  const remainingSingletonIds = new Set([1, 2]);
+
+  const proposals: AttachProposal[] = [
+    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [2] },
+  ];
+
+  const { newPairsFormed, changedMemberIds } = applyAttachRound(
+    proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+
+  assert.equal(newPairsFormed, 1, "one pair formed");
+  assert.ok(changedMemberIds.has(1), "A in changedMemberIds");
+  assert.ok(changedMemberIds.has(2), "B in changedMemberIds");
+  assert.equal(changedMemberIds.size, 2, "exactly two changed members");
+}
+
+// --- Test 17: rejected proposal anchor absent from changedMemberIds ---
+//
+// A (bestSim=0.9) and B (bestSim=0.7) both propose C. A wins; B's proposal is
+// rejected by contention. Only A and C should be in changedMemberIds — not B.
+
+function testApplyAttachRoundChangedMemberIdsExcludesRejected() {
+  const itemA = makeItem(1, "Item A");
+  const itemB = makeItem(2, "Item B");
+  const itemC = makeItem(3, "Item C");
+  const itemById = new Map([
+    [1, itemA],
+    [2, itemB],
+    [3, itemC],
+  ]);
+
+  const currentClusters: Cluster[] = [];
+  const remainingSingletonIds = new Set([1, 2, 3]);
+
+  const proposals: AttachProposal[] = [
+    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [3] },
+    { anchorId: 2, anchorBestSim: 0.7, confirmedClusters: [], confirmedSingletonIds: [3] },
+  ];
+
+  const { changedMemberIds } = applyAttachRound(
+    proposals,
+    currentClusters,
+    remainingSingletonIds,
+    itemById,
+  );
+
+  assert.ok(changedMemberIds.has(1), "A (winner) in changedMemberIds");
+  assert.ok(changedMemberIds.has(3), "C (contested, won by A) in changedMemberIds");
+  assert.ok(!changedMemberIds.has(2), "B (loser) must NOT be in changedMemberIds");
+  assert.equal(changedMemberIds.size, 2, "exactly two changed members");
+}
+
 // --- Run all tests ---
 
 testSingletonAboveFloorIsCandidate();
@@ -528,5 +668,9 @@ testContentionResolvesToHigherSimAnchor();
 testCascadeAcrossRounds();
 testEmptyProposalYieldsNoMerge();
 testNoContentionEquivalence();
+testDirtyTrackingExcludesUnrelatedAnchor();
+testDirtyTrackingIncludesCascadeAnchor();
+testApplyAttachRoundReturnsChangedMemberIds();
+testApplyAttachRoundChangedMemberIdsExcludesRejected();
 
 console.log("grouping attach tests passed");

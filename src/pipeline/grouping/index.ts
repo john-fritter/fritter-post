@@ -185,16 +185,19 @@ export type AttachProposal = {
 // Exported for testing: apply one round's proposals in descending anchorBestSim order.
 // Contested singletons go to the higher-bestSim anchor. Mutates currentClusters
 // (appends new clusters, updates existing ones) and remainingSingletonIds in place.
+// Returns changedMemberIds: all item_ids of every cluster that grew or was newly formed
+// this round — used by computeNextDirty to determine which anchors need re-judging.
 export function applyAttachRound(
   proposals: AttachProposal[],
   currentClusters: Cluster[],
   remainingSingletonIds: Set<number>,
   itemById: Map<number, PreprocessedItemRow>,
-): { attachedToCluster: number; newPairsFormed: number } {
+): { attachedToCluster: number; newPairsFormed: number; changedMemberIds: Set<number> } {
   const sorted = [...proposals].sort((a, b) => b.anchorBestSim - a.anchorBestSim);
   const consumedThisRound = new Set<number>();
   let attachedToCluster = 0;
   let newPairsFormed = 0;
+  const changedMemberIds = new Set<number>();
 
   for (const { anchorId, confirmedClusters, confirmedSingletonIds } of sorted) {
     if (!remainingSingletonIds.has(anchorId) || consumedThisRound.has(anchorId)) continue;
@@ -208,7 +211,9 @@ export function applyAttachRound(
       const bestIdx = confirmedClusters[0]!.clusterIdx;
       const target = currentClusters[bestIdx]!;
       const toAdd = [anchorId, ...validSingletons];
-      currentClusters[bestIdx] = { ...target, item_ids: [...target.item_ids, ...toAdd] };
+      const updated = { ...target, item_ids: [...target.item_ids, ...toAdd] };
+      currentClusters[bestIdx] = updated;
+      for (const id of updated.item_ids) changedMemberIds.add(id);
       for (const id of toAdd) {
         remainingSingletonIds.delete(id);
         consumedThisRound.add(id);
@@ -219,7 +224,9 @@ export function applyAttachRound(
       const groupItems = newMembers
         .map((id) => itemById.get(id))
         .filter((i): i is PreprocessedItemRow => i !== undefined);
-      currentClusters.push(buildAutoCluster(groupItems));
+      const newCluster = buildAutoCluster(groupItems);
+      currentClusters.push(newCluster);
+      for (const id of newCluster.item_ids) changedMemberIds.add(id);
       for (const id of newMembers) {
         remainingSingletonIds.delete(id);
         consumedThisRound.add(id);
@@ -228,7 +235,34 @@ export function applyAttachRound(
     }
   }
 
-  return { attachedToCluster, newPairsFormed };
+  return { attachedToCluster, newPairsFormed, changedMemberIds };
+}
+
+// Exported for testing: compute the set of remaining singletons whose candidate set
+// may have grown due to cluster changes this round. Only singletons within
+// candidateFloor of at least one changedMemberId can have gained a new candidate;
+// all others returned "none" against an unchanged set and need not be re-judged.
+export function computeNextDirty(
+  remainingSingletonIds: ReadonlySet<number>,
+  changedMemberIds: ReadonlySet<number>,
+  titleNormalizedVectors: ReadonlyMap<number, number[]>,
+  candidateFloor: number,
+): Set<number> {
+  if (changedMemberIds.size === 0) return new Set();
+  const dirty = new Set<number>();
+  for (const singId of remainingSingletonIds) {
+    const singVec = titleNormalizedVectors.get(singId);
+    if (!singVec) continue;
+    for (const memberId of changedMemberIds) {
+      const memberVec = titleNormalizedVectors.get(memberId);
+      if (!memberVec) continue;
+      if (dotProduct(singVec, memberVec) >= candidateFloor) {
+        dirty.add(singId);
+        break;
+      }
+    }
+  }
+  return dirty;
 }
 
 // Concurrent-rounds attach pass: anchor-centric, title-embedding-based, covers both
@@ -275,18 +309,24 @@ async function attachSingletons(
   let roundNumber = 0;
   let totalLLMCalls = 0;
 
-  while (true) {
+  // Round 1: all singletons are dirty (full pass). Subsequent rounds: only singletons
+  // whose candidate set could have grown — those within candidateFloor of a cluster
+  // that changed last round. computeNextDirty populates this after each apply.
+  let dirtyAnchors = new Set(singletonIds);
+
+  while (dirtyAnchors.size > 0) {
     roundNumber++;
     const snapshotSingletonIds = new Set(remainingSingletonIds);
     const snapshotClusters = currentClusters.slice();
 
-    // Compute bestSim for each remaining singleton against the round snapshot.
-    // Used to filter eligible anchors and to sort proposals for conflict resolution.
+    // Only judge anchors in dirtyAnchors this round. bestSim is still computed
+    // against the full snapshot (all singletons + clusters) for accurate conflict resolution.
     const allSingletonIds = [...snapshotSingletonIds];
+    const dirtyAnchorsList = [...dirtyAnchors].filter((id) => snapshotSingletonIds.has(id));
     type AnchorInfo = { id: number; bestSim: number };
     const anchorInfos: AnchorInfo[] = [];
 
-    for (const anchorId of allSingletonIds) {
+    for (const anchorId of dirtyAnchorsList) {
       const anchorVec = titleNormalizedVectors.get(anchorId);
       if (!anchorVec) {
         anchorInfos.push({ id: anchorId, bestSim: 0 });
@@ -419,21 +459,28 @@ async function attachSingletons(
       .filter((r): r is LLMTaskResult => r !== null)
       .filter((r) => r.confirmedClusters.length > 0 || r.confirmedSingletonIds.length > 0);
 
-    const { attachedToCluster: roundAttached, newPairsFormed: roundPairs } = applyAttachRound(
-      proposals,
-      currentClusters,
-      remainingSingletonIds,
-      itemById,
-    );
+    const {
+      attachedToCluster: roundAttached,
+      newPairsFormed: roundPairs,
+      changedMemberIds,
+    } = applyAttachRound(proposals, currentClusters, remainingSingletonIds, itemById);
     totalAttachedToCluster += roundAttached;
     totalNewPairsFormed += roundPairs;
 
     console.log(
       `[grouping] attach round ${roundNumber}: llm_calls=${anchorTasks.length}, ` +
+        `dirty_anchors=${dirtyAnchorsList.length}, ` +
         `attaches=${roundAttached}, new_pairs=${roundPairs}`,
     );
 
     if (roundAttached === 0 && roundPairs === 0) break;
+
+    dirtyAnchors = computeNextDirty(
+      remainingSingletonIds,
+      changedMemberIds,
+      titleNormalizedVectors,
+      config.candidate_floor,
+    );
   }
 
   console.log(

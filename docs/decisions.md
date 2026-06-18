@@ -20,6 +20,18 @@ Entry format:
 
 ---
 
+## 2026-06-18 — Attach rounds: dirty-anchor tracking eliminates redundant re-judgments
+
+**Decision:** After each attach round, only re-judge singletons whose candidate set could have grown. `computeNextDirty` computes this set: for each remaining singleton, check its title-only cosine similarity against every item in `changedMemberIds` (the item_ids of every cluster that grew or was newly formed this round); if any cosine >= `candidate_floor`, the singleton is dirty. `dirtyAnchors` drives the outer loop — `while (dirtyAnchors.size > 0)` replaces `while (true)`. Round 1 is a full pass (all singletons dirty), matching the previous behavior exactly. Subsequent rounds judge only the dirty subset. `applyAttachRound` now returns `changedMemberIds` alongside `attachedToCluster` and `newPairsFormed`. `computeNextDirty` is exported as a pure function for unit testing. Per-round logging adds `dirty_anchors=<n>` so the shrinking pattern is visible.
+
+**Context:** The concurrent-rounds rewrite (see previous entry) recovered throughput but re-judged all ~520 eligible anchors every round — anchors that had returned "none" against an unchanged candidate set returned "none" again. On a full day with ~5 rounds, this produced ~2,500 total LLM calls instead of ~520, adding ~44 min of wall time and erasing most of the concurrency win.
+
+**Rationale:** An anchor's LLM verdict can only change if its candidate list changes. A candidate list changes only when a new cluster (or a cluster growth) brings a member within `candidate_floor` of the anchor. `computeNextDirty` checks only the newly changed members — O(remaining_singletons × changed_members) per round — not the full cross-product. Completeness is preserved: cascade anchors (singletons near newly formed clusters) are correctly included. Singletons that returned "none" in round 1 and are not near any changed member are never re-judged, converging the dirty set to empty in a couple of rounds. Total LLM calls ~ eligible count + small cascade tail (~520 + O(10)), not eligible × rounds.
+
+**Supersedes:** The "round loop repeating until a round produces zero new merges" termination condition described in the parallelization entry (2026-06-18 above), which re-judged all eligible anchors every round. The loop now terminates when `dirtyAnchors` is empty (which happens automatically when `changedMemberIds` is empty, i.e., no merges occurred).
+
+---
+
 ## 2026-06-18 — Attach pass parallelized via concurrent rounds with deterministic post-round apply
 
 **Decision:** Replace the sequential per-anchor loop in `attachSingletons` with concurrent rounds. Each round: (1) snapshot current state (`remainingSingletonIds`, `currentClusters`); (2) compute `anchorBestSim` for all remaining singletons against the snapshot; (3) build candidate lists for all eligible anchors from the snapshot (existing `buildAttachCandidates` logic, `candidate_floor`, no top-k cap — unchanged); (4) run all LLM calls concurrently under `pLimit(config.concurrency)` + `Promise.all` — no state mutation during the round; (5) apply proposed merges deterministically: sort by `anchorBestSim` desc, apply via union-find, skip any anchor or target singleton already consumed by an earlier-applied (higher-sim) merge this round. Newly-formed clusters become valid targets in the **next** round — cascade attach is preserved. Rounds repeat until a round yields zero new attaches and zero new pairs. `applyAttachRound` is exported as a pure function (modulo in-place mutation of the passed arrays) for unit testing.
