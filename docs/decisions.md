@@ -20,6 +20,19 @@ Entry format:
 
 ---
 
+## 2026-06-18 — Preprocessor input window: fixed 24h on fetched_at, retire previous-run anchor
+
+**Decision:** Replace the preprocessor's previous-run anchor with a fixed `window_hours` window (default 24) on `raw_items.fetched_at`. Every run now selects items fetched in the last 24 hours regardless of how recently the prior run completed. The cross-run dedup block (lookback_days) is retained unchanged: same-day re-runs return near-empty by design because already-processed stories are suppressed, not because the input window shrank. At run start, log `[preprocessor] window: <start> → <end> (<n> raw items selected)`; warn loudly if n=0. The `max_age_days` published_at backstop is unchanged. The config field is renamed from `fallback_hours` (a fallback for the first run) to `window_hours` (the actual window size, always applied).
+
+**Context:** The previous anchor design used the prior successful preprocessor run's `started_at` as the window start. On a pipeline that runs every few hours, the effective window would shrink to 2–4 hours, so only a few hundred items went forward instead of the full day's collection. On the first run or after a gap, `fallback_hours` (48h) applied. The shrinking window was the root cause of items from the early part of the day never reaching clustering.
+
+**Rationale:**
+- **Fixed window solves the shrinking problem.** A 24h window on `fetched_at` is independent of run cadence; every run sees the same day's items. Cross-run dedup still prevents double-processing.
+- **Replay-by-pinning considered and rejected.** An alternative was to accept an explicit `--window-start` flag for replays. Rejected as unnecessary: the cross-run dedup lookback handles re-runs naturally (already-processed items are suppressed), and the fixed window is simple enough that manual inspection or debugging doesn't need a separate replay mode.
+- **`fallback_hours` retired.** With a fixed window, the concept of a fallback for the first run is gone — the window is always `now() - window_hours`. The first run behaves the same as any other run.
+
+---
+
 ## 2026-06-17 — Preprocessor translation: batched JSONL calls with split-on-failure retry
 
 **Decision:** Replace the per-item translation design (2 LLM calls per non-English item — title then body) with a batched design: one LLM call covers both title and body for N items (default `translation_batch_size: 10`). Output is JSONL keyed by stable id. Alignment safety: any id missing from the output triggers a recursive split-on-failure — the missing subset is halved and each half is retried, down to a 1-item floor. A 1-item batch that still produces no output falls back to original text. 429/503 errors on any call are retried with exponential backoff + jitter (`callWithBackoff`, shared utility in `src/llm/backoff.ts`) before splitting. The same `callWithBackoff` wrapper is applied to prefilter batch calls.

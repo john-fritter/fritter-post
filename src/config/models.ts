@@ -23,7 +23,7 @@ const TranslationConfigSchema = z.object({
 // per-item translation config for non-English items.
 const PreprocessorConfigSchema = z.object({
   recency: z.object({
-    fallback_hours: z.number().int().positive(),
+    window_hours: z.number().int().positive(),
     max_age_days: z.number().int().positive().nullable(),
   }),
   dedup: z.object({

@@ -5,6 +5,7 @@ import { loadModelConfig } from "../../config/models.js";
 import { getPool } from "../../db/index.js";
 import { canonicalizeUrl } from "./canonicalize.js";
 import { batchTranslateItems } from "./translation.js";
+import { computeWindowStart } from "./window.js";
 
 export interface PreprocessorRun {
   id: number;
@@ -79,22 +80,12 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
   const { recency, dedup } = loadModelConfig().preprocessor;
 
   try {
-    // 1. Recency filter, keyed off the previous successful preprocessor run.
-    //    An item is in-window when its fetched_at ("first time we saw it") is at
-    //    or after that run's start — so each newly-seen item gets exactly one
-    //    eligibility window, and a lagging feed's late-surfaced (old-dated)
-    //    story still passes once because its fetched_at is recent.
-    const { rows: anchorRows } = await pool.query<{ started_at: string }>(
-      `SELECT started_at FROM preprocessor_runs
-       WHERE completed_at IS NOT NULL AND items_kept > 0 AND id <> $1
-       ORDER BY started_at DESC
-       LIMIT 1`,
-      [runId]
-    );
-    // First run / empty history: fall back to a fixed window to absorb backlog.
-    const anchor = anchorRows[0]
-      ? new Date(anchorRows[0].started_at)
-      : new Date(Date.now() - recency.fallback_hours * 60 * 60 * 1000);
+    // 1. Fixed recency window: select all raw_items fetched in the last window_hours.
+    //    The cross-run dedup block (step 3b) suppresses stories already processed in
+    //    recent runs, so same-day re-runs return near-empty by design without
+    //    shrinking the input window.
+    const windowStart = computeWindowStart(recency.window_hours);
+    const windowEnd = new Date();
 
     // Optional backstop: drop items whose published_at predates the window by
     // more than max_age_days, so a feed dumping its archive can't flood the
@@ -108,19 +99,30 @@ export async function runPreprocessor(options: { collectorRunId?: number } = {})
               OR published_at IS NULL
               OR published_at >= NOW() - ($2::int || ' days')::interval)
        ORDER BY COALESCE(published_at, fetched_at) ASC`,
-      [anchor, recency.max_age_days]
+      [windowStart, recency.max_age_days]
     );
 
     const totalConsidered = allRows.length > 0 ? parseInt(allRows[0]!.total_count, 10) : 0;
 
-    // Items older than the window (prior runs already considered them, or the
-    // backstop excluded them) are reported as dropped-by-recency for this run.
-    const { rows: totalRows } = await pool.query<{ n: string }>(
-      "SELECT COUNT(*) AS n FROM raw_items WHERE fetched_at >= $1",
-      [new Date(anchor.getTime() - recency.fallback_hours * 60 * 60 * 1000)]
+    console.log(
+      `[preprocessor] window: ${windowStart.toISOString()} → ${windowEnd.toISOString()} ` +
+      `(${totalConsidered} raw items selected)`,
     );
-    const recentTotal = parseInt(totalRows[0]?.n ?? "0", 10);
-    const droppedRecency = Math.max(recentTotal - totalConsidered, 0);
+    if (totalConsidered === 0) {
+      console.warn(
+        `[preprocessor] WARNING: 0 raw items in window ` +
+        `${windowStart.toISOString()} → ${windowEnd.toISOString()} — nothing to process`,
+      );
+    }
+
+    // droppedRecency = items within the fetched_at window that were dropped by the
+    // backstop (published_at too old — archive-dump items).
+    const { rows: windowRows } = await pool.query<{ n: string }>(
+      "SELECT COUNT(*) AS n FROM raw_items WHERE fetched_at >= $1",
+      [windowStart]
+    );
+    const windowTotal = parseInt(windowRows[0]?.n ?? "0", 10);
+    const droppedRecency = Math.max(windowTotal - totalConsidered, 0);
 
     // 2 & 3. HTML stripping and URL canonicalization.
     interface Candidate {

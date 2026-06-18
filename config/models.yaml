@@ -5,11 +5,11 @@
 # recency window and dedup lookback are configuration, not magic numbers.
 preprocessor:
   recency:
-    # Eligibility is keyed off the previous successful preprocessor run: an item
-    # is in-window when its fetched_at ("first time we saw it") is at or after
-    # that run's start. fallback_hours is the window used for the very first run
-    # or an empty history, sized to absorb the initial backlog.
-    fallback_hours: 48
+    # Fixed window on fetched_at: every run selects the last window_hours of
+    # raw_items regardless of prior run cadence. Cross-run dedup (lookback_days
+    # below) suppresses stories already processed, so same-day re-runs return
+    # near-empty by design without shrinking the input window.
+    window_hours: 24
     # Backstop against a feed dumping its archive as "new": items whose
     # published_at is older than this are dropped even if freshly fetched.
     # Kept generous so a legitimately lagging feed's late-surfaced story still
