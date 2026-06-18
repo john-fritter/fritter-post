@@ -9,6 +9,8 @@ export interface PreprocessedItemRow {
   group: string | null;
   title: string;
   body_text: string | null;
+  english_title: string | null;
+  english_body: string | null;
   published_at: string | null;
   fetched_at: string;
 }
@@ -65,7 +67,8 @@ export async function getClusteringItems(preprocessorRunId: number): Promise<Pre
   const pool = getPool();
 
   const { rows: items } = await pool.query<PreprocessedItemRow>(
-    `SELECT id, source_name, source_type, "group", title, body_text, published_at, fetched_at
+    `SELECT id, source_name, source_type, "group", title, body_text,
+            english_title, english_body, published_at, fetched_at
      FROM preprocessed_items
      WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY published_at ASC NULLS LAST, fetched_at ASC`,

@@ -5,11 +5,11 @@
 # recency window and dedup lookback are configuration, not magic numbers.
 preprocessor:
   recency:
-    # Eligibility is keyed off the previous successful preprocessor run: an item
-    # is in-window when its fetched_at ("first time we saw it") is at or after
-    # that run's start. fallback_hours is the window used for the very first run
-    # or an empty history, sized to absorb the initial backlog.
-    fallback_hours: 48
+    # Fixed window on fetched_at: every run selects the last window_hours of
+    # raw_items regardless of prior run cadence. Cross-run dedup (lookback_days
+    # below) suppresses stories already processed, so same-day re-runs return
+    # near-empty by design without shrinking the input window.
+    window_hours: 24
     # Backstop against a feed dumping its archive as "new": items whose
     # published_at is older than this are dropped even if freshly fetched.
     # Kept generous so a legitimately lagging feed's late-surfaced story still
@@ -20,6 +20,26 @@ preprocessor:
     # has been re-ingested under a new URL/guid (same canonical URL or
     # normalized title).
     lookback_days: 5
+  # Per-item translation of non-English title + body[:2000] to English so that
+  # all clustering happens in one embedding space. English items are copied
+  # through; translation failures fall back to the original text. Thinking/
+  # reasoning off: this is a mechanical translation task, not editorial judgment.
+  translation:
+    model: Qwen/Qwen3.6-35B-A3B
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 4096
+    reasoning_effort: "none"
+    stream: false
+    timeout_ms: 60000
+    # One LLM call per batch covers both title and body for all N items. Reduces
+    # total calls from 2×items to ceil(non_english/batch_size). Alignment safety
+    # via id-keyed JSONL output and recursive split-on-failure retry.
+    translation_batch_size: 10
+    concurrency: 10
+    # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
 
 filter:
   model: deepseek/deepseek-v4-flash  # NanoGPT model id (confirmed nano-gpt.com/models)

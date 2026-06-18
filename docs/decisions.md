@@ -20,6 +20,59 @@ Entry format:
 
 ---
 
+## 2026-06-18 — Preprocessor: opt-in flag to skip cross-run dedup for repeatable testing
+
+**Decision:** Added `--skip-cross-run-dedup` (default `false`) to `scripts/preprocess.ts` and `runPreprocessor()`. When `true`, the cross-run dedup block is bypassed entirely — `freshCandidates` is set directly to `candidates` without querying `preprocessed_items` history. Within-batch dedup (same source+URL collapse) always runs regardless of the flag. The flag triggers a loud console warning banner at run start, is recorded as `cross_run_dedup_skipped BOOLEAN` on the `preprocessor_runs` row (migration 029), and is shown in the end-of-run summary. Pure helpers (`normalizeTitle`, `buildCrossRunKeys`, `isCrossRunDuplicate`) extracted to `src/pipeline/preprocessor/dedup.ts` for testability without a DB connection.
+
+**Context:** Cross-run dedup is correct production behaviour — the same article must not appear in two consecutive papers. But it makes the preprocessor non-idempotent: running it twice on the same day's data produces near-empty output on the second run, which makes testing the downstream stages (prefilter, grouping, editor) against today's articles impossible without collecting a fresh batch first.
+
+**Rationale:** A boolean flag with a safe default keeps the production path unchanged. Recording it on the DB row provides an audit trail so it's clear which preprocessor runs seeded the downstream stages with duplicate-suppression off. Extracting the three pure dedup helpers lets the test file import them directly without a DB dependency, keeping the test lightweight and fast.
+
+---
+
+## 2026-06-18 — Preprocessor input window: fixed 24h on fetched_at, retire previous-run anchor
+
+**Decision:** Replace the preprocessor's previous-run anchor with a fixed `window_hours` window (default 24) on `raw_items.fetched_at`. Every run now selects items fetched in the last 24 hours regardless of how recently the prior run completed. The cross-run dedup block (lookback_days) is retained unchanged: same-day re-runs return near-empty by design because already-processed stories are suppressed, not because the input window shrank. At run start, log `[preprocessor] window: <start> → <end> (<n> raw items selected)`; warn loudly if n=0. The `max_age_days` published_at backstop is unchanged. The config field is renamed from `fallback_hours` (a fallback for the first run) to `window_hours` (the actual window size, always applied).
+
+**Context:** The previous anchor design used the prior successful preprocessor run's `started_at` as the window start. On a pipeline that runs every few hours, the effective window would shrink to 2–4 hours, so only a few hundred items went forward instead of the full day's collection. On the first run or after a gap, `fallback_hours` (48h) applied. The shrinking window was the root cause of items from the early part of the day never reaching clustering.
+
+**Rationale:**
+- **Fixed window solves the shrinking problem.** A 24h window on `fetched_at` is independent of run cadence; every run sees the same day's items. Cross-run dedup still prevents double-processing.
+- **Replay-by-pinning considered and rejected.** An alternative was to accept an explicit `--window-start` flag for replays. Rejected as unnecessary: the cross-run dedup lookback handles re-runs naturally (already-processed items are suppressed), and the fixed window is simple enough that manual inspection or debugging doesn't need a separate replay mode.
+- **`fallback_hours` retired.** With a fixed window, the concept of a fallback for the first run is gone — the window is always `now() - window_hours`. The first run behaves the same as any other run.
+
+---
+
+## 2026-06-17 — Preprocessor translation: batched JSONL calls with split-on-failure retry
+
+**Decision:** Replace the per-item translation design (2 LLM calls per non-English item — title then body) with a batched design: one LLM call covers both title and body for N items (default `translation_batch_size: 10`). Output is JSONL keyed by stable id. Alignment safety: any id missing from the output triggers a recursive split-on-failure — the missing subset is halved and each half is retried, down to a 1-item floor. A 1-item batch that still produces no output falls back to original text. 429/503 errors on any call are retried with exponential backoff + jitter (`callWithBackoff`, shared utility in `src/llm/backoff.ts`) before splitting. The same `callWithBackoff` wrapper is applied to prefilter batch calls.
+
+**Context:** The per-item design produced ~2 LLM calls × ~180 items = ~360 calls/run. At NanoGPT's rate limits this saturated the endpoint and produced cascading 429 errors. The design also had no 429 backoff at the HTTP layer (callLLM sets `maxRetries: 0` by design) and no retry logic in the preprocessor, so 429s immediately fell back to original text.
+
+**Rationale:**
+- **Call reduction.** 180 non-English items at batch size 10 = 18 calls, not 360. Even at full non-English feeds the call count stays manageable.
+- **JSONL keyed by id, not position.** Models may reorder items in the output or omit some. Position-keyed parsing would silently misattribute translations. Id-keyed parsing is robust to ordering and detects missing items cleanly.
+- **Split-on-failure over whole-batch fallback.** When a batch produces partial output, re-sending the full batch wastes tokens and often produces the same partial response. Halving isolates the problematic item and recovers the rest. The recursive split converges to individual items in O(log N) rounds.
+- **Backoff before splitting.** 429/503 is a rate-limit signal, not a model failure. The right response is to wait and retry the same call, not to split. Splitting is reserved for alignment failures (model omits ids). The two recovery mechanisms are orthogonal.
+- **Shared `callWithBackoff` utility.** Prefilter had the same latent 429 vulnerability (10 concurrent calls, no backoff). Wrapping its per-batch `callLLM` with the same utility costs one import and one wrapper; the outer fail-safe catch still handles non-429 errors as before.
+- **Concurrency reduced.** `translation.concurrency` dropped from 5 to 2; with batch size 10, peak in-flight tokens are 10× higher per call than the old per-item calls, so lower concurrency avoids the same burst.
+
+---
+
+## 2026-06-17 — Cross-language clustering: translate non-English items to English at preprocess time
+
+**Decision:** Translate non-English item titles and bodies to English in the preprocessor, store results in `english_title` / `english_body` columns (migration 028), and embed those columns in the grouping stage. All clustering happens in one English vector space. Originals are retained for display, scoring, and editor passes — nothing that the human reader sees is affected by translation. Language detection uses franc-min@6 per item, not per source, with a heuristic that treats `und` (undetermined) + non-Latin script as non-English. Translation failures fall back to original text (item is never dropped). Design is idempotent: items with `english_title` already set are copied through without calling the model.
+
+**Context:** Same-event articles in different languages (e.g., an AP English and an AFP French report on the same story) produce embedding vectors in separate language sub-spaces and score low cosine similarity even for nearly identical content. The grouping stage's similarity threshold and union-find graph then fail to connect them, leaving them as separate singletons or — worse — placing them in separate clusters that the editor sees as two different "stories." Cross-language same-event deduplication was structurally impossible with the old per-language embedding approach.
+
+**Rationale:**
+- **Embedding in one language space.** Multilingual embedding models (like the Qwen3-Embedding-8B in use) have sub-spaces per language that don't fully collapse — same-event pairs in different languages can score 0.4–0.5 even when the threshold for intra-language same-event pairs is 0.66. Translating to English first forces all items into the English sub-space where same-event similarity reliably clears the threshold.
+- **Per-item detection, not per-source.** Some sources publish in multiple languages or mix languages. Per-source classification would require hand-labeling every source and break on mixed feeds. franc-min adds ~0ms per item and is accurate enough for the triage decision.
+- **Originals retained.** Translations are stored alongside originals, not replacing them. The editor, reader, and all display paths use the original title and body. Only the embedding input changes.
+- **Translation model choice.** Qwen3.6-35B-A3B via NanoGPT: fast, cheap, high quality on mechanical translation. Reasoning off (`reasoning_effort: "none"`): this is a copy-and-translate task with no editorial judgment needed.
+
+---
+
 ## 2026-06-16 — Grouping attach pass reworked: title-only embeddings + singleton↔singleton pairing
 
 **Decision:** Rework the grouping attach pass (step 3) along two axes:
@@ -1877,5 +1930,68 @@ The thin wrapper is 100-200 lines and contains the parts that matter for
 this project (full call lineage in Postgres, budget enforcement, typed
 per-stage config). "Use the library for the boring part, write our own
 for the project-specific part."
+
+---
+
+## 2026-06-17 — Cross-language clustering via English-space embedding
+
+**Decision:** Non-English items are translated to English at the preprocessor
+and the translation is stored alongside the original. The grouping stage
+embeds the English text rather than the original. All other stages (display,
+scoring, the editor, the paper) continue to read the original title and body.
+
+**Problem:** Two sources covering the same event in different languages
+(e.g. Le Monde in French, AP in English) produced embeddings far apart in
+the vector space and therefore never clustered together, even when the
+stories were identical in substance.
+
+**Approach:**
+
+- **Per-item language detection** using `franc-min` (trigram-based,
+  covers CJK and distinguishes English from Latin-script European languages).
+  Non-Latin scripts are detected by Unicode range as a fast path; for
+  Latin-script text, franc's ISO 639-3 code is used (`eng` = English,
+  `und` with only ASCII = treated conservatively as English, anything else
+  = non-English).
+
+- **Per-item translation** of title + body[:2000] with
+  `Qwen/Qwen3.6-35B-A3B` via nanogpt, thinking/reasoning off (mechanical
+  translation, not editorial judgment). Two separate LLM calls per
+  non-English item (title and body) for clean, parseable output. Stored
+  in `preprocessed_items.english_title` and `.english_body` (migration 028).
+
+- **Copy-through for English items:** `english_title = title`,
+  `english_body = body_text` — downstream code reads `english_*` uniformly,
+  no branching.
+
+- **Idempotency:** `english_title IS NOT NULL` check in `buildEnglishFields`
+  skips translation if the fields are already populated. Grouping re-runs are
+  free because the translated text is already stored in the DB.
+
+- **Translation failure fallback:** on any LLM error, the original text is
+  copied into `english_*` (item never lost — it just clusters within its own
+  language as before). A per-run failure count is logged; crashes are never
+  propagated over a single item.
+
+- **Grouping step 1** builds body embed text from
+  `english_title + english_body[:2000]` and title embed from `english_title`,
+  with null-safe fallback to `title`/`body_text` for rows predating migration
+  028.
+
+- **similarity_threshold retained at 0.66.** Translating to one English space
+  shifts the similarity distribution in an unknown direction for this feed
+  mix. The step-2 log now reports `pairs_above_threshold` so the first real
+  run will show whether 0.66 needs adjustment.
+
+**Alternatives considered:**
+
+- Source-level language tagging: rejected because some sources publish in
+  multiple languages (mixed feeds), and per-item detection is more accurate.
+- Multilingual embedding model (e.g. LaBSE): would require replacing the
+  existing 4096-dim Qwen3-Embedding-8B infrastructure and retuning the
+  similarity threshold. The translation approach reuses all existing
+  infrastructure and keeps the embedding space purely English.
+- Translating at grouping time: would re-translate on every grouping re-run.
+  Storing translations in the preprocessor makes re-runs cheap.
 
 ---

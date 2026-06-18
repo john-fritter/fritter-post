@@ -14,6 +14,8 @@ function makeItem(id: number, title: string): PreprocessedItemRow {
     group: null,
     title,
     body_text: null,
+    english_title: title,
+    english_body: null,
     published_at: null,
     fetched_at: new Date().toISOString(),
   };

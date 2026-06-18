@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -173,16 +174,21 @@ async function processBatch(
   }));
 
   try {
-    const llmResult = await callLLM({
-      stage: "prefilter",
-      stageRunId: runId,
-      model,
-      systemPrompt,
-      userPrompt: buildUserPrompt(batchPayload),
-      temperature,
-      maxTokens,
-      reasoningEffort,
-    });
+    const llmResult = await callWithBackoff(
+      () =>
+        callLLM({
+          stage: "prefilter",
+          stageRunId: runId,
+          model,
+          systemPrompt,
+          userPrompt: buildUserPrompt(batchPayload),
+          temperature,
+          maxTokens,
+          reasoningEffort,
+        }),
+      {},
+      "prefilter",
+    );
 
     const expectedIds = batch.map((item) => Number(item.id));
     const parsed = parseBatchOutput(llmResult.text, expectedIds);
