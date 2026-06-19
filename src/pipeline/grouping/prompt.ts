@@ -21,29 +21,53 @@ export function buildDescribeUserPrompt(clusterBlocks: string): string {
   return `Here are today's news clusters. Write a title and summary for each one.\n\n${clusterBlocks}`;
 }
 
-const ATTACH_SYSTEM_PROMPT = `You are deciding which candidates cover the SAME NEWS EVENT as an anchor article.
+// Phase A: given an existing cluster, which numbered candidate articles belong to it?
+const PHASE_A_SYSTEM_PROMPT = `You are deciding which candidate articles belong to an existing news cluster.
 
-The ANCHOR is a single news article. Each CANDIDATE is either an existing news cluster (a group of articles already confirmed to be the same story) or a standalone article — similar to the anchor in title space but not yet confirmed as the same event. Attach a candidate when it covers the same specific event as the anchor.
+A CLUSTER is a group of articles already confirmed to cover the same specific event. Each numbered CANDIDATE is a standalone article that is topically similar but not yet confirmed to be the same event.
+
+Attach a candidate when it covers the SAME SPECIFIC EVENT as the cluster:
+- The same event — a strike, ruling, vote, announcement, disaster — reported by any outlet, in any language.
+- Military actions within the same war or campaign.
+- An event and the official or civic response it drew.
+
+A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same event; do not attach it.
+
+OUTPUT
+If no candidates belong: output "none" and nothing else.
+If one or more belong: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
+No explanation. No JSON. No prose.`;
+
+export function buildPhaseASystemPrompt(): string {
+  return PHASE_A_SYSTEM_PROMPT;
+}
+
+export function buildPhaseAUserPrompt(clusterMemberLines: string, candidateBlocks: string): string {
+  return (
+    `CLUSTER MEMBERS:\n${clusterMemberLines}\n\nCANDIDATES:\n${candidateBlocks}\n\n` +
+    `Which candidate numbers (if any) cover the same specific event as this cluster?`
+  );
+}
+
+// Phase B: given a group of singletons, which ones cover the same specific event?
+const PHASE_B_SYSTEM_PROMPT = `You are deciding which articles in a group cover the same specific news event.
 
 THE SAME STORY:
 - The same event — a strike, ruling, vote, announcement, disaster — reported by any outlet, in any language.
 - Military actions within the same war or campaign.
 - An event and the official or civic response it drew.
 
-A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same story; do not attach it. Read each candidate for what happened, not how it is worded; language never hides a match.
+Articles that share only a region, a topic, an ongoing situation, or a cast of actors — while reporting developments that stand on their own — are NOT the same story.
 
 OUTPUT
-If no candidates belong with the anchor: output "none" and nothing else.
-If one or more belong: output only their numbers as a comma-separated list (e.g. "1,3") and nothing else.
+List the numbers of articles that all cover the same specific event. If fewer than two articles share the same specific event, output "none" and nothing else.
+Output only the numbers as a comma-separated list (e.g. "2,5") and nothing else.
 No explanation. No JSON. No prose.`;
 
-export function buildAttachSystemPrompt(): string {
-  return ATTACH_SYSTEM_PROMPT;
+export function buildPhaseBSystemPrompt(): string {
+  return PHASE_B_SYSTEM_PROMPT;
 }
 
-export function buildAttachUserPrompt(anchorBlock: string, candidateBlocks: string): string {
-  return (
-    `ANCHOR ARTICLE:\n${anchorBlock}\n\nCANDIDATES:\n${candidateBlocks}\n\n` +
-    `Which candidate numbers (if any) cover the same specific event as the ANCHOR ARTICLE?`
-  );
+export function buildPhaseBUserPrompt(groupBlocks: string): string {
+  return `ARTICLES:\n${groupBlocks}\n\nWhich article numbers (if any) all cover the same specific event?`;
 }

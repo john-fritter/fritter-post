@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import {
-  buildAttachCandidates,
-  applyAttachRound,
-  computeNextDirty,
+  buildClusterCandidateSingletons,
+  buildProtoGroups,
+  chunkArray,
+  parseAttachOutput,
 } from "../src/pipeline/grouping/index.js";
-import type { AttachCandidate, AttachProposal } from "../src/pipeline/grouping/index.js";
 import type { Cluster } from "../src/lib/cluster.js";
 import type { PreprocessedItemRow } from "../src/pipeline/preprocessor/assembler.js";
 
@@ -36,294 +36,117 @@ function cosineSim(a: number[], b: number[]): number {
   return a.reduce((s, v, i) => s + v * b[i]!, 0);
 }
 
-// Build a 4-dim vector at angle theta (in a 2-d subspace, zeros elsewhere).
+// Build a 4-dim unit vector at angle theta (in a 2-d subspace, zeros elsewhere).
 function vecAt(theta: number): number[] {
   return makeNormVec([Math.cos(theta), Math.sin(theta), 0, 0]);
 }
 
-// --- Test 1: title-only candidate generation — singletons above floor appear ---
+// --- buildClusterCandidateSingletons ---
 
-function testSingletonAboveFloorIsCandidate() {
-  // Anchor at angle 0; singleton at angle ~10°; cosine sim ≈ 0.985.
-  const anchor = vecAt(0);
-  const close = vecAt((10 * Math.PI) / 180);
-  const far = vecAt((80 * Math.PI) / 180); // cosine sim ≈ 0.174
-
-  const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    [2, close],
-    [3, far],
-  ]);
-
-  const candidates = buildAttachCandidates(1, [], new Set([2, 3]), titleVecs, 0.55);
-
-  assert.equal(candidates.length, 1, "only the close singleton should appear");
-  assert.equal(candidates[0]!.type, "singleton");
-  const cand = candidates[0] as Extract<AttachCandidate, { type: "singleton" }>;
-  assert.equal(cand.id, 2);
-  assert.ok(cand.sim > 0.95, `expected sim > 0.95, got ${cand.sim}`);
-}
-
-// --- Test 2: anchor is excluded from its own candidate list ---
-
-function testAnchorExcludedFromCandidates() {
-  const anchor = vecAt(0);
-  const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    [2, vecAt((5 * Math.PI) / 180)], // very close
-  ]);
-
-  // anchor id (1) is in the available set — must not appear in output
-  const candidates = buildAttachCandidates(1, [], new Set([1, 2]), titleVecs, 0.55);
-
-  const ids = candidates.map((c) => (c.type === "singleton" ? c.id : null));
-  assert.ok(!ids.includes(1), "anchor (id=1) must not appear in its own candidates");
-}
-
-// --- Test 3: cluster candidate appears when a member is close enough ---
-
-function testClusterCandidateAboveFloor() {
-  const anchor = vecAt(0);
-  const clusterMember = vecAt((15 * Math.PI) / 180); // cosine ≈ 0.966
-
-  const clusters: Cluster[] = [
-    { title: "Ebola Cluster", summary: "", item_ids: [10, 11], notes: null },
-  ];
-  const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    [10, clusterMember],
-    [11, vecAt((90 * Math.PI) / 180)], // far member — should not matter; max sim used
-  ]);
-
-  const candidates = buildAttachCandidates(1, clusters, new Set(), titleVecs, 0.55);
-
-  assert.equal(candidates.length, 1);
-  assert.equal(candidates[0]!.type, "cluster");
-  const cc = candidates[0] as Extract<AttachCandidate, { type: "cluster" }>;
-  assert.equal(cc.clusterIdx, 0);
-  assert.ok(cc.maxSim > 0.95);
-}
-
-// --- Test 4: items below floor are not included ---
-
-function testBelowFloorExcluded() {
-  const anchor = vecAt(0);
-  // Angle ~70°: cosine ≈ 0.342 — below any reasonable floor
-  const distant = vecAt((70 * Math.PI) / 180);
+// Test 1: singleton above floor → appears in candidates
+function testClusterCandidates_aboveFloor() {
+  // Cluster member at 0°; singleton at 5° (sim ≈ 0.996 >> 0.55).
+  const clusterItemIds = [10];
+  const vMember = vecAt(0);
+  const vClose = vecAt((5 * Math.PI) / 180);
+  const vFar = vecAt((80 * Math.PI) / 180); // sim ≈ 0.174 — below floor
 
   const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    [2, distant],
+    [10, vMember],
+    [1, vClose],
+    [2, vFar],
   ]);
 
-  const candidates = buildAttachCandidates(1, [], new Set([2]), titleVecs, 0.55);
-  assert.equal(candidates.length, 0, "below-floor item must not appear");
-}
-
-// --- Test 5: all candidates above floor are returned — no truncation ---
-//
-// 12 singletons all above floor; all 12 must appear in the output.
-// candidate_floor is the sole filter; there is no per-anchor cap.
-
-function testAllAboveFloorReturnedNoTruncation() {
-  const anchor = vecAt(0);
-  const titleVecs = new Map<number, number[]>([[1, anchor]]);
-  const available = new Set<number>();
-  for (let i = 2; i <= 13; i++) {
-    titleVecs.set(i, vecAt((i * Math.PI) / 180)); // 2°..13° — all well above floor
-    available.add(i);
-  }
-
-  const candidates = buildAttachCandidates(1, [], available, titleVecs, 0.55);
-  assert.equal(candidates.length, 12, "all 12 candidates above floor must be returned");
-}
-
-// --- Test 6: candidates are sorted by sim descending ---
-
-function testCandidatesAreSortedBySim() {
-  const anchor = vecAt(0);
-  // Singleton A at 5°, singleton B at 20° — A is closer
-  const vA = vecAt((5 * Math.PI) / 180);
-  const vB = vecAt((20 * Math.PI) / 180);
-
-  const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    [2, vA],
-    [3, vB],
-  ]);
-
-  const simA = cosineSim(anchor, vA);
-  const simB = cosineSim(anchor, vB);
-
-  const candidates = buildAttachCandidates(1, [], new Set([2, 3]), titleVecs, 0.55);
-  assert.equal(candidates.length, 2);
-  const c0 = candidates[0] as Extract<AttachCandidate, { type: "singleton" }>;
-  const c1 = candidates[1] as Extract<AttachCandidate, { type: "singleton" }>;
-  assert.ok(c0.sim >= c1.sim, `expected sorted descending: ${c0.sim} >= ${c1.sim}`);
-  assert.equal(c0.id, 2, "closest singleton (2) should be first");
-  assert.ok(Math.abs(c0.sim - simA) < 1e-10);
-  assert.ok(Math.abs(c1.sim - simB) < 1e-10);
-}
-
-// --- Test 7: singleton↔singleton pairing — union-find simulation ---
-//
-// Simulates two rounds of the sequential attach loop (mocked LLM responses)
-// to verify the union-find behavior:
-//   Round 1: anchor=A, candidates=[B, C], mock confirms B → {A,B} new cluster
-//   Round 2: anchor=C, candidates=[cluster {A,B}], mock confirms cluster → C attaches
-//
-// We call buildAttachCandidates directly and apply results manually, mirroring
-// what attachSingletons does in the real async loop.
-
-function testSingletonPairingAndCascadeAttach() {
-  // Angles: A≈0°, B≈8°, C≈6° — all close to each other
-  const vA = vecAt(0);
-  const vB = vecAt((8 * Math.PI) / 180);
-  const vC = vecAt((6 * Math.PI) / 180);
-
-  const titleVecs = new Map<number, number[]>([
-    [10, vA], // anchor A
-    [11, vB], // singleton B
-    [12, vC], // singleton C
-  ]);
-
-  const itemA = makeItem(10, "Iran launches missiles at Israel");
-  const itemB = makeItem(11, "Iran fires ballistic missiles at Israeli territory");
-  const itemC = makeItem(12, "Iran missile attack on Israeli bases overnight");
-  // itemById used only to verify makeItem; not needed by buildAttachCandidates itself
-  void itemA; void itemB; void itemC;
-
-  let currentClusters: Cluster[] = [];
-  let remainingSingletons = new Set([10, 11, 12]);
-
-  // --- Round 1: anchor=A (id=10) ---
-  const availableForA = new Set(remainingSingletons);
-  availableForA.delete(10);
-
-  const candidatesForA = buildAttachCandidates(10, currentClusters, availableForA, titleVecs, 0.55);
-
-  // B (11) and C (12) should both appear as singleton candidates — no cap drops them.
-  assert.ok(candidatesForA.length >= 2, "A should see both B and C as candidates");
-  const singletonCandidateIds = candidatesForA
-    .filter((c) => c.type === "singleton")
-    .map((c) => (c as Extract<AttachCandidate, { type: "singleton" }>).id);
-  assert.ok(singletonCandidateIds.includes(11), "B must be a candidate for A");
-  assert.ok(singletonCandidateIds.includes(12), "C must be a candidate for A");
-
-  // Mock LLM: confirms only B (id=11) as same event.
-  // Apply: pair A + B → new cluster.
-  const newCluster: Cluster = {
-    title: "Iran launches missiles at Israel",
-    summary: "Iran launches missiles at Israel | Iran fires ballistic missiles at Israeli territory",
-    item_ids: [10, 11],
-    notes: null,
-  };
-  currentClusters = [newCluster];
-  remainingSingletons.delete(10);
-  remainingSingletons.delete(11);
-
-  assert.deepEqual([...remainingSingletons], [12], "only C (12) should remain");
-  assert.equal(currentClusters.length, 1, "one cluster should have been formed");
-  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11]);
-
-  // --- Round 2: anchor=C (id=12) ---
-  const availableForC = new Set(remainingSingletons);
-  availableForC.delete(12);
-
-  const candidatesForC = buildAttachCandidates(12, currentClusters, availableForC, titleVecs, 0.55);
-
-  // The {A,B} cluster must appear as a cluster candidate.
-  const clusterCandidates = candidatesForC.filter((c) => c.type === "cluster");
-  assert.ok(clusterCandidates.length >= 1, "C should see the newly formed A+B cluster as a candidate");
-  const cc = clusterCandidates[0] as Extract<AttachCandidate, { type: "cluster" }>;
-  assert.equal(cc.clusterIdx, 0, "cluster candidate should be the A+B cluster at index 0");
-  assert.ok(cc.maxSim >= 0.55, `max sim to cluster should be above floor: ${cc.maxSim}`);
-
-  // Mock LLM: confirms the cluster. Apply: C attaches to {A,B}.
-  const target = currentClusters[cc.clusterIdx]!;
-  currentClusters[cc.clusterIdx] = { ...target, item_ids: [...target.item_ids, 12] };
-  remainingSingletons.delete(12);
-
-  assert.equal(remainingSingletons.size, 0, "all singletons should be consumed");
-  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11, 12], "cluster should contain A, B, C");
-}
-
-// --- Test 8: anchor with no title vector generates no candidates ---
-
-function testAnchorWithNoVectorSkipped() {
-  const titleVecs = new Map<number, number[]>([
-    // anchor id=1 has no entry
-    [2, vecAt(0)],
-  ]);
-
-  const candidates = buildAttachCandidates(1, [], new Set([2]), titleVecs, 0.55);
-  assert.equal(candidates.length, 0, "anchor with no vector should produce no candidates");
-}
-
-// --- Test 9: cluster with no member vectors does not appear as candidate ---
-
-function testClusterWithNoVectorsExcluded() {
-  const anchor = vecAt(0);
-  const clusters: Cluster[] = [
-    { title: "Cluster with no vectors", summary: "", item_ids: [10, 11], notes: null },
-  ];
-  const titleVecs = new Map<number, number[]>([
-    [1, anchor],
-    // 10 and 11 have no entries → max sim will be 0, below floor
-  ]);
-
-  const candidates = buildAttachCandidates(1, clusters, new Set(), titleVecs, 0.55);
-  assert.equal(candidates.length, 0, "cluster with no member vectors should not appear");
-}
-
-// --- Test 10: contention resolution — higher-sim anchor wins a contested singleton ---
-//
-// Anchors A (anchorBestSim=0.9) and B (anchorBestSim=0.7) both propose to pair
-// with singleton C. A should win; C ends up with A; B remains as a singleton.
-
-function testContentionResolvesToHigherSimAnchor() {
-  const itemA = makeItem(1, "Iran launches missiles at Israel");
-  const itemB = makeItem(2, "Iran fires ballistic missiles");
-  const itemC = makeItem(3, "Iran missile attack overnight");
-  const itemById = new Map([
-    [1, itemA],
-    [2, itemB],
-    [3, itemC],
-  ]);
-
-  const currentClusters: Cluster[] = [];
-  const remainingSingletonIds = new Set([1, 2, 3]);
-
-  const proposals: AttachProposal[] = [
-    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [3] },
-    { anchorId: 2, anchorBestSim: 0.7, confirmedClusters: [], confirmedSingletonIds: [3] },
-  ];
-
-  const { attachedToCluster, newPairsFormed } = applyAttachRound(
-    proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
+  const result = buildClusterCandidateSingletons(
+    clusterItemIds,
+    new Set([1, 2]),
+    titleVecs,
+    0.55,
   );
 
-  assert.equal(newPairsFormed, 1, "one pair should form");
-  assert.equal(attachedToCluster, 0, "no attachments to existing clusters");
-  assert.equal(currentClusters.length, 1, "one cluster formed");
-  assert.ok(currentClusters[0]!.item_ids.includes(1), "A should be in the winning cluster");
-  assert.ok(currentClusters[0]!.item_ids.includes(3), "C should be in the winning cluster");
-  assert.ok(!currentClusters[0]!.item_ids.includes(2), "B should not be in the cluster");
-  assert.ok(remainingSingletonIds.has(2), "B remains a singleton after losing the contest");
-  assert.ok(!remainingSingletonIds.has(1), "A consumed");
-  assert.ok(!remainingSingletonIds.has(3), "C consumed by A");
+  assert.deepEqual(result, [1], "only the close singleton should appear");
 }
 
-// --- Test 11: cascade across rounds — C sees pair formed in round 1 ---
-//
-// Round 1 apply: A + B form a new cluster {A, B}.
-// Round 2 snapshot includes that cluster; C's buildAttachCandidates call sees it
-// and C attaches to it via a second applyAttachRound call.
+// Test 2: singleton below floor → excluded
+function testClusterCandidates_belowFloor() {
+  const vMember = vecAt(0);
+  const vFar = vecAt((70 * Math.PI) / 180); // cos(70°) ≈ 0.342 — below 0.55
 
-function testCascadeAcrossRounds() {
+  const titleVecs = new Map<number, number[]>([
+    [10, vMember],
+    [1, vFar],
+  ]);
+
+  const result = buildClusterCandidateSingletons([10], new Set([1]), titleVecs, 0.55);
+  assert.deepEqual(result, [], "below-floor singleton must not appear");
+}
+
+// Test 3: cluster with no singletons in range → empty result, no call
+function testClusterCandidates_noCandidates() {
+  const vMember = vecAt(0);
+  const titleVecs = new Map<number, number[]>([[10, vMember]]);
+  const result = buildClusterCandidateSingletons([10], new Set(), titleVecs, 0.55);
+  assert.deepEqual(result, [], "no singletons → empty candidates");
+}
+
+// Test 4: multi-member cluster — maxSim over all members determines floor crossing
+function testClusterCandidates_multiMemberMaxSim() {
+  // Cluster has members at 0° and 90°. Singleton at 80° — far from member@0° (cos≈0.17)
+  // but close to member@90° (cos≈0.985). Should appear.
+  const vM1 = vecAt(0);
+  const vM2 = vecAt((90 * Math.PI) / 180);
+  const vSing = vecAt((80 * Math.PI) / 180); // cos(80°,90°)≈0.985, cos(80°,0°)≈0.174
+
+  const titleVecs = new Map<number, number[]>([
+    [10, vM1],
+    [11, vM2],
+    [1, vSing],
+  ]);
+
+  const result = buildClusterCandidateSingletons([10, 11], new Set([1]), titleVecs, 0.55);
+  assert.deepEqual(result, [1], "singleton close to any member should appear");
+}
+
+// Test 5: results sorted by maxSim descending
+function testClusterCandidates_sortedBySim() {
+  const vMember = vecAt(0);
+  const vClose = vecAt((5 * Math.PI) / 180); // cos ≈ 0.996
+  const vFurther = vecAt((30 * Math.PI) / 180); // cos ≈ 0.866
+
+  const titleVecs = new Map<number, number[]>([
+    [10, vMember],
+    [1, vFurther], // id=1 is further
+    [2, vClose], // id=2 is closer
+  ]);
+
+  const result = buildClusterCandidateSingletons([10], new Set([1, 2]), titleVecs, 0.55);
+  assert.equal(result.length, 2);
+  assert.equal(result[0], 2, "closer singleton (id=2) should be first");
+  assert.equal(result[1], 1);
+}
+
+// --- buildProtoGroups ---
+
+// Test 6: two close singletons → one proto-group of 2
+function testProtoGroups_pairForms() {
+  const vA = vecAt(0);
+  const vB = vecAt((5 * Math.PI) / 180);
+
+  const titleVecs = new Map<number, number[]>([
+    [1, vA],
+    [2, vB],
+  ]);
+
+  assert.ok(cosineSim(vA, vB) >= 0.55, "A-B must be above floor");
+
+  const groups = buildProtoGroups(new Set([1, 2]), titleVecs, 0.55);
+  assert.equal(groups.length, 1, "one group should form");
+  assert.ok(groups[0]!.includes(1) && groups[0]!.includes(2), "group contains both singletons");
+}
+
+// Test 7: three connected singletons → one group of 3 (transitivity via union-find)
+function testProtoGroups_transitivity() {
+  // A-B close, B-C close — A-C also close at these angles
   const vA = vecAt(0);
   const vB = vecAt((5 * Math.PI) / 180);
   const vC = vecAt((7 * Math.PI) / 180);
@@ -334,197 +157,34 @@ function testCascadeAcrossRounds() {
     [12, vC],
   ]);
 
-  const itemA = makeItem(10, "Iran launches missiles at Israel");
-  const itemB = makeItem(11, "Iran fires ballistic missiles at Israeli territory");
-  const itemC = makeItem(12, "Iran missile attack overnight");
-  const itemById = new Map([
-    [10, itemA],
-    [11, itemB],
-    [12, itemC],
-  ]);
-
-  const currentClusters: Cluster[] = [];
-  const remainingSingletonIds = new Set([10, 11, 12]);
-
-  // --- Round 1: A and B form a pair ---
-  const round1Proposals: AttachProposal[] = [
-    {
-      anchorId: 10,
-      anchorBestSim: cosineSim(vA, vB),
-      confirmedClusters: [],
-      confirmedSingletonIds: [11],
-    },
-  ];
-  const { newPairsFormed: r1Pairs } = applyAttachRound(
-    round1Proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
-  );
-  assert.equal(r1Pairs, 1, "round 1 should form one pair");
-  assert.equal(currentClusters.length, 1, "one cluster after round 1");
-  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11]);
-  assert.deepEqual([...remainingSingletonIds], [12], "only C remains after round 1");
-
-  // --- Round 2: C should see {A, B} as a cluster candidate ---
-  // Simulate what the round loop does: snapshot includes the new cluster.
-  const snapshotClusters = currentClusters.slice();
-  const availableForC = new Set(remainingSingletonIds);
-  availableForC.delete(12);
-
-  const candidatesForC = buildAttachCandidates(12, snapshotClusters, availableForC, titleVecs, 0.55);
-  const clusterCandidates = candidatesForC.filter((c) => c.type === "cluster");
-  assert.ok(
-    clusterCandidates.length >= 1,
-    "C should see the {A,B} cluster formed in round 1 as a candidate in round 2",
-  );
-
-  const cc = clusterCandidates[0] as Extract<AttachCandidate, { type: "cluster" }>;
-  const round2Proposals: AttachProposal[] = [
-    {
-      anchorId: 12,
-      anchorBestSim: cc.maxSim,
-      confirmedClusters: [{ clusterIdx: cc.clusterIdx, maxSim: cc.maxSim }],
-      confirmedSingletonIds: [],
-    },
-  ];
-  const { attachedToCluster: r2Attaches } = applyAttachRound(
-    round2Proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
-  );
-  assert.equal(r2Attaches, 1, "C attaches to the {A,B} cluster in round 2");
-  assert.equal(remainingSingletonIds.size, 0, "no remaining singletons after cascade");
-  assert.deepEqual(currentClusters[0]!.item_ids, [10, 11, 12], "cluster contains A, B, C");
+  const groups = buildProtoGroups(new Set([10, 11, 12]), titleVecs, 0.55);
+  assert.equal(groups.length, 1, "one group of 3");
+  const ids = groups[0]!.sort((a, b) => a - b);
+  assert.deepEqual(ids, [10, 11, 12]);
 }
 
-// --- Test 12: empty LLM response yields no merge ---
-//
-// When a proposal has both confirmedClusters and confirmedSingletonIds empty
-// (representing an LLM response of "none" / empty text), applyAttachRound
-// produces no merge for that anchor and leaves it as a singleton.
-
-function testEmptyProposalYieldsNoMerge() {
-  const currentClusters: Cluster[] = [];
-  const remainingSingletonIds = new Set([1, 2, 3]);
-  const itemById = new Map<number, PreprocessedItemRow>([
-    [1, makeItem(1, "Item 1")],
-    [2, makeItem(2, "Item 2")],
-    [3, makeItem(3, "Item 3")],
-  ]);
-
-  const proposals: AttachProposal[] = [
-    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [] },
-    { anchorId: 2, anchorBestSim: 0.8, confirmedClusters: [], confirmedSingletonIds: [] },
-  ];
-
-  const { attachedToCluster, newPairsFormed } = applyAttachRound(
-    proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
-  );
-
-  assert.equal(attachedToCluster, 0, "no attaches from empty proposals");
-  assert.equal(newPairsFormed, 0, "no pairs from empty proposals");
-  assert.equal(currentClusters.length, 0, "no clusters formed");
-  assert.equal(remainingSingletonIds.size, 3, "all singletons remain");
-}
-
-// --- Test 13: no-contention equivalence — concurrent rounds match sequential result ---
-//
-// Three disjoint pairs (A↔D, B↔E, C↔F) where cross-pair sims are all below the
-// floor. All six proposals fire in one round with no contention; the result must
-// match what sequential processing would produce: three separate 2-item clusters.
-
-function testNoContentionEquivalence() {
-  // A=0°, D=2°, B=60°, E=62°, C=120°, F=122°
-  // Within-pair cos ≈ 0.9994; across-group cos ≤ cos(58°) ≈ 0.53 — below 0.55 floor.
+// Test 8: isolated singleton stays out of all groups
+function testProtoGroups_isolateExcluded() {
+  // A and B close to each other; C far from both
   const vA = vecAt(0);
-  const vD = vecAt((2 * Math.PI) / 180);
-  const vB = vecAt((60 * Math.PI) / 180);
-  const vE = vecAt((62 * Math.PI) / 180);
-  const vC = vecAt((120 * Math.PI) / 180);
-  const vF = vecAt((122 * Math.PI) / 180);
+  const vB = vecAt((5 * Math.PI) / 180);
+  const vC = vecAt((90 * Math.PI) / 180); // orthogonal — cos=0
 
   const titleVecs = new Map<number, number[]>([
     [1, vA],
-    [2, vD],
-    [3, vB],
-    [4, vE],
-    [5, vC],
-    [6, vF],
+    [2, vB],
+    [3, vC],
   ]);
 
-  const floor = 0.55;
-  assert.ok(cosineSim(vA, vD) >= floor, "A-D within floor");
-  assert.ok(cosineSim(vB, vE) >= floor, "B-E within floor");
-  assert.ok(cosineSim(vC, vF) >= floor, "C-F within floor");
-  assert.ok(cosineSim(vA, vB) < floor, "A-B cross-pair below floor");
-  assert.ok(cosineSim(vA, vC) < floor, "A-C cross-pair below floor");
-  assert.ok(cosineSim(vB, vC) < floor, "B-C cross-pair below floor");
-
-  const itemById = new Map<number, PreprocessedItemRow>([
-    [1, makeItem(1, "Item 1")],
-    [2, makeItem(2, "Item 2")],
-    [3, makeItem(3, "Item 3")],
-    [4, makeItem(4, "Item 4")],
-    [5, makeItem(5, "Item 5")],
-    [6, makeItem(6, "Item 6")],
-  ]);
-
-  const singletonIds = new Set([1, 2, 3, 4, 5, 6]);
-  const clusters: Cluster[] = [];
-
-  // Simulate one concurrent round: all 6 anchors build from same snapshot.
-  const proposals: AttachProposal[] = [];
-  for (const anchorId of [1, 2, 3, 4, 5, 6]) {
-    const anchorVec = titleVecs.get(anchorId)!;
-    const available = new Set(singletonIds);
-    available.delete(anchorId);
-    const candidates = buildAttachCandidates(anchorId, clusters, available, titleVecs, floor);
-    if (candidates.length === 0) continue;
-
-    // Compute bestSim (max over all others).
-    let bestSim = 0;
-    for (const otherId of singletonIds) {
-      if (otherId === anchorId) continue;
-      const ov = titleVecs.get(otherId)!;
-      const s = cosineSim(anchorVec, ov);
-      if (s > bestSim) bestSim = s;
-    }
-
-    // Mock LLM: confirm the top singleton candidate (only one exists per anchor above the floor).
-    const topCand = candidates[0];
-    if (topCand && topCand.type === "singleton") {
-      proposals.push({
-        anchorId,
-        anchorBestSim: bestSim,
-        confirmedClusters: [],
-        confirmedSingletonIds: [topCand.id],
-      });
-    }
-  }
-
-  const { newPairsFormed } = applyAttachRound(proposals, clusters, singletonIds, itemById);
-
-  assert.equal(newPairsFormed, 3, "3 disjoint pairs should form with no contention");
-  assert.equal(clusters.length, 3, "3 clusters");
-  assert.equal(singletonIds.size, 0, "no remaining singletons");
-
-  const allPaired = clusters.flatMap((c) => c.item_ids).sort((a, b) => a - b);
-  assert.deepEqual(allPaired, [1, 2, 3, 4, 5, 6], "all 6 items are paired");
+  const groups = buildProtoGroups(new Set([1, 2, 3]), titleVecs, 0.55);
+  assert.equal(groups.length, 1, "one group (A+B); C stays out");
+  const flat = groups.flatMap((g) => g);
+  assert.ok(!flat.includes(3), "isolated singleton C must not appear in any group");
 }
 
-// --- Test 14: dirty tracking excludes unrelated anchors ---
-//
-// After A (1) and B (2) pair in round 1, C (3) and D (4) — which are far from A and B —
-// must NOT appear in nextDirty. Their candidate sets are unchanged; re-judging them
-// would be wasteful and produce the same "none" as round 1.
-
-function testDirtyTrackingExcludesUnrelatedAnchor() {
-  // A=0°, B=2° (close); C=90°, D=92° (far from A/B)
+// Test 9: two disjoint pairs → two groups
+function testProtoGroups_twoDisjointPairs() {
+  // A=0°, B=2° close; C=90°, D=92° close; A/B far from C/D
   const vA = vecAt(0);
   const vB = vecAt((2 * Math.PI) / 180);
   const vC = vecAt((90 * Math.PI) / 180);
@@ -532,10 +192,8 @@ function testDirtyTrackingExcludesUnrelatedAnchor() {
 
   const floor = 0.55;
   assert.ok(cosineSim(vA, vB) >= floor, "A-B above floor");
+  assert.ok(cosineSim(vC, vD) >= floor, "C-D above floor");
   assert.ok(cosineSim(vA, vC) < floor, "A-C below floor");
-  assert.ok(cosineSim(vA, vD) < floor, "A-D below floor");
-  assert.ok(cosineSim(vB, vC) < floor, "B-C below floor");
-  assert.ok(cosineSim(vB, vD) < floor, "B-D below floor");
 
   const titleVecs = new Map<number, number[]>([
     [1, vA],
@@ -544,133 +202,176 @@ function testDirtyTrackingExcludesUnrelatedAnchor() {
     [4, vD],
   ]);
 
-  // Round 1 result: A (1) and B (2) paired → changedMemberIds = {1, 2}.
-  // C (3) and D (4) remain as singletons.
-  const changedMemberIds = new Set([1, 2]);
-  const remainingSingletonIds = new Set([3, 4]);
-
-  const nextDirty = computeNextDirty(remainingSingletonIds, changedMemberIds, titleVecs, floor);
-
-  assert.equal(nextDirty.size, 0, "C and D are not near changed members; nextDirty should be empty");
-  assert.ok(!nextDirty.has(3), "C should not be dirty");
-  assert.ok(!nextDirty.has(4), "D should not be dirty");
+  const groups = buildProtoGroups(new Set([1, 2, 3, 4]), titleVecs, floor);
+  assert.equal(groups.length, 2, "two disjoint groups");
+  const allIds = groups.flatMap((g) => g).sort((a, b) => a - b);
+  assert.deepEqual(allIds, [1, 2, 3, 4]);
 }
 
-// --- Test 15: dirty tracking includes cascade anchor ---
+// Test 10: empty singleton set → no groups
+function testProtoGroups_empty() {
+  const groups = buildProtoGroups(new Set(), new Map(), 0.55);
+  assert.deepEqual(groups, []);
+}
+
+// --- chunkArray ---
+
+// Test 11: basic chunking
+function testChunkArray_basic() {
+  const result = chunkArray([1, 2, 3, 4, 5], 2);
+  assert.deepEqual(result, [[1, 2], [3, 4], [5]]);
+}
+
+// Test 12: array smaller than chunk size → single chunk
+function testChunkArray_smallerThanSize() {
+  const result = chunkArray([10, 20], 40);
+  assert.deepEqual(result, [[10, 20]]);
+}
+
+// Test 13: oversized list splits correctly at ATTACH_CHUNK_SIZE boundary
+function testChunkArray_oversizedAt40() {
+  const arr = Array.from({ length: 45 }, (_, i) => i + 1);
+  const result = chunkArray(arr, 40);
+  assert.equal(result.length, 2, "45 items → 2 chunks");
+  assert.equal(result[0]!.length, 40, "first chunk has 40 items");
+  assert.equal(result[1]!.length, 5, "second chunk has 5 items");
+  assert.equal(result[0]![0], 1, "first item of first chunk");
+  assert.equal(result[1]![0], 41, "first item of second chunk");
+}
+
+// --- parseAttachOutput ---
+
+// Test 14: "none" → empty set
+function testParseAttachOutput_none() {
+  assert.equal(parseAttachOutput("none", 5).size, 0);
+  assert.equal(parseAttachOutput("NONE", 5).size, 0);
+  assert.equal(parseAttachOutput("", 5).size, 0);
+  assert.equal(parseAttachOutput("  ", 5).size, 0);
+}
+
+// Test 15: valid indices parsed; out-of-range ignored
+function testParseAttachOutput_validAndOutOfRange() {
+  const result = parseAttachOutput("1,3,7", 5);
+  assert.ok(result.has(1));
+  assert.ok(result.has(3));
+  assert.ok(!result.has(7), "7 out of range (max=5) must be ignored");
+  assert.ok(!result.has(0), "0 is not a valid 1-based index");
+}
+
+// Test 16: space-separated also works
+function testParseAttachOutput_spaceSeparated() {
+  const result = parseAttachOutput("2 4", 5);
+  assert.ok(result.has(2));
+  assert.ok(result.has(4));
+  assert.equal(result.size, 2);
+}
+
+// --- Structural call-count test ---
 //
-// After A (10) and B (11) pair in round 1, C (12) — which IS near A and B —
-// must appear in nextDirty so it can attach to the new cluster in round 2.
+// Test 17: call count scales with clusters + proto-groups, not singletons.
+//
+// Fixture layout (all angles on the unit circle):
+//   Cluster A  at   0°, Cluster B at 120°, Cluster C at 240°
+//   (each pair separated by 120°; cos(120°) = -0.5, well below 0.55 floor)
+//
+//   Singletons near A (within 56.6° of 0°):     ids 1 (10°), 2 (20°)
+//   Singleton  near C (within 56.6° of 240°):   id  3 (250°)
+//   No singletons near B
+//
+//   Proto-group pair  (far from all clusters):   ids 4 (60°),  5 (62°)
+//   Proto-group trio  (far from all clusters):   ids 6 (300°), 7 (302°), 8 (304°)
+//   (pair-to-trio angle ≈120°, cos=-0.5 — the two groups stay disjoint)
+//
+// Total singletons: 8. Tasks = 2 (A, C) + 2 (pair, trio) = 4 << 8.
 
-function testDirtyTrackingIncludesCascadeAnchor() {
-  const vA = vecAt(0);
-  const vB = vecAt((5 * Math.PI) / 180);
-  const vC = vecAt((7 * Math.PI) / 180);
-
+function testCallCountScalesWithClustersAndGroups() {
   const floor = 0.55;
-  assert.ok(cosineSim(vA, vC) >= floor, "A-C above floor");
-  assert.ok(cosineSim(vB, vC) >= floor, "B-C above floor");
+  const deg = (d: number) => (d * Math.PI) / 180;
 
   const titleVecs = new Map<number, number[]>([
-    [10, vA],
-    [11, vB],
-    [12, vC],
+    // cluster members
+    [100, vecAt(deg(0))],   // cluster A
+    [101, vecAt(deg(120))], // cluster B
+    [102, vecAt(deg(240))], // cluster C
+
+    // singletons near clusters
+    [1, vecAt(deg(10))],  // near A: cos(10°)≈0.985
+    [2, vecAt(deg(20))],  // near A: cos(20°)≈0.940
+    [3, vecAt(deg(250))], // near C (250°-240°=10°): cos≈0.985
+
+    // proto-group pair — at 60° from A and B (cos=0.5 < 0.55): no cluster is close
+    [4, vecAt(deg(60))],
+    [5, vecAt(deg(62))],
+
+    // proto-group trio — at 60° from A and C (cos=0.5 < 0.55): no cluster is close
+    [6, vecAt(deg(300))],
+    [7, vecAt(deg(302))],
+    [8, vecAt(deg(304))],
   ]);
 
-  const changedMemberIds = new Set([10, 11]); // A and B paired in round 1
-  const remainingSingletonIds = new Set([12]); // C remains
+  // Verify geometry invariants
+  assert.ok(cosineSim(titleVecs.get(100)!, titleVecs.get(1)!) >= floor, "id1 near cluster A");
+  assert.ok(cosineSim(titleVecs.get(100)!, titleVecs.get(2)!) >= floor, "id2 near cluster A");
+  assert.ok(cosineSim(titleVecs.get(102)!, titleVecs.get(3)!) >= floor, "id3 near cluster C");
+  assert.ok(cosineSim(titleVecs.get(101)!, titleVecs.get(1)!) < floor, "id1 NOT near cluster B");
+  assert.ok(cosineSim(titleVecs.get(101)!, titleVecs.get(4)!) < floor, "id4 NOT near cluster B");
+  assert.ok(cosineSim(titleVecs.get(4)!, titleVecs.get(5)!) >= floor, "pair 4-5 connected");
+  assert.ok(cosineSim(titleVecs.get(6)!, titleVecs.get(7)!) >= floor, "trio 6-7 connected");
+  assert.ok(cosineSim(titleVecs.get(4)!, titleVecs.get(6)!) < floor, "pair-to-trio disjoint");
 
-  const nextDirty = computeNextDirty(remainingSingletonIds, changedMemberIds, titleVecs, floor);
+  const clusterA: Cluster = { title: "A", summary: "", item_ids: [100], notes: null };
+  const clusterB: Cluster = { title: "B", summary: "", item_ids: [101], notes: null };
+  const clusterC: Cluster = { title: "C", summary: "", item_ids: [102], notes: null };
+  const clusters = [clusterA, clusterB, clusterC];
 
-  assert.ok(nextDirty.has(12), "C should be dirty — it's near the newly formed {A, B} cluster");
-  assert.equal(nextDirty.size, 1, "only C should be dirty");
-}
+  const allSingletons = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 
-// --- Test 16: applyAttachRound returns correct changedMemberIds ---
-//
-// A (1) pairs with B (2). changedMemberIds must contain both 1 and 2.
+  // Phase A: which clusters have candidates?
+  const aCandidates = buildClusterCandidateSingletons([100], allSingletons, titleVecs, floor);
+  const bCandidates = buildClusterCandidateSingletons([101], allSingletons, titleVecs, floor);
+  const cCandidates = buildClusterCandidateSingletons([102], allSingletons, titleVecs, floor);
 
-function testApplyAttachRoundReturnsChangedMemberIds() {
-  const itemA = makeItem(1, "Item A");
-  const itemB = makeItem(2, "Item B");
-  const itemById = new Map([
-    [1, itemA],
-    [2, itemB],
-  ]);
+  assert.ok(aCandidates.length > 0, "cluster A has candidates (singletons 1, 2)");
+  assert.equal(bCandidates.length, 0, "cluster B has NO candidates → no LLM call");
+  assert.ok(cCandidates.length > 0, "cluster C has candidates (singleton 3)");
 
-  const currentClusters: Cluster[] = [];
-  const remainingSingletonIds = new Set([1, 2]);
+  const phaseATasks = clusters.filter(
+    (c) => buildClusterCandidateSingletons(c.item_ids, allSingletons, titleVecs, floor).length > 0,
+  ).length;
+  assert.equal(phaseATasks, 2, "Phase A tasks = 2 (clusters A and C only)");
 
-  const proposals: AttachProposal[] = [
-    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [2] },
-  ];
+  // Phase B: after Phase A consumes singletons 1, 2, 3, leftovers are 4-8
+  const leftovers = new Set([4, 5, 6, 7, 8]);
+  const protoGroups = buildProtoGroups(leftovers, titleVecs, floor);
 
-  const { newPairsFormed, changedMemberIds } = applyAttachRound(
-    proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
-  );
+  assert.equal(protoGroups.length, 2, "two proto-groups from leftovers");
+  const groupSizes = protoGroups.map((g) => g.length).sort((a, b) => a - b);
+  assert.deepEqual(groupSizes, [2, 3], "one pair and one trio");
 
-  assert.equal(newPairsFormed, 1, "one pair formed");
-  assert.ok(changedMemberIds.has(1), "A in changedMemberIds");
-  assert.ok(changedMemberIds.has(2), "B in changedMemberIds");
-  assert.equal(changedMemberIds.size, 2, "exactly two changed members");
-}
-
-// --- Test 17: rejected proposal anchor absent from changedMemberIds ---
-//
-// A (bestSim=0.9) and B (bestSim=0.7) both propose C. A wins; B's proposal is
-// rejected by contention. Only A and C should be in changedMemberIds — not B.
-
-function testApplyAttachRoundChangedMemberIdsExcludesRejected() {
-  const itemA = makeItem(1, "Item A");
-  const itemB = makeItem(2, "Item B");
-  const itemC = makeItem(3, "Item C");
-  const itemById = new Map([
-    [1, itemA],
-    [2, itemB],
-    [3, itemC],
-  ]);
-
-  const currentClusters: Cluster[] = [];
-  const remainingSingletonIds = new Set([1, 2, 3]);
-
-  const proposals: AttachProposal[] = [
-    { anchorId: 1, anchorBestSim: 0.9, confirmedClusters: [], confirmedSingletonIds: [3] },
-    { anchorId: 2, anchorBestSim: 0.7, confirmedClusters: [], confirmedSingletonIds: [3] },
-  ];
-
-  const { changedMemberIds } = applyAttachRound(
-    proposals,
-    currentClusters,
-    remainingSingletonIds,
-    itemById,
-  );
-
-  assert.ok(changedMemberIds.has(1), "A (winner) in changedMemberIds");
-  assert.ok(changedMemberIds.has(3), "C (contested, won by A) in changedMemberIds");
-  assert.ok(!changedMemberIds.has(2), "B (loser) must NOT be in changedMemberIds");
-  assert.equal(changedMemberIds.size, 2, "exactly two changed members");
+  // Total tasks: 2 Phase A + 2 Phase B = 4 << 8 singletons
+  const totalTasks = phaseATasks + protoGroups.length;
+  assert.equal(totalTasks, 4, "4 total LLM tasks");
+  assert.ok(totalTasks < allSingletons.size, "tasks (4) << singletons (8)");
 }
 
 // --- Run all tests ---
 
-testSingletonAboveFloorIsCandidate();
-testAnchorExcludedFromCandidates();
-testClusterCandidateAboveFloor();
-testBelowFloorExcluded();
-testAllAboveFloorReturnedNoTruncation();
-testCandidatesAreSortedBySim();
-testSingletonPairingAndCascadeAttach();
-testAnchorWithNoVectorSkipped();
-testClusterWithNoVectorsExcluded();
-testContentionResolvesToHigherSimAnchor();
-testCascadeAcrossRounds();
-testEmptyProposalYieldsNoMerge();
-testNoContentionEquivalence();
-testDirtyTrackingExcludesUnrelatedAnchor();
-testDirtyTrackingIncludesCascadeAnchor();
-testApplyAttachRoundReturnsChangedMemberIds();
-testApplyAttachRoundChangedMemberIdsExcludesRejected();
+testClusterCandidates_aboveFloor();
+testClusterCandidates_belowFloor();
+testClusterCandidates_noCandidates();
+testClusterCandidates_multiMemberMaxSim();
+testClusterCandidates_sortedBySim();
+testProtoGroups_pairForms();
+testProtoGroups_transitivity();
+testProtoGroups_isolateExcluded();
+testProtoGroups_twoDisjointPairs();
+testProtoGroups_empty();
+testChunkArray_basic();
+testChunkArray_smallerThanSize();
+testChunkArray_oversizedAt40();
+testParseAttachOutput_none();
+testParseAttachOutput_validAndOutOfRange();
+testParseAttachOutput_spaceSeparated();
+testCallCountScalesWithClustersAndGroups();
 
 console.log("grouping attach tests passed");

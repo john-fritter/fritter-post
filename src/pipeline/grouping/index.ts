@@ -10,8 +10,10 @@ import type { Cluster } from "../../lib/cluster.js";
 import {
   buildDescribeSystemPrompt,
   buildDescribeUserPrompt,
-  buildAttachSystemPrompt,
-  buildAttachUserPrompt,
+  buildPhaseASystemPrompt,
+  buildPhaseAUserPrompt,
+  buildPhaseBSystemPrompt,
+  buildPhaseBUserPrompt,
 } from "./prompt.js";
 
 export interface GroupingRun {
@@ -59,100 +61,127 @@ function buildAutoCluster(groupItems: PreprocessedItemRow[]): Cluster {
 }
 
 // --- ATTACH PASS ---
+//
+// Cluster-centric two-phase design. Call count scales with clusters + proto-groups,
+// not singletons.
+//
+// Phase A: for each step-2 cluster, gather candidate singletons within candidate_floor
+//   of any cluster member (title-only cosine). If any exist, ONE LLM call confirms
+//   which belong. Lists > ATTACH_CHUNK_SIZE split into chunks; results unioned.
+// Phase B: remaining singletons are grouped via union-find at candidate_floor into
+//   proto-groups. Each proto-group of size >= 2 gets ONE LLM call to confirm a
+//   same-event subset. Chunks applied identically to Phase A.
+// Cascade: one bounded re-pass of Phase A restricted to clusters that grew in Phase A
+//   or were newly formed in Phase B. No further cascade.
 
-// A candidate for the attach pass: either an existing cluster or a standalone singleton.
-export type AttachCandidate =
-  | { type: "cluster"; clusterIdx: number; maxSim: number }
-  | { type: "singleton"; id: number; sim: number };
+const ATTACH_CHUNK_SIZE = 40;
 
-// Pure function: given an anchor singleton, produce an ordered candidate list from
-// the current cluster set and remaining singletons, scored by title-only cosine.
-// Returns ALL candidates with title cosine >= candidateFloor, sorted by sim desc.
-// candidate_floor is the sole per-anchor filter — no top-K cap. Dropping a genuine
-// duplicate to save prompt space would violate dedup completeness. If prompt size
-// for a very dense cluster ever becomes a real issue, the fix is batched LLM calls
-// that union their confirmations, not a silent drop here.
-// Exported for testing.
-export function buildAttachCandidates(
-  anchorId: number,
-  clusters: ReadonlyArray<Cluster>,
-  availableSingletonIds: ReadonlySet<number>,
+// Returns IDs of singletons within candidate_floor of any member of the cluster,
+// sorted by max similarity descending. Exported for testing.
+export function buildClusterCandidateSingletons(
+  clusterItemIds: ReadonlyArray<number>,
+  singletonIds: ReadonlySet<number>,
   titleNormalizedVectors: ReadonlyMap<number, number[]>,
   candidateFloor: number,
-): AttachCandidate[] {
-  const anchorVec = titleNormalizedVectors.get(anchorId);
-  if (!anchorVec) return [];
-
-  const candidates: AttachCandidate[] = [];
-
-  for (let cIdx = 0; cIdx < clusters.length; cIdx++) {
-    const cluster = clusters[cIdx]!;
+): number[] {
+  const scored: Array<{ id: number; maxSim: number }> = [];
+  for (const singId of singletonIds) {
+    const singVec = titleNormalizedVectors.get(singId);
+    if (!singVec) continue;
     let maxSim = 0;
-    for (const memberId of cluster.item_ids) {
+    for (const memberId of clusterItemIds) {
       const memberVec = titleNormalizedVectors.get(memberId);
       if (!memberVec) continue;
-      const sim = dotProduct(anchorVec, memberVec);
+      const sim = dotProduct(singVec, memberVec);
       if (sim > maxSim) maxSim = sim;
     }
-    if (maxSim >= candidateFloor) {
-      candidates.push({ type: "cluster", clusterIdx: cIdx, maxSim });
+    if (maxSim >= candidateFloor) scored.push({ id: singId, maxSim });
+  }
+  scored.sort((a, b) => b.maxSim - a.maxSim);
+  return scored.map((s) => s.id);
+}
+
+// Groups singletons into proto-groups via union-find on title cosine at candidate_floor.
+// Returns arrays of size >= 2 only; isolated singletons are excluded. Exported for testing.
+export function buildProtoGroups(
+  singletonIds: ReadonlySet<number>,
+  titleNormalizedVectors: ReadonlyMap<number, number[]>,
+  candidateFloor: number,
+): number[][] {
+  const ids = [...singletonIds];
+  const parent = new Map<number, number>();
+  for (const id of ids) parent.set(id, id);
+
+  function find(x: number): number {
+    while (parent.get(x) !== x) {
+      const px = parent.get(x)!;
+      parent.set(x, parent.get(px)!);
+      x = px;
+    }
+    return x;
+  }
+
+  for (let i = 0; i < ids.length; i++) {
+    const idA = ids[i]!;
+    const vA = titleNormalizedVectors.get(idA);
+    if (!vA) continue;
+    for (let j = i + 1; j < ids.length; j++) {
+      const idB = ids[j]!;
+      const vB = titleNormalizedVectors.get(idB);
+      if (!vB) continue;
+      if (dotProduct(vA, vB) >= candidateFloor) {
+        const ra = find(idA);
+        const rb = find(idB);
+        if (ra !== rb) parent.set(ra, rb);
+      }
     }
   }
 
-  for (const sId of availableSingletonIds) {
-    if (sId === anchorId) continue;
-    const sVec = titleNormalizedVectors.get(sId);
-    if (!sVec) continue;
-    const sim = dotProduct(anchorVec, sVec);
-    if (sim >= candidateFloor) {
-      candidates.push({ type: "singleton", id: sId, sim });
-    }
+  const components = new Map<number, number[]>();
+  for (const id of ids) {
+    const root = find(id);
+    const members = components.get(root);
+    if (members) members.push(id);
+    else components.set(root, [id]);
   }
 
-  candidates.sort((a, b) => {
-    const simA = a.type === "cluster" ? a.maxSim : a.sim;
-    const simB = b.type === "cluster" ? b.maxSim : b.sim;
-    return simB - simA;
-  });
-
-  return candidates;
+  return [...components.values()].filter((g) => g.length >= 2);
 }
 
-function formatAnchorBlock(item: PreprocessedItemRow): string {
-  const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
-  return body.length > 0 ? `${item.title}\n${body}` : item.title;
+// Splits arr into chunks of at most size elements. Exported for testing.
+export function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
 }
 
-function formatMixedCandidateBlocks(
-  candidates: AttachCandidate[],
-  clusters: ReadonlyArray<Cluster>,
+function formatClusterMemberLines(
+  cluster: Cluster,
   itemById: Map<number, PreprocessedItemRow>,
 ): string {
-  return candidates
-    .map((cand, idx) => {
-      const num = idx + 1;
-      if (cand.type === "cluster") {
-        const cluster = clusters[cand.clusterIdx]!;
-        const memberLines = cluster.item_ids.slice(0, 3).map((id) => {
-          const item = itemById.get(id);
-          return `    - ${item ? item.title : `[item ${id}]`}`;
-        });
-        const extra =
-          cluster.item_ids.length > 3 ? `\n    (+ ${cluster.item_ids.length - 3} more)` : "";
-        return `(${num}) [Cluster: ${cluster.item_ids.length} articles]\n${memberLines.join("\n")}${extra}`;
-      } else {
-        const item = itemById.get(cand.id);
-        if (!item) return `(${num}) [Article] [item ${cand.id} not found]`;
-        const body = item.body_text?.replace(/\s+/g, " ").trim().slice(0, 50) ?? "";
-        return body.length > 0
-          ? `(${num}) [Article] ${item.title}\n    ${body}`
-          : `(${num}) [Article] ${item.title}`;
-      }
+  return cluster.item_ids
+    .map((id) => {
+      const item = itemById.get(id);
+      return `  - ${item ? item.title : `[item ${id}]`}`;
     })
     .join("\n");
 }
 
-function parseAttachOutput(text: string, candidateCount: number): Set<number> {
+function formatNumberedCandidateBlocks(
+  ids: number[],
+  itemById: Map<number, PreprocessedItemRow>,
+): string {
+  return ids
+    .map((id, idx) => {
+      const item = itemById.get(id);
+      return `(${idx + 1}) ${item ? item.title : `[item ${id}]`}`;
+    })
+    .join("\n");
+}
+
+// Parses "1,3" or "none" from attach LLM output into a 1-based index set.
+// Exported for testing.
+export function parseAttachOutput(text: string, candidateCount: number): Set<number> {
   const trimmed = text.trim();
   if (!trimmed || /^none$/i.test(trimmed)) return new Set();
   const result = new Set<number>();
@@ -166,114 +195,16 @@ function parseAttachOutput(text: string, candidateCount: number): Set<number> {
 interface AttachPassResult {
   clusters: Cluster[];
   remainingSingletonIds: Set<number>;
-  candidatesOffered: number;
-  attachedToCluster: number;
-  newPairsFormed: number;
+  phaseACalls: number;
+  phaseBCalls: number;
+  totalCalls: number;
+  attached: number;
+  newClusters: number;
   inputTokens: number | null;
   outputTokens: number | null;
   firstGenerationLogId: bigint | null;
 }
 
-// Exported for testing: the confirmed matches collected from one anchor's LLM call.
-export type AttachProposal = {
-  anchorId: number;
-  anchorBestSim: number;
-  confirmedClusters: Array<{ clusterIdx: number; maxSim: number }>;
-  confirmedSingletonIds: number[];
-};
-
-// Exported for testing: apply one round's proposals in descending anchorBestSim order.
-// Contested singletons go to the higher-bestSim anchor. Mutates currentClusters
-// (appends new clusters, updates existing ones) and remainingSingletonIds in place.
-// Returns changedMemberIds: all item_ids of every cluster that grew or was newly formed
-// this round — used by computeNextDirty to determine which anchors need re-judging.
-export function applyAttachRound(
-  proposals: AttachProposal[],
-  currentClusters: Cluster[],
-  remainingSingletonIds: Set<number>,
-  itemById: Map<number, PreprocessedItemRow>,
-): { attachedToCluster: number; newPairsFormed: number; changedMemberIds: Set<number> } {
-  const sorted = [...proposals].sort((a, b) => b.anchorBestSim - a.anchorBestSim);
-  const consumedThisRound = new Set<number>();
-  let attachedToCluster = 0;
-  let newPairsFormed = 0;
-  const changedMemberIds = new Set<number>();
-
-  for (const { anchorId, confirmedClusters, confirmedSingletonIds } of sorted) {
-    if (!remainingSingletonIds.has(anchorId) || consumedThisRound.has(anchorId)) continue;
-
-    const validSingletons = confirmedSingletonIds.filter(
-      (id) => remainingSingletonIds.has(id) && !consumedThisRound.has(id),
-    );
-
-    if (confirmedClusters.length > 0) {
-      confirmedClusters.sort((a, b) => b.maxSim - a.maxSim);
-      const bestIdx = confirmedClusters[0]!.clusterIdx;
-      const target = currentClusters[bestIdx]!;
-      const toAdd = [anchorId, ...validSingletons];
-      const updated = { ...target, item_ids: [...target.item_ids, ...toAdd] };
-      currentClusters[bestIdx] = updated;
-      for (const id of updated.item_ids) changedMemberIds.add(id);
-      for (const id of toAdd) {
-        remainingSingletonIds.delete(id);
-        consumedThisRound.add(id);
-        attachedToCluster++;
-      }
-    } else if (validSingletons.length > 0) {
-      const newMembers = [anchorId, ...validSingletons];
-      const groupItems = newMembers
-        .map((id) => itemById.get(id))
-        .filter((i): i is PreprocessedItemRow => i !== undefined);
-      const newCluster = buildAutoCluster(groupItems);
-      currentClusters.push(newCluster);
-      for (const id of newCluster.item_ids) changedMemberIds.add(id);
-      for (const id of newMembers) {
-        remainingSingletonIds.delete(id);
-        consumedThisRound.add(id);
-      }
-      newPairsFormed++;
-    }
-  }
-
-  return { attachedToCluster, newPairsFormed, changedMemberIds };
-}
-
-// Exported for testing: compute the set of remaining singletons whose candidate set
-// may have grown due to cluster changes this round. Only singletons within
-// candidateFloor of at least one changedMemberId can have gained a new candidate;
-// all others returned "none" against an unchanged set and need not be re-judged.
-export function computeNextDirty(
-  remainingSingletonIds: ReadonlySet<number>,
-  changedMemberIds: ReadonlySet<number>,
-  titleNormalizedVectors: ReadonlyMap<number, number[]>,
-  candidateFloor: number,
-): Set<number> {
-  if (changedMemberIds.size === 0) return new Set();
-  const dirty = new Set<number>();
-  for (const singId of remainingSingletonIds) {
-    const singVec = titleNormalizedVectors.get(singId);
-    if (!singVec) continue;
-    for (const memberId of changedMemberIds) {
-      const memberVec = titleNormalizedVectors.get(memberId);
-      if (!memberVec) continue;
-      if (dotProduct(singVec, memberVec) >= candidateFloor) {
-        dirty.add(singId);
-        break;
-      }
-    }
-  }
-  return dirty;
-}
-
-// Concurrent-rounds attach pass: anchor-centric, title-embedding-based, covers both
-// singleton→cluster and singleton↔singleton pairing.
-//
-// Each round: (1) snapshot current state; (2) build candidates for all eligible
-// anchors from the snapshot; (3) run all LLM calls concurrently under pLimit;
-// (4) apply merges deterministically — sort by anchorBestSim desc, apply via
-// union-find, skip any anchor or target singleton already consumed this round.
-// Cascade attach is preserved: clusters formed in round N appear in round N+1's
-// snapshot. Rounds repeat until a round yields zero new merges.
 async function attachSingletons(
   clusters: Cluster[],
   singletonIds: Set<number>,
@@ -286,9 +217,11 @@ async function attachSingletons(
     return {
       clusters,
       remainingSingletonIds: new Set(),
-      candidatesOffered: 0,
-      attachedToCluster: 0,
-      newPairsFormed: 0,
+      phaseACalls: 0,
+      phaseBCalls: 0,
+      totalCalls: 0,
+      attached: 0,
+      newClusters: 0,
       inputTokens: 0,
       outputTokens: 0,
       firstGenerationLogId: null,
@@ -298,201 +231,228 @@ async function attachSingletons(
   const currentClusters: Cluster[] = [...clusters];
   const remainingSingletonIds = new Set(singletonIds);
 
-  let totalCandidatesOffered = 0;
-  let totalAttachedToCluster = 0;
-  let totalNewPairsFormed = 0;
+  let phaseACalls = 0;
+  let phaseBCalls = 0;
+  let totalAttached = 0;
+  let totalNewClusters = 0;
   let totalInputTokens: number | null = 0;
   let totalOutputTokens: number | null = 0;
   let firstGenerationLogId: bigint | null = null;
 
   const limit = pLimit(config.concurrency);
-  let roundNumber = 0;
-  let totalLLMCalls = 0;
 
-  // Round 1: all singletons are dirty (full pass). Subsequent rounds: only singletons
-  // whose candidate set could have grown — those within candidateFloor of a cluster
-  // that changed last round. computeNextDirty populates this after each apply.
-  let dirtyAnchors = new Set(singletonIds);
-
-  while (dirtyAnchors.size > 0) {
-    roundNumber++;
-    const snapshotSingletonIds = new Set(remainingSingletonIds);
-    const snapshotClusters = currentClusters.slice();
-
-    // Only judge anchors in dirtyAnchors this round. bestSim is still computed
-    // against the full snapshot (all singletons + clusters) for accurate conflict resolution.
-    const allSingletonIds = [...snapshotSingletonIds];
-    const dirtyAnchorsList = [...dirtyAnchors].filter((id) => snapshotSingletonIds.has(id));
-    type AnchorInfo = { id: number; bestSim: number };
-    const anchorInfos: AnchorInfo[] = [];
-
-    for (const anchorId of dirtyAnchorsList) {
-      const anchorVec = titleNormalizedVectors.get(anchorId);
-      if (!anchorVec) {
-        anchorInfos.push({ id: anchorId, bestSim: 0 });
-        continue;
-      }
-      let bestSim = 0;
-      for (const cluster of snapshotClusters) {
-        for (const memberId of cluster.item_ids) {
-          const mv = titleNormalizedVectors.get(memberId);
-          if (!mv) continue;
-          const s = dotProduct(anchorVec, mv);
-          if (s > bestSim) bestSim = s;
-        }
-      }
-      for (const otherId of allSingletonIds) {
-        if (otherId === anchorId) continue;
-        const ov = titleNormalizedVectors.get(otherId);
-        if (!ov) continue;
-        const s = dotProduct(anchorVec, ov);
-        if (s > bestSim) bestSim = s;
-      }
-      anchorInfos.push({ id: anchorId, bestSim });
+  function accumTokens(r: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    generationLogId: bigint | null;
+  }): void {
+    if (r.inputTokens !== null) {
+      totalInputTokens = totalInputTokens !== null ? totalInputTokens + r.inputTokens : null;
+    } else if (r.generationLogId !== null) {
+      totalInputTokens = null;
     }
-
-    // Build candidate lists for each eligible anchor from the snapshot.
-    type AnchorTask = { anchorId: number; anchorBestSim: number; candidates: AttachCandidate[] };
-    const anchorTasks: AnchorTask[] = [];
-
-    for (const { id: anchorId, bestSim: anchorBestSim } of anchorInfos) {
-      if (anchorBestSim < config.candidate_floor) continue;
-      const availableSingletons = new Set(snapshotSingletonIds);
-      availableSingletons.delete(anchorId);
-      const candidates = buildAttachCandidates(
-        anchorId,
-        snapshotClusters,
-        availableSingletons,
-        titleNormalizedVectors,
-        config.candidate_floor,
-      );
-      if (candidates.length === 0) continue;
-      totalCandidatesOffered += candidates.length;
-      anchorTasks.push({ anchorId, anchorBestSim, candidates });
+    if (r.outputTokens !== null) {
+      totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + r.outputTokens : null;
+    } else if (r.generationLogId !== null) {
+      totalOutputTokens = null;
     }
-
-    if (anchorTasks.length === 0) break;
-    totalLLMCalls += anchorTasks.length;
-
-    // Run all LLM calls for this round concurrently.
-    type LLMTaskResult = AttachProposal & {
-      inputTokens: number | null;
-      outputTokens: number | null;
-      generationLogId: bigint | null;
-    };
-
-    // p-limit's return type is inferred as `any` when its type declarations are absent;
-    // the explicit cast restores the typed array for the filter/accumulation below.
-    const roundResults = (await Promise.all(
-      anchorTasks.map(({ anchorId, anchorBestSim, candidates }) =>
-        limit(async (): Promise<LLMTaskResult | null> => {
-          const anchorItem = itemById.get(anchorId);
-          if (!anchorItem) return null;
-          const anchorBlock = formatAnchorBlock(anchorItem);
-          const candidateBlocks = formatMixedCandidateBlocks(candidates, snapshotClusters, itemById);
-          let result;
-          try {
-            result = await callLLM({
-              stage: "grouping",
-              stageRunId: runId,
-              model: config.model,
-              systemPrompt: buildAttachSystemPrompt(),
-              userPrompt: buildAttachUserPrompt(anchorBlock, candidateBlocks),
-              temperature: config.temperature,
-              maxTokens: config.max_tokens,
-              reasoningEffort: config.reasoning_effort,
-              provider: config.provider,
-              timeoutMs: config.timeout_ms,
-              stream: config.stream,
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[grouping] attach round ${roundNumber}: anchor ${anchorId} LLM call failed: ${msg}`,
-            );
-            return null;
-          }
-          const confirmedIndices = parseAttachOutput(result.text, candidates.length);
-          const confirmedClusters: Array<{ clusterIdx: number; maxSim: number }> = [];
-          const confirmedSingletonIds: number[] = [];
-          for (const idx of confirmedIndices) {
-            const cand = candidates[idx - 1]!;
-            if (cand.type === "cluster") {
-              confirmedClusters.push({ clusterIdx: cand.clusterIdx, maxSim: cand.maxSim });
-            } else {
-              confirmedSingletonIds.push(cand.id);
-            }
-          }
-          return {
-            anchorId,
-            anchorBestSim,
-            confirmedClusters,
-            confirmedSingletonIds,
-            inputTokens: result.inputTokens,
-            outputTokens: result.outputTokens,
-            generationLogId: result.generationLogId,
-          };
-        }),
-      ),
-    )) as Array<LLMTaskResult | null>;
-
-    // Accumulate tokens from this round's results.
-    for (const r of roundResults) {
-      if (!r) continue;
-      if (r.inputTokens !== null) {
-        totalInputTokens = totalInputTokens !== null ? totalInputTokens + r.inputTokens : null;
-      } else if (r.generationLogId !== null) {
-        totalInputTokens = null;
-      }
-      if (r.outputTokens !== null) {
-        totalOutputTokens = totalOutputTokens !== null ? totalOutputTokens + r.outputTokens : null;
-      } else if (r.generationLogId !== null) {
-        totalOutputTokens = null;
-      }
-      if (r.generationLogId !== null && firstGenerationLogId === null) {
-        firstGenerationLogId = r.generationLogId;
-      }
+    if (r.generationLogId !== null && firstGenerationLogId === null) {
+      firstGenerationLogId = r.generationLogId;
     }
+  }
 
-    // Extract valid proposals (non-null results with at least one confirmation).
-    const proposals: AttachProposal[] = roundResults
-      .filter((r): r is LLMTaskResult => r !== null)
-      .filter((r) => r.confirmedClusters.length > 0 || r.confirmedSingletonIds.length > 0);
+  // Run one LLM call for a chunk of candidates. Maps confirmed 1-based indices back to IDs.
+  // Returns empty set on failure (no crash, no merge).
+  async function callAttachChunk(
+    phase: "A" | "B",
+    label: string,
+    systemPrompt: string,
+    userPrompt: string,
+    chunkIds: number[],
+  ): Promise<Set<number>> {
+    if (phase === "A") phaseACalls++;
+    else phaseBCalls++;
+    try {
+      const result = await callLLM({
+        stage: "grouping",
+        stageRunId: runId,
+        model: config.model,
+        systemPrompt,
+        userPrompt,
+        temperature: config.temperature,
+        maxTokens: config.max_tokens,
+        reasoningEffort: config.reasoning_effort,
+        provider: config.provider,
+        timeoutMs: config.timeout_ms,
+        stream: config.stream,
+      });
+      accumTokens(result);
+      const confirmedNums = parseAttachOutput(result.text, chunkIds.length);
+      const confirmedIds = new Set<number>();
+      for (const n of confirmedNums) {
+        const id = chunkIds[n - 1];
+        if (id !== undefined) confirmedIds.add(id);
+      }
+      return confirmedIds;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[grouping] attach phase ${phase} ${label}: LLM call failed: ${msg}`);
+      return new Set();
+    }
+  }
 
-    const {
-      attachedToCluster: roundAttached,
-      newPairsFormed: roundPairs,
-      changedMemberIds,
-    } = applyAttachRound(proposals, currentClusters, remainingSingletonIds, itemById);
-    totalAttachedToCluster += roundAttached;
-    totalNewPairsFormed += roundPairs;
-
-    console.log(
-      `[grouping] attach round ${roundNumber}: llm_calls=${anchorTasks.length}, ` +
-        `dirty_anchors=${dirtyAnchorsList.length}, ` +
-        `attaches=${roundAttached}, new_pairs=${roundPairs}`,
-    );
-
-    if (roundAttached === 0 && roundPairs === 0) break;
-
-    dirtyAnchors = computeNextDirty(
+  // Evaluate candidate singletons for one cluster; run chunked LLM calls sequentially.
+  // Does not mutate shared state — callers apply results after Promise.all.
+  async function evalCluster(
+    clusterIdx: number,
+  ): Promise<{ clusterIdx: number; confirmedIds: Set<number> } | null> {
+    const cluster = currentClusters[clusterIdx]!;
+    const candidates = buildClusterCandidateSingletons(
+      cluster.item_ids,
       remainingSingletonIds,
-      changedMemberIds,
       titleNormalizedVectors,
       config.candidate_floor,
     );
+    if (candidates.length === 0) return null;
+
+    const chunks = chunkArray(candidates, ATTACH_CHUNK_SIZE);
+    const confirmedIds = new Set<number>();
+    for (const chunk of chunks) {
+      const chunkConfirmed = await callAttachChunk(
+        "A",
+        `cluster[${clusterIdx}]`,
+        buildPhaseASystemPrompt(),
+        buildPhaseAUserPrompt(
+          formatClusterMemberLines(cluster, itemById),
+          formatNumberedCandidateBlocks(chunk, itemById),
+        ),
+        chunk,
+      );
+      for (const id of chunkConfirmed) confirmedIds.add(id);
+    }
+    return confirmedIds.size > 0 ? { clusterIdx, confirmedIds } : null;
+  }
+
+  // Run Phase A for a set of cluster indices concurrently (pLimit).
+  async function runPhaseA(clusterIdxs: number[]): Promise<Map<number, Set<number>>> {
+    type Entry = { clusterIdx: number; confirmedIds: Set<number> } | null;
+    // p-limit's return type is inferred as `any`; the cast restores the typed array.
+    const entries = (await Promise.all(
+      clusterIdxs.map((idx) => limit(() => evalCluster(idx))),
+    )) as Array<Entry>;
+
+    const resultMap = new Map<number, Set<number>>();
+    for (const entry of entries) {
+      if (entry) resultMap.set(entry.clusterIdx, entry.confirmedIds);
+    }
+    return resultMap;
+  }
+
+  // Apply Phase A results in ascending cluster index order (lower index wins contention).
+  // Mutates currentClusters and remainingSingletonIds.
+  function applyPhaseAResults(resultMap: Map<number, Set<number>>): Set<number> {
+    const changedIdxs = new Set<number>();
+    for (const [clusterIdx, confirmedIds] of [...resultMap.entries()].sort((a, b) => a[0] - b[0])) {
+      const toAdd = [...confirmedIds].filter((id) => remainingSingletonIds.has(id));
+      if (toAdd.length === 0) continue;
+      const cluster = currentClusters[clusterIdx]!;
+      currentClusters[clusterIdx] = { ...cluster, item_ids: [...cluster.item_ids, ...toAdd] };
+      for (const id of toAdd) remainingSingletonIds.delete(id);
+      totalAttached += toAdd.length;
+      changedIdxs.add(clusterIdx);
+    }
+    return changedIdxs;
+  }
+
+  // --- Phase A: grow existing clusters ---
+  const phaseAResultMap = await runPhaseA(currentClusters.map((_, idx) => idx));
+  const phaseAChangedIdxs = applyPhaseAResults(phaseAResultMap);
+
+  console.log(
+    `[grouping] attach phase A: calls=${phaseACalls}, ` +
+      `clusters_with_candidates=${phaseAResultMap.size}, ` +
+      `clusters_changed=${phaseAChangedIdxs.size}, attached=${totalAttached}`,
+  );
+
+  // --- Phase B: cluster leftover singletons ---
+  const phaseBStartIdx = currentClusters.length;
+  const protoGroups = buildProtoGroups(
+    remainingSingletonIds,
+    titleNormalizedVectors,
+    config.candidate_floor,
+  );
+
+  type PhaseBEntry = Set<number> | null;
+  const phaseBEntries = (await Promise.all(
+    protoGroups.map((group) =>
+      limit(async (): Promise<PhaseBEntry> => {
+        const chunks = chunkArray(group, ATTACH_CHUNK_SIZE);
+        const confirmedIds = new Set<number>();
+        for (const chunk of chunks) {
+          const chunkConfirmed = await callAttachChunk(
+            "B",
+            `proto-group[${group[0]}]`,
+            buildPhaseBSystemPrompt(),
+            buildPhaseBUserPrompt(formatNumberedCandidateBlocks(chunk, itemById)),
+            chunk,
+          );
+          for (const id of chunkConfirmed) confirmedIds.add(id);
+        }
+        return confirmedIds.size >= 2 ? confirmedIds : null;
+      }),
+    ),
+  )) as Array<PhaseBEntry>;
+
+  let phaseBNewClusters = 0;
+  for (const confirmedIds of phaseBEntries) {
+    if (!confirmedIds) continue;
+    const members = [...confirmedIds].filter((id) => remainingSingletonIds.has(id));
+    if (members.length < 2) continue;
+    const groupItems = members
+      .map((id) => itemById.get(id))
+      .filter((i): i is PreprocessedItemRow => i !== undefined);
+    currentClusters.push(buildAutoCluster(groupItems));
+    for (const id of members) remainingSingletonIds.delete(id);
+    phaseBNewClusters++;
+    totalNewClusters++;
   }
 
   console.log(
-    `[grouping] attach: rounds=${roundNumber}, total_llm_calls=${totalLLMCalls}`,
+    `[grouping] attach phase B: calls=${phaseBCalls}, ` +
+      `proto_groups=${protoGroups.length}, new_clusters=${phaseBNewClusters}`,
+  );
+
+  // --- Cascade: one bounded re-pass of Phase A for clusters that changed ---
+  // Covers clusters that grew in Phase A and new clusters formed in Phase B.
+  const cascadeIdxs: number[] = [
+    ...phaseAChangedIdxs,
+    ...Array.from({ length: currentClusters.length - phaseBStartIdx }, (_, i) => phaseBStartIdx + i),
+  ];
+
+  if (cascadeIdxs.length > 0 && remainingSingletonIds.size > 0) {
+    const phaseACallsPreCascade = phaseACalls;
+    const cascadeResultMap = await runPhaseA(cascadeIdxs);
+    const cascadeChangedIdxs = applyPhaseAResults(cascadeResultMap);
+    console.log(
+      `[grouping] attach cascade: calls=${phaseACalls - phaseACallsPreCascade}, ` +
+        `clusters_changed=${cascadeChangedIdxs.size}, attached=${totalAttached}`,
+    );
+  }
+
+  const totalCalls = phaseACalls + phaseBCalls;
+  console.log(
+    `[grouping] attach: phase_a_calls=${phaseACalls}, phase_b_calls=${phaseBCalls}, ` +
+      `total_calls=${totalCalls}`,
   );
 
   return {
     clusters: currentClusters,
     remainingSingletonIds,
-    candidatesOffered: totalCandidatesOffered,
-    attachedToCluster: totalAttachedToCluster,
-    newPairsFormed: totalNewPairsFormed,
+    phaseACalls,
+    phaseBCalls,
+    totalCalls,
+    attached: totalAttached,
+    newClusters: totalNewClusters,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     firstGenerationLogId,
@@ -950,9 +910,11 @@ export async function runGrouping(
         attachResult.firstGenerationLogId,
       );
       console.log(
-        `[grouping] step 3 attach: candidates_offered=${attachResult.candidatesOffered}, ` +
-          `attached_to_cluster=${attachResult.attachedToCluster}, ` +
-          `new_pairs_formed=${attachResult.newPairsFormed}, ` +
+        `[grouping] step 3 attach: phase_a_calls=${attachResult.phaseACalls}, ` +
+          `phase_b_calls=${attachResult.phaseBCalls}, ` +
+          `total_calls=${attachResult.totalCalls}, ` +
+          `attached=${attachResult.attached}, ` +
+          `new_clusters=${attachResult.newClusters}, ` +
           `singletons=${singletonsBefore}→${remainingSingletonIds.size}`,
       );
     }

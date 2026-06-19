@@ -20,6 +20,28 @@ Entry format:
 
 ---
 
+## 2026-06-19 — Attach pass rebuilt as cluster-centric (Phase A + Phase B), replacing anchor-centric round loop
+
+**Decision:** Replaced the anchor-centric attach loop (one LLM call per singleton, ~1,200+ calls/run) with a cluster-centric two-phase design where calls scale with clusters and proto-groups, not singletons.
+
+**Phase A — grow existing clusters:** For each step-2 cluster, gather candidate singletons whose title-embedding cosine to any cluster member >= `candidate_floor`. If a cluster has ≥1 candidate, make ONE LLM call: present the cluster's member titles and a numbered list of candidate titles; the model returns which candidates (if any) cover the same event. Clusters with no candidates make no call. Candidate lists exceeding 40 items are chunked (40 per call, results unioned) as a token guard.
+
+**Phase B — cluster leftover singletons:** Take singletons not consumed in Phase A. Form proto-groups via union-find connected components on title-embedding cosine at `candidate_floor`. For each proto-group of size ≥2, ONE LLM call: present the group's titles; the model returns which subset covers the same event. Confirmed subsets become new clusters; unconfirmed items stay singletons.
+
+**Cascade:** One bounded re-pass of Phase A restricted to clusters that changed (grew in Phase A or formed in Phase B), then stop. This recovers the cascade correctness of the old round loop without running a full Phase A again.
+
+**Contention:** If two clusters confirm the same singleton in Phase A, results are applied in ascending cluster-index order (lower index wins). The cascade re-pass naturally resolves any remaining ambiguity.
+
+**Logging:** `phase_a_calls`, `phase_b_calls`, `total_calls`, `attached`, `new_clusters`, `singletons before→after`.
+
+**Context:** Run #31 produced ~1,268 attach-pass LLM calls across rounds (anchor-centric). The root cause was call shape: the old design made one call per anchor (singleton), and with ~520 eligible anchors across 2–3 dirty rounds, calls scaled with singletons × rounds. The dirty-tracking optimization (2026-06-18) reduced redundant re-judgments within the round loop but did not change the O(singletons) scaling of Phase A itself.
+
+**Rationale:** The correct unit of grouping is the cluster, not the singleton. A cluster with 8 candidates needs one call to evaluate all 8, not 8 calls from each singleton's perspective. The new design produces call counts in the low dozens (clusters with candidates + proto-groups), regardless of how many singletons exist. Phase A and Phase B run concurrently under `pLimit(config.concurrency)`.
+
+**Supersedes:** The anchor-centric concurrent-rounds design (2026-06-18) and the dirty-tracking amendment (2026-06-18). `AttachCandidate`, `AttachProposal`, `applyAttachRound`, `computeNextDirty`, the round loop, and dirty-anchor tracking are all removed. `buildClusterCandidateSingletons`, `buildProtoGroups`, `chunkArray`, and `parseAttachOutput` replace them.
+
+---
+
 ## 2026-06-18 — Attach rounds: dirty-anchor tracking eliminates redundant re-judgments
 
 **Decision:** After each attach round, only re-judge singletons whose candidate set could have grown. `computeNextDirty` computes this set: for each remaining singleton, check its title-only cosine similarity against every item in `changedMemberIds` (the item_ids of every cluster that grew or was newly formed this round); if any cosine >= `candidate_floor`, the singleton is dirty. `dirtyAnchors` drives the outer loop — `while (dirtyAnchors.size > 0)` replaces `while (true)`. Round 1 is a full pass (all singletons dirty), matching the previous behavior exactly. Subsequent rounds judge only the dirty subset. `applyAttachRound` now returns `changedMemberIds` alongside `attachedToCluster` and `newPairsFormed`. `computeNextDirty` is exported as a pure function for unit testing. Per-round logging adds `dirty_anchors=<n>` so the shrinking pattern is visible.
