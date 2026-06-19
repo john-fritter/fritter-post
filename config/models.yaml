@@ -57,7 +57,7 @@ filter:
 # docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
 # since this stage is built to become a scorer itself with only a prompt swap.
 prefilter:
-  model: zai-org/glm-5.1
+  model: zai-org/glm-5.2
   provider: nanogpt
   temperature: 0.1
   max_tokens: 4096
@@ -88,7 +88,7 @@ editor:
   # identical combined score, ranking them against each other by reader relevance.
   # Cheap fast model; groups are small; calls run concurrently.
   tie_break:
-    model: zai-org/glm-5.1:thinking
+    model: zai-org/glm-5.2:thinking
     provider: nanogpt
     temperature: 0.1
     max_tokens: 24000
@@ -104,7 +104,7 @@ writers:
   max_tokens: 2000
 
 editor_pass_1:
-  model: zai-org/glm-5.1:thinking
+  model: zai-org/glm-5.2:thinking
   provider: nanogpt
   temperature: 0.1
   max_tokens: 24000
@@ -154,16 +154,13 @@ grouping:
     similarity_threshold: 0.66
     # Top-K nearest neighbors per item considered for edge creation.
     # Limits graph density; raise if same-story items are getting missed.
-    top_k: 10
-  # Attach pass: for each singleton anchor (processed in descending best title-sim
-  # order), generate candidate clusters and other singletons whose title-only
-  # cosine similarity to the anchor is >= candidate_floor, offer ALL of them to a
-  # cheap LLM, and confirm which cover the same news event. Two outcomes: attach
-  # anchor to an existing cluster, or pair two singletons into a new 2-item cluster.
-  # Sequential union-find ensures a consumed anchor/singleton is not reprocessed.
-  # Runs after connected-components, before describe. Attach-only; never splits.
-  # candidate_floor is the sole candidate filter — no per-anchor cap. Silently
-  # dropping a candidate above the floor could miss a genuine duplicate.
+    top_k: 15
+  # Attach pass: concurrent rounds. Each round snapshots current state, builds
+  # candidates for all eligible anchors, runs all LLM calls concurrently under
+  # pLimit(concurrency), then applies merges deterministically (highest anchorBestSim
+  # wins a contested singleton). Cascade attach: clusters formed in round N are
+  # visible in round N+1. Rounds repeat until a round yields zero new merges.
+  # Attach-only; never splits. candidate_floor is the sole candidate filter.
   attach:
     enabled: true
     # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
@@ -171,19 +168,21 @@ grouping:
     # (e.g. Samsung pair at 0.635) while skipping true orphans. The LLM is the
     # precision gate — there is no auto-accept tier and no per-anchor cap.
     candidate_floor: 0.55
-    model: zai-org/glm-5.1:thinking
+    model: zai-org/glm-5.2
     provider: nanogpt
     temperature: 0.1
     max_tokens: 24000
+    # Governs actual in-flight LLM calls within each concurrent round. Must be > 1
+    # to get parallelism — the old sequential loop ignored this setting.
     concurrency: 10
-    reasoning_effort: "xhigh"
+    reasoning_effort: "none"
     stream: true
     timeout_ms: 300000
   # Describe pass: cheap batched LLM call that writes a neutral title and
   # short summary for every multi-item cluster. Runs after attach. Singletons
   # skip this pass.
   describe:
-    model: zai-org/glm-5.1
+    model: zai-org/glm-5.2
     provider: nanogpt
     temperature: 0.1
     max_tokens: 4096

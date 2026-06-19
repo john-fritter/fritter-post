@@ -20,6 +20,54 @@ Entry format:
 
 ---
 
+## 2026-06-19 — Attach pass rebuilt as cluster-centric (Phase A + Phase B), replacing anchor-centric round loop
+
+**Decision:** Replaced the anchor-centric attach loop (one LLM call per singleton, ~1,200+ calls/run) with a cluster-centric two-phase design where calls scale with clusters and proto-groups, not singletons.
+
+**Phase A — grow existing clusters:** For each step-2 cluster, gather candidate singletons whose title-embedding cosine to any cluster member >= `candidate_floor`. If a cluster has ≥1 candidate, make ONE LLM call: present the cluster's member titles and a numbered list of candidate titles; the model returns which candidates (if any) cover the same event. Clusters with no candidates make no call. Candidate lists exceeding 40 items are chunked (40 per call, results unioned) as a token guard.
+
+**Phase B — cluster leftover singletons:** Take singletons not consumed in Phase A. Form proto-groups via union-find connected components on title-embedding cosine at `candidate_floor`. For each proto-group of size ≥2, ONE LLM call: present the group's titles; the model returns which subset covers the same event. Confirmed subsets become new clusters; unconfirmed items stay singletons.
+
+**Cascade:** One bounded re-pass of Phase A restricted to clusters that changed (grew in Phase A or formed in Phase B), then stop. This recovers the cascade correctness of the old round loop without running a full Phase A again.
+
+**Contention:** If two clusters confirm the same singleton in Phase A, results are applied in ascending cluster-index order (lower index wins). The cascade re-pass naturally resolves any remaining ambiguity.
+
+**Logging:** `phase_a_calls`, `phase_b_calls`, `total_calls`, `attached`, `new_clusters`, `singletons before→after`.
+
+**Context:** Run #31 produced ~1,268 attach-pass LLM calls across rounds (anchor-centric). The root cause was call shape: the old design made one call per anchor (singleton), and with ~520 eligible anchors across 2–3 dirty rounds, calls scaled with singletons × rounds. The dirty-tracking optimization (2026-06-18) reduced redundant re-judgments within the round loop but did not change the O(singletons) scaling of Phase A itself.
+
+**Rationale:** The correct unit of grouping is the cluster, not the singleton. A cluster with 8 candidates needs one call to evaluate all 8, not 8 calls from each singleton's perspective. The new design produces call counts in the low dozens (clusters with candidates + proto-groups), regardless of how many singletons exist. Phase A and Phase B run concurrently under `pLimit(config.concurrency)`.
+
+**Supersedes:** The anchor-centric concurrent-rounds design (2026-06-18) and the dirty-tracking amendment (2026-06-18). `AttachCandidate`, `AttachProposal`, `applyAttachRound`, `computeNextDirty`, the round loop, and dirty-anchor tracking are all removed. `buildClusterCandidateSingletons`, `buildProtoGroups`, `chunkArray`, and `parseAttachOutput` replace them.
+
+---
+
+## 2026-06-18 — Attach rounds: dirty-anchor tracking eliminates redundant re-judgments
+
+**Decision:** After each attach round, only re-judge singletons whose candidate set could have grown. `computeNextDirty` computes this set: for each remaining singleton, check its title-only cosine similarity against every item in `changedMemberIds` (the item_ids of every cluster that grew or was newly formed this round); if any cosine >= `candidate_floor`, the singleton is dirty. `dirtyAnchors` drives the outer loop — `while (dirtyAnchors.size > 0)` replaces `while (true)`. Round 1 is a full pass (all singletons dirty), matching the previous behavior exactly. Subsequent rounds judge only the dirty subset. `applyAttachRound` now returns `changedMemberIds` alongside `attachedToCluster` and `newPairsFormed`. `computeNextDirty` is exported as a pure function for unit testing. Per-round logging adds `dirty_anchors=<n>` so the shrinking pattern is visible.
+
+**Context:** The concurrent-rounds rewrite (see previous entry) recovered throughput but re-judged all ~520 eligible anchors every round — anchors that had returned "none" against an unchanged candidate set returned "none" again. On a full day with ~5 rounds, this produced ~2,500 total LLM calls instead of ~520, adding ~44 min of wall time and erasing most of the concurrency win.
+
+**Rationale:** An anchor's LLM verdict can only change if its candidate list changes. A candidate list changes only when a new cluster (or a cluster growth) brings a member within `candidate_floor` of the anchor. `computeNextDirty` checks only the newly changed members — O(remaining_singletons × changed_members) per round — not the full cross-product. Completeness is preserved: cascade anchors (singletons near newly formed clusters) are correctly included. Singletons that returned "none" in round 1 and are not near any changed member are never re-judged, converging the dirty set to empty in a couple of rounds. Total LLM calls ~ eligible count + small cascade tail (~520 + O(10)), not eligible × rounds.
+
+**Supersedes:** The "round loop repeating until a round produces zero new merges" termination condition described in the parallelization entry (2026-06-18 above), which re-judged all eligible anchors every round. The loop now terminates when `dirtyAnchors` is empty (which happens automatically when `changedMemberIds` is empty, i.e., no merges occurred).
+
+---
+
+## 2026-06-18 — Attach pass parallelized via concurrent rounds with deterministic post-round apply
+
+**Decision:** Replace the sequential per-anchor loop in `attachSingletons` with concurrent rounds. Each round: (1) snapshot current state (`remainingSingletonIds`, `currentClusters`); (2) compute `anchorBestSim` for all remaining singletons against the snapshot; (3) build candidate lists for all eligible anchors from the snapshot (existing `buildAttachCandidates` logic, `candidate_floor`, no top-k cap — unchanged); (4) run all LLM calls concurrently under `pLimit(config.concurrency)` + `Promise.all` — no state mutation during the round; (5) apply proposed merges deterministically: sort by `anchorBestSim` desc, apply via union-find, skip any anchor or target singleton already consumed by an earlier-applied (higher-sim) merge this round. Newly-formed clusters become valid targets in the **next** round — cascade attach is preserved. Rounds repeat until a round yields zero new attaches and zero new pairs. `applyAttachRound` is exported as a pure function (modulo in-place mutation of the passed arrays) for unit testing.
+
+`grouping.attach.concurrency` (already 10 in `models.yaml`) now governs actual in-flight LLM calls; the old sequential loop held parallelism at 1 regardless of this setting. The comment on the `concurrency` key in `models.yaml` is updated accordingly.
+
+**Context:** With ~520 eligible anchors on a full day and ~12s per LLM call (glm-5.1:thinking at xhigh reasoning effort), the sequential loop produced ~99 minutes of wall time. The serialization was required for correctness in the original design (each anchor's candidates depended on which singletons were already consumed), but the dependency only matters at round granularity, not call granularity: within a round, all anchors build candidates from the same snapshot, making their calls fully independent.
+
+**Rationale:** Concurrent calls within a round recover the throughput lost to sequentialization without breaking correctness. The deterministic post-round apply (highest `anchorBestSim` wins a contested singleton) is equivalent to the sequential approach for the common no-contention case, and produces a principled, reproducible result in the contention case. The sequential loop was the sole cause of the ~99-min runtime — embedding and graph density were not factors.
+
+**Supersedes:** The "sequential union-find" description in "Grouping attach pass reworked: title-only embeddings + singleton↔singleton pairing" (2026-06-16), which described processing anchors serially in descending best-sim order. The round-based approach replaces the serial loop; cascade and correctness guarantees are preserved.
+
+---
+
 ## 2026-06-18 — Preprocessor: opt-in flag to skip cross-run dedup for repeatable testing
 
 **Decision:** Added `--skip-cross-run-dedup` (default `false`) to `scripts/preprocess.ts` and `runPreprocessor()`. When `true`, the cross-run dedup block is bypassed entirely — `freshCandidates` is set directly to `candidates` without querying `preprocessed_items` history. Within-batch dedup (same source+URL collapse) always runs regardless of the flag. The flag triggers a loud console warning banner at run start, is recorded as `cross_run_dedup_skipped BOOLEAN` on the `preprocessor_runs` row (migration 029), and is shown in the end-of-run summary. Pure helpers (`normalizeTitle`, `buildCrossRunKeys`, `isCrossRunDuplicate`) extracted to `src/pipeline/preprocessor/dedup.ts` for testability without a DB connection.
