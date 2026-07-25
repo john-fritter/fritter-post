@@ -20,6 +20,29 @@ Entry format:
 
 ---
 
+## 2026-07-25 — Researcher stage dropped; docs reconciled with what was actually built
+
+**Decision:** The researcher stage is removed from the pipeline. The editor's ranked, tiered output feeds the writers directly. `src/pipeline/researcher/` is deleted, the `researcher:` block is removed from `config/models.yaml`, and `researcher` is removed from `ModelsConfigSchema`. The pipeline is now eight stages: collector → preprocessor → prefilter → grouping → grouping-pass-1 → editor → writers → publisher, of which the first six are built.
+
+Alongside this, the docs were reconciled with the code after a month of structural drift:
+
+- **CLAUDE.md's editor section was wrong.** It described a whole-pile single LLM call emitting `tier;;ref;;reason`, recognition-based parsing, and retry-once-then-fallback via `editor.fallback`. The editor has been a deterministic combined-score formula with an LLM tie-break since 2026-06-16, and `editor.fallback` no longer exists in `models.yaml`. Rewritten to match.
+- **Dead `filter:` block removed from `models.yaml`.** The filter stage was folded into the prefilter (2026-06-13) and its table dropped by migration 026. The block was not in `ModelsConfigSchema`, so Zod had been silently discarding it.
+- **`docs/concept.md` stage architecture rewritten** to match reality: prefilter and grouping-pass-1 added as named stages, the researcher section replaced by grouping-pass-1 and the real editor, storage table list and model assignments corrected, and the standing memo reframed as a writers-stage voice document rather than an editor one.
+- **README** referenced `docs/standing-memo.md`, which does not exist; corrected, along with the stage count and script list.
+- **Migration numbering:** `025` was used twice. The runner sorts and tracks by filename, so both apply correctly and deterministically — no action needed beyond documenting that the next number is 030.
+- **`npm test` added** (`scripts/test.ts`): discovers every `tests/*.test.ts` and runs each in its own tsx process. The ten test files already existed and passed, but there was no way to run them as a suite.
+
+**Context:** Development from mid-June onward pushed editorial judgment upstream — into the bio-aware prefilter and the grouping-pass-1 scorer — and progressively simplified the editor until it became arithmetic. The researcher was conceived when the editor was imagined as an orchestrated multi-call stage consuming "article ideas": self-contained units the researcher would build by fetching full text and following threads. That consumer no longer exists in that form. Grouping already does the clustering the researcher was going to do during research, and it does it on embeddings rather than an agentic loop.
+
+**Rationale:** The researcher's remaining unique job would have been fetching full article text beyond the RSS excerpt. That is a real need for the writers, but it is a bounded fetch-and-extract problem, not an agentic loop with step budgets — and it belongs to whatever feeds the writers, not to a separate stage between grouping and the editor. Keeping an unbuilt agentic stage in the architecture diagram was actively misleading about what the pipeline is: seven of its eight stages are software or bounded LLM calls, and the one genuinely agentic component was the one nobody built. Dropping it also removes the "independent reporting" pressure that CLAUDE.md already lists as out of scope for V1.
+
+**Open question this creates:** the writer package — angle, voice brief, editorial notes, target length — was going to be produced by the editor's phase 4 from the researcher's article ideas. Neither exists now. Before the writers stage can be built, decide whether the editor grows a package step or the writers work directly from the grouping digest plus tier. Recorded in `concept.md` under Stage 6.
+
+**Supersedes:** The seven-stage architecture in `concept.md`, and every description of the researcher as a planned stage.
+
+---
+
 ## 2026-06-19 — Attach pass rebuilt as cluster-centric (Phase A + Phase B), replacing anchor-centric round loop
 
 **Decision:** Replaced the anchor-centric attach loop (one LLM call per singleton, ~1,200+ calls/run) with a cluster-centric two-phase design where calls scale with clusters and proto-groups, not singletons.

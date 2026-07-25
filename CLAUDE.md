@@ -41,7 +41,9 @@ features in the direction of any of these. When in doubt, less is more.
   Embedding vectors (4096-dim, `qwen/qwen3-embedding-8b` via OpenRouter)
   stored in `item_embeddings`. Used by the grouping stage.
 - **Deployment:** Docker container, fronted by Caddy, on fritter.lol
-- **Cron:** systemd timer on the host invoking the pipeline entrypoint
+- **Cron:** *planned* — a systemd timer on the host invoking a pipeline
+  entrypoint. Not built. There is no single entrypoint script; the six stages
+  are run by hand, in order, threading run ids between them.
 
 ---
 
@@ -70,17 +72,16 @@ fritter-post/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
-│   │   ├── editor/              # whole-pile tiering and ranking (grouping pile)
-│   │   ├── researcher/          # (stub)
-│   │   ├── writers/             # (stub)
-│   │   └── publisher/           # (stub)
+│   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
+│   │   ├── writers/             # (not built — empty)
+│   │   └── publisher/           # (not built — empty)
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
 │   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–024)
+├── migrations/                  # numbered SQL migrations (001–029)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -88,8 +89,12 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The full concept is seven stages (see `docs/concept.md`). The following are
-built and production-ready. Researcher, writers, and publisher are stubs.
+The pipeline is eight stages (see `docs/concept.md`). The six below are built
+and production-ready. Writers and publisher are not built — their directories
+are empty.
+
+The researcher stage was dropped; the editor's tiered output feeds the writers
+directly (see `docs/decisions.md`).
 
 Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
 `triage` clusterer — seed + parallel spines + semantic merge — was removed once
@@ -166,23 +171,37 @@ top `grouping.pile_target` (config: 150), and writes to `editor_piles` (with
 editor via the grouping digest's id-list length.
 
 ### editor
-Whole-pile single LLM call. Reads all clusters and singletons from the editor
-pile, ranks and tiers them: `feature`, `standard`, or `brief`. Emits
-`tier;;ref;;reason` lines in rank order;
-software derives rank from line position. Streaming always on (`stream: true`).
-Retry-once-then-fallback resilience: primary → retry primary once → optional
-fallback model (`editor.fallback` in `models.yaml`). Reads `docs/bio.md`.
+**Deterministic formula, not an LLM ranker.** Reads all clusters and
+singletons from the editor pile and ranks them by a combined score:
 
-The system prompt is fully static (no runtime file reads). The bio travels in
-the user message alongside the pile. The output parser is recognition-based:
-each `;;`-delimited line is scanned for a tier keyword (`feature`, `standard`,
-`brief`, `cut`) and a C/S ref pattern (`C\d+` / `S\d+`) independently of
-column position, so format variation from the model (swapped columns, leading
-numbering) doesn't break parsing.
+```
+combined = relevance + source_weight * ln(sources)
+```
 
-Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`,
-then presents the pile to the model as `EditorClusterPileItem` +
-`EditorSingletonPileItem` blocks.
+`relevance` is the grouping-pass-1 score (0–100); `sources` is the cluster
+member count (1 for singletons, and `ln(1) = 0`, so singletons get no lift);
+`source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
+Rows sort by combined descending, then relevance, then ref.
+
+Tiers are assigned by rank position from fixed counts in `editor.tiers`
+(config: feature 15, standard 60, brief 75). Features fill first, then
+standard, then brief — the last tier absorbs the shortfall on a smaller pile.
+
+The only LLM in this stage is the **tie-break**: items sharing an identical
+combined score are grouped and ranked against each other by one small
+bio-aware call per tie group, run concurrently under
+`editor.tie_break.concurrency`. Reads `docs/bio.md`. Ties that the LLM
+doesn't resolve fall back to ref ordering.
+
+Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
+and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
+`tests/editor-tie-break.test.ts`).
+
+Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`.
+
+(This replaced an earlier whole-pile LLM tierer with retry-once-then-fallback
+resilience. `editor.fallback` no longer exists in `models.yaml`. See
+`docs/decisions.md`, 2026-06-16.)
 
 ---
 
@@ -276,7 +295,13 @@ anything with quoted arguments).
 - `npm run dev` — Next.js dev server
 - `npm run build` — production build
 - `npm run typecheck` — TypeScript check
+- `npm test` — run every `tests/*.test.ts` file (each in its own tsx process)
 - `npm run migrate` — apply numbered SQL migrations
+
+Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
+`025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
+tracks by *filename*, so both apply correctly and in a stable order — but the
+number is ambiguous. The next migration is **030**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -295,6 +320,13 @@ anything with quoted arguments).
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
+
+There is **no** `inspect grouping` or `inspect grouping-pass1` subcommand yet.
+Those two stages currently have no inspection view, which is a gap: the
+project convention is that LLM stages' feedback loop is the inspection CLI,
+and `grouping.embedding.similarity_threshold` is the pipeline's primary tuning
+lever. Inspecting either stage means querying `grouping_runs` /
+`grouping_pass1_results` by hand.
 
 In production, run CLI stages inside the app container:
 

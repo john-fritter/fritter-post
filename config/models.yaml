@@ -41,17 +41,6 @@ preprocessor:
     retry_max_attempts: 5
     retry_base_ms: 2000
 
-filter:
-  model: deepseek/deepseek-v4-flash  # NanoGPT model id (confirmed nano-gpt.com/models)
-  provider: nanogpt
-  temperature: 0.1
-  max_tokens: 4096
-  batch_size: 100
-  concurrency: 10
-  reasoning_effort: "none"
-  stream: true
-  timeout_ms: 600000
-
 # Bio-aware relevance floor between the preprocessor and the clusterer — a
 # separate, later judgment from `filter` (garbage vs. reader-relevance; see
 # docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
@@ -66,13 +55,6 @@ prefilter:
   reasoning_effort: "none"
   stream: true
   timeout_ms: 600000
-
-# Unbuilt placeholder — stage not yet implemented; model id is not real.
-researcher:
-  model: gemini-3-flash-preview  # placeholder
-  temperature: 0.4
-  max_tokens: 4000
-  step_limit: 20
 
 editor:
   # Deterministic formula: combined = relevance + source_weight * ln(sources)

@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/test.ts",
     "migrate": "tsx scripts/migrate.ts",
     "inspect": "tsx scripts/inspect.ts",
     "collect": "tsx scripts/collect.ts",

@@ -26,23 +26,33 @@ These are the things the project is *for*. Implementation details exist to serve
 
 ## Pipeline architecture
 
-The paper is produced by a daily cron running seven stages. Four are software, three are LLM-driven. The architecture is the main thing this document is trying to nail down — most other details below can move.
+The paper is produced by a daily cron running eight stages.
 
 ```
 1. Collector (software)
    ↓
 2. Preprocessor (software)
    ↓
-3. Grouping (embedding-based clustering)
+3. Prefilter (bio-aware relevance floor, LLM)
    ↓
-4. Researcher (agentic LLM loop)
+4. Grouping (embedding-based clustering)
    ↓
-5. Editor (orchestrated multi-call LLM)
+5. Grouping-pass-1 (bio-aware scoring + pile assembly, LLM)
    ↓
-6. Writers (parallel LLM calls, only for real articles)
+6. Editor (deterministic ranking + tiering, LLM tie-break only)
    ↓
-7. Publisher (software)
+7. Writers (parallel LLM calls)
+   ↓
+8. Publisher (software)
 ```
+
+Stages 1–6 are built. Writers and publisher are not.
+
+**This section has been reconciled with what was actually built.** The
+original conception had seven stages including an agentic *Researcher*
+between grouping and the editor. That stage was dropped — see
+`docs/decisions.md`. The editor's ranked, tiered output feeds the writers
+directly.
 
 ### Stage 1: Collector (software)
 
@@ -72,34 +82,33 @@ Mostly software, with two cheap bounded LLM passes (attach, describe). The prima
 
 (This replaces the original conception of an LLM "triage" digest. The earlier LLM-based triage clusterer was removed once embedding-based grouping proved out — see `docs/decisions.md`.)
 
-### Stage 4: Researcher (agentic LLM loop)
+### Stage 5: Grouping-pass-1 (bio-aware scoring + pile assembly)
 
-Reads the grouping digest, decides what's worth investigating deeper, fetches full text where useful, follows threads via search when context is needed beyond the configured sources. Produces a stack of article ideas — self-contained units with title, category, prominence tag, source list, image references, cliffs-notes summary, and a note on why flagged.
+Scores every grouping output row — clusters and singletons on the same 0–100 scale — for relevance to this reader. Clusters are scored on their describe-pass title and summary; singletons on title plus body excerpt. Source count is deliberately withheld from the scorer: this judgment is purely about reader relevance, and prominence is applied later by the editor's formula.
 
-The researcher clusters during research, since it has the article texts available — three sources covering one story becomes one idea with three source entries.
+Sorts by score and takes the top `grouping.pile_target` rows as the editor pile.
 
-Genuinely agentic. The job requires runtime decisions about what to chase next based on what each tool call surfaces. Step and token budgets enforced.
+### Stage 6: Editor (deterministic ranking + tiering)
 
-### Stage 5: Editor (orchestrated multi-call LLM)
+Not an LLM ranker. The editor combines the pass-1 relevance score with a prominence lift derived from cross-source pickup:
 
-Not one big call, not a full agent. Software orchestrates a known sequence of focused calls. Current thinking is roughly four phases:
+```
+combined = relevance + source_weight * ln(sources)
+```
 
-1. **Evaluation.** Reads all article ideas, bio, preferences, source policy, standing memo, yesterday's paper. Outputs structured per-idea ratings: include/exclude, category, prominence, relevance, continuity link, brief reasoning.
-2. **Ranking and sizing.** Reads the evaluation output and a smaller working set. Outputs ordered list with size tiers assigned (footer / one-liner / blurb / standard / feature).
-3. **Short writing.** For one-liners and blurbs, produces final text directly. These are essentially rewrites of the researcher's summary in the paper's voice; no separate writing stage needed.
-4. **Package creation.** For standard and feature pieces, produces a writer package per piece: angle, distilled voice brief, source material references, editorial notes, target length, cross-references.
+Rows sort by combined score, and tiers are assigned by rank position from fixed counts (feature / standard / brief). The only LLM involvement is a bio-aware tie-break among items sharing an identical combined score.
 
-The phases are knowable in advance and proceed in sequence, so software orchestrates rather than the LLM deciding what to do next. Each call has tight focus and bounded context. If one phase produces something weird, you regenerate that phase, not the whole stage.
+This replaced an earlier conception of the editor as an orchestrated multi-call LLM producing per-piece writer packages. Ranking and tiering turned out to be a scoring problem, not a judgment problem — the judgment lives in prefilter and grouping-pass-1, both of which read the bio. See `docs/decisions.md`.
 
-This is the heaviest stage and probably warrants the strongest model.
+**Open question:** the writer package (angle, voice brief, editorial notes, length target) has no home now. Either the editor grows a package-creation step, or the writers work directly from the cluster digest plus tier. This is the main thing to decide before building the writers.
 
-### Stage 6: Writers (parallel LLM calls)
+### Stage 7: Writers (parallel LLM calls)
 
-One call per standard or feature piece. Writers run in parallel — no inter-dependencies. Each writer receives one writing package with everything needed: source materials, angle, voice brief distilled from the standing memo, editorial notes, length target.
+One call per piece. Writers run in parallel — no inter-dependencies. Each writer receives the source material for its story, a target length driven by tier, and the paper's voice.
 
-Writers don't see each other's work. Cross-article references are handled by the editor's metadata.
+Writers don't see each other's work.
 
-### Stage 7: Publisher (software)
+### Stage 8: Publisher (software)
 
 Pure rendering. Takes the structured document from the editor (ordered list of stories with size tiers, body text, image refs, sources) and produces the page according to layout rules. No judgment. All editorial work happened upstream.
 
@@ -113,7 +122,7 @@ The publisher is designed to be tolerant: structured metadata (story order, size
 
 Postgres. Already running for Fritterflix on the same box, so this is a reuse rather than new infrastructure.
 
-Tables roughly: raw items (collector output), preprocessed clusters, grouping digests, article ideas (researcher output), writing packages, finished stories, papers, sources, feeds, feedback, generation logs. Raw items get a retention window (rolling deletion); everything else is durable.
+Tables roughly: raw items (collector output), preprocessed items, grouping digests, pass-1 scores, editor piles, finished stories, papers, sources, feeds, feedback, generation logs. Raw items get a retention window (rolling deletion); everything else is durable.
 
 Schema details are not decided. The point is: structured data through the pipeline, full lineage from raw input to published story, every LLM call logged with model, prompts, outputs, token counts.
 
@@ -126,8 +135,8 @@ Every LLM stage is independently configurable via a config file. The pipeline is
 Current thinking on assignments (subject to revision once we see how each stage actually performs):
 
 - **Grouping:** embedding model (`qwen/qwen3-embedding-8b`) for clustering, plus a cheap LLM (GLM) for the attach and describe passes
-- **Researcher:** Kimi K2.6 — strong synthesizer, low hallucination, manageable in loops with explicit stopping criteria
-- **Editor:** Kimi K2.6 or GLM — the most important assignment, may warrant tuning per phase
+- **Prefilter and grouping-pass-1:** GLM — bio-aware judgment at batch scale; these carry the editorial weight that was once imagined for the editor
+- **Editor:** no primary model — the ranking is a deterministic formula. GLM handles only the tie-break calls
 - **Writers:** GLM — strong prose quality, comfortable in the editorial register
 
 All tunable. Per-stage parameters in config include model, token budgets, step limits for agentic loops, temperature, retry behavior.
@@ -139,8 +148,8 @@ All tunable. Per-stage parameters in config include model, token budgets, step l
 Several human-readable files travel through the pipeline. Each has a defined role; keeping them separate prevents any one from becoming a junk drawer.
 
 - **Bio file.** Slow-changing. Who the reader is — location, work, interests, projects, values, what they care about, what they don't.
-- **Standing memo.** The editorial document. Voice, stance, ranking principles, what the paper covers, how it sounds, how it handles register across sizes. Written as instructions to a new editor, not as a spec. Lives with the editor; distilled into focused voice briefs for each writer package.
-- **Source policy.** Operational. Source tier list, how to handle police statements, press releases, social media claims, rumors, paywalled sources, primary-source preferences, cross-source verification thresholds. Lives with researcher and editor.
+- **Standing memo.** The editorial document. Voice, stance, what the paper covers, how it sounds, how it handles register across sizes. Written as instructions to a new editor, not as a spec. Not currently written — an earlier draft was dissolved into the prefilter and editor prompts (see `docs/decisions.md`, 2026-06-13). Now that ranking is deterministic, its remaining job is *voice*, which makes it a writers-stage document rather than an editor one.
+- **Source policy.** Operational. Source tier list, how to handle police statements, press releases, social media claims, rumors, paywalled sources, primary-source preferences, cross-source verification thresholds. Lives with the writers.
 - **Pre-written preferences.** Human-maintained. Standing instructions from the reader: "I keep marking Apple launches not interesting, please honor that."
 - **Observed preferences.** Agent-updated based on reader comments. Dated entries so they can be pruned when they drift. Carries less weight than pre-written preferences.
 
