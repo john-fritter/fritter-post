@@ -21,6 +21,39 @@ export function buildDescribeUserPrompt(clusterBlocks: string): string {
   return `Here are today's news clusters. Write a title and summary for each one.\n\n${clusterBlocks}`;
 }
 
+// Split pass: a step-2 connected component chained several stories together via
+// union-find transitivity (A~B and B~C puts A, B, C in one component even when A
+// and C are unrelated). Partition it back into same-event groups.
+const SPLIT_SYSTEM_PROMPT = `You are separating a group of articles that an automated similarity pass may have merged incorrectly.
+
+The articles below were grouped because each one resembled at least one other article in the group. That is a weaker test than covering the same story: a chain of "A resembles B, B resembles C" can pull unrelated stories into one group. Your job is to find the genuine same-event groups inside it.
+
+THE SAME STORY:
+- The same event — a strike, ruling, vote, announcement, disaster — reported by any outlet, in any language.
+- Military actions within the same war or campaign.
+- An event and the official or civic response it drew.
+
+Articles that share only a region, a topic, an ongoing situation, or a cast of actors — while reporting developments that stand on their own — are NOT the same story. Two articles about different incidents in different places belong in different groups even when the same force or trend is behind both.
+
+The group may already be correct. If every article covers one event, say so by returning them as a single group.
+
+OUTPUT
+One line per same-event group, each line a comma-separated list of article numbers (e.g. "1,4,5").
+Write only groups of two or more. Omit any article that does not share an event with at least one other — omitted articles are treated as standalone.
+If no two articles share an event, output "none" and nothing else.
+No explanation. No JSON. No prose.`;
+
+export function buildSplitSystemPrompt(): string {
+  return SPLIT_SYSTEM_PROMPT;
+}
+
+export function buildSplitUserPrompt(memberBlocks: string): string {
+  return (
+    `ARTICLES:\n${memberBlocks}\n\n` +
+    `Which articles cover the same specific event? Group them.`
+  );
+}
+
 // Phase A: given an existing cluster, which numbered candidate articles belong to it?
 const PHASE_A_SYSTEM_PROMPT = `You are deciding which candidate articles belong to an existing news cluster.
 

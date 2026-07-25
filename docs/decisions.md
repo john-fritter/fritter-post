@@ -20,6 +20,30 @@ Entry format:
 
 ---
 
+## 2026-07-25 — Split pass (step 2b): union-find over-merges are re-partitioned by the LLM
+
+**Decision:** A new step between candidate groups and attach. Step-2 connected components that are large enough to chain (`min_size`, default 3) and loosely connected (cohesion below `density_floor`, default 0.5) get one LLM call that re-partitions them into same-event groups. Dense components pass through with no call. Members the model places in no group rejoin the singleton pool, where attach can pick them up. Controlled by `grouping.split.*`.
+
+**Context:** Run #35 was the first clean run (`failed_calls: 0`), so its grouping output was finally trustworthy — and it showed both over-merge and under-merge at once. The over-merge case: feature #15, "Power grid strains and data center moratoriums amid AI growth," joined a fallen Northern Virginia power line, Hochul's New York data center moratorium, and a delayed New York transmission line. Three unrelated events.
+
+The cause is that `src/pipeline/grouping/index.ts` turned every union-find component of size ≥ 2 straight into a cluster via `buildAutoCluster`, with **no LLM validation at any point**. Attach only ever adds to those clusters; nothing splits them. So the attach prompt's carefully written rule —
+
+> *A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same event*
+
+— never applied to the clusters that needed it most, because they were formed before any model looked at them. Union-find requires only a *path*: A~B and B~C puts A, B, C together even when A and C are unrelated.
+
+**Rationale:** Density separates the two shapes cleanly. A genuine same-event cluster is near-fully connected — every article about one fire resembles every other — while a chained component is a path. Thresholding on it means the dense majority never costs a call, so the pass is a small bounded addition rather than another per-cluster LLM stage.
+
+**The correction that makes it work:** raw density is size-dependent under the `top_k` cap. Each item can hold at most `top_k` neighbours, so a component of size *n* cannot exceed `top_k/(n-1)` density — at `top_k: 15` a 37-item component tops out at 0.42, *below* the 0.5 floor. Thresholding raw density would therefore flag run #35's 37-source US-Iran cluster (the paper's lead) as maximally chained, every single run, and risk shattering it. `computeCohesion` divides by `maxAchievableDensity` so 1.0 means "as connected as it could possibly be" at any size, while a chain stays near zero regardless of size. This was caught before the first run, not after.
+
+**Failure handling:** a split call that fails after retries leaves its component intact. That is the conservative direction — the outcome is the over-merge we already had, not a shattered cluster. It is deliberately distinguished from the model legitimately answering "none" (which does dissolve a component into singletons), so `failed_calls` counts only real failures. Same reasoning as the attach-pass backoff entry above.
+
+**Not addressed here:** the *under*-merge half of run #35 — the Oregon wildfire coverage fragmenting into four separate rows (Akawa Butte/Sisters, statewide intensification, OSHA smoke guidance, ranchers assisting), plus eight wildfire items across the 150-item paper. That is the opposite error and needs the opposite fix: a thread layer above clusters that groups related clusters into one ongoing situation, scored as `max(member scores)` with `sum(member sources)`. The reader's framing is that all the fires in the state right now are one ongoing thing. Splitting event-level clustering from situation-level threading is what lets event clustering get *stricter* (this entry) without losing relatedness. Deliberately deferred to its own change.
+
+`tests/grouping-split.test.ts` covers `computeComponentDensity`, `maxAchievableDensity`, `computeCohesion`, and `parseSplitOutput`, including the large-coherent-cluster and large-chain cases that the cohesion correction exists for, and a regression for the power-grid component shape.
+
+---
+
 ## 2026-07-25 — Grouping attach/describe wrapped in 429 backoff; concurrency lowered from 10 to 4
 
 **Decision:** `grouping`'s attach and describe passes now call the LLM through `callWithBackoff` (`src/llm/backoff.ts`), configured by new optional `retry_max_attempts` / `retry_base_ms` fields on `grouping.attach` and `grouping.describe`. Both passes drop from `concurrency: 10` to `concurrency: 4`. The attach pass counts calls that fail after retries into a new `failedCalls` field, logs `failed_calls=<n>` in its summary, and emits an explicit warning that the run's cluster/singleton split understates real grouping when that count is non-zero.

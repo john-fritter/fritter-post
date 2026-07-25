@@ -116,8 +116,27 @@ const GroupingDescribeConfigSchema = z.object({
   retry_base_ms: z.number().int().optional(),
 });
 
+const GroupingSplitConfigSchema = z.object({
+  enabled: z.boolean(),
+  // Components below this connectedness are treated as possibly chained.
+  density_floor: z.number().min(0).max(1),
+  // Components smaller than this cannot be chained, so they are never examined.
+  min_size: z.number().int().min(3),
+  model: z.string(),
+  provider: ProviderSchema.optional(),
+  temperature: z.number(),
+  max_tokens: z.number().int(),
+  concurrency: z.number().int(),
+  reasoning_effort: z.string().optional(),
+  stream: z.boolean().optional(),
+  timeout_ms: z.number().int().optional(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
+});
+
 const GroupingStageConfigSchema = StageConfigSchema.extend({
   embedding: GroupingEmbeddingConfigSchema,
+  split: GroupingSplitConfigSchema,
   attach: GroupingAttachConfigSchema,
   describe: GroupingDescribeConfigSchema,
   pile_target: z.number().int(),
@@ -143,6 +162,7 @@ export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
 export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
+export type GroupingSplitConfig = z.infer<typeof GroupingSplitConfigSchema>;
 export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
 export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;

@@ -141,6 +141,18 @@ steps:
    `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
    union-find connected components. Groups of size ≥ 2 become candidate
    clusters; isolated items are singletons.
+2b. **Split** — repairs over-merges that union-find creates. A connected
+   component only requires a *path* between members, so a bridging article
+   chains unrelated stories into one cluster, and until this pass no LLM ever
+   saw a step-2 component. Components that are large enough to chain
+   (`min_size`) and loosely connected (cohesion < `density_floor`) get one LLM
+   call that re-partitions them; dense components pass through without a call.
+   Freed members rejoin the singleton pool for attach to place.
+   **Cohesion, not raw density:** `top_k` caps each item's neighbours, so raw
+   density has a ceiling that falls as components grow — a 37-item component
+   cannot exceed `top_k/(n-1)`. Cohesion divides that ceiling out so the
+   threshold means the same thing at every size. Controlled by
+   `grouping.split.*`.
 3. **Attach** — cluster-centric, two phases. Phase A offers each cluster its
    candidate singletons (title-cosine ≥ `candidate_floor`) in one LLM call;
    Phase B forms new clusters from leftover singletons via proto-groups. One
