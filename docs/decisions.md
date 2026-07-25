@@ -20,6 +20,33 @@ Entry format:
 
 ---
 
+## 2026-07-25 — Grouping attach/describe wrapped in 429 backoff; concurrency lowered from 10 to 4
+
+**Decision:** `grouping`'s attach and describe passes now call the LLM through `callWithBackoff` (`src/llm/backoff.ts`), configured by new optional `retry_max_attempts` / `retry_base_ms` fields on `grouping.attach` and `grouping.describe`. Both passes drop from `concurrency: 10` to `concurrency: 4`. The attach pass counts calls that fail after retries into a new `failedCalls` field, logs `failed_calls=<n>` in its summary, and emits an explicit warning that the run's cluster/singleton split understates real grouping when that count is non-zero.
+
+**Context:** Run #34 (2026-06-19) logged **81 rate-limit errors across 163 grouping LLM calls** — roughly half the pass. Grouping was the only batched, concurrent stage that never adopted `callWithBackoff`; preprocessor translation and prefilter had it, grouping did not. Worse, the attach pass caught every error and returned an empty set:
+
+```ts
+} catch (err) {
+  console.warn(`[grouping] attach phase ${phase} ${label}: LLM call failed: ${msg}`);
+  return new Set();
+}
+```
+
+An empty set is exactly what the model returns when it declines every candidate. So a 429 was indistinguishable from a legitimate "none of these belong" verdict: the cluster silently didn't grow, the run reported success, and the recorded result (114 clusters, 588 singletons) was presented as a real grouping outcome. The describe pass had the same shape, degrading to fallback labels.
+
+The damage is visible in editor run #99's output. S32649 ("How many Americans can afford high-quality health care? A new poll finds the number has fallen", score 70, rank 80) and S32362 (the same AP story with a `- AP News` suffix, score 65, rank 117) survived as two separate singletons ranked 37 positions apart. Title-only embedding at `candidate_floor: 0.55` should catch a near-identical headline pair trivially.
+
+**Rationale:** Retrying is the obvious half. The more important half is that a degraded result must not be able to impersonate a real one. Phase A and Phase B both run under the same `pLimit`, so `concurrency: 10` meant up to ten in-flight calls against nanogpt for the whole pass; 4 trades wall time for not triggering the limiter, which is the right trade when the failure is invisible rather than loud. Backoff remains the safety net for what still slips through, and `failed_calls` makes any residual loss legible in the run summary rather than buried in a warning line.
+
+This also means **run #34's grouping output should not be used to evaluate cluster quality or to tune `similarity_threshold`** — including the two conjoined feature clusters in editor #99 (C1 "Ukraine drone attacks on Moscow and Hegseth NATO review", C15 "Apple price increases and Intel chip deal"). Whether those are genuine over-merges at 0.66 or artifacts of the degraded run is not answerable from that data. Re-run first.
+
+`tests/llm-backoff.test.ts` added: pins retry-then-succeed, exhaust-then-throw, fail-fast on non-rate-limit errors, message-variant recognition, and `Retry-After` honoring. `callWithBackoff` had no direct test despite now being load-bearing for three stages.
+
+**Supersedes:** Nothing — this is the retry policy the 2026-05-30 "No retry logic in V1" entry deliberately deferred, and the no-SDK-retries rule still holds. Retries live in application code; this just extends the existing `callWithBackoff` to the stage that was missing it.
+
+---
+
 ## 2026-07-25 — Researcher stage dropped; docs reconciled with what was actually built
 
 **Decision:** The researcher stage is removed from the pipeline. The editor's ranked, tiered output feeds the writers directly. `src/pipeline/researcher/` is deleted, the `researcher:` block is removed from `config/models.yaml`, and `researcher` is removed from `ModelsConfigSchema`. The pipeline is now eight stages: collector → preprocessor → prefilter → grouping → grouping-pass-1 → editor → writers → publisher, of which the first six are built.

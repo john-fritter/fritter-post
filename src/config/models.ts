@@ -98,6 +98,8 @@ const GroupingAttachConfigSchema = z.object({
   reasoning_effort: z.string().optional(),
   stream: z.boolean().optional(),
   timeout_ms: z.number().int().optional(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 const GroupingDescribeConfigSchema = z.object({
@@ -110,6 +112,8 @@ const GroupingDescribeConfigSchema = z.object({
   reasoning_effort: z.string().optional(),
   stream: z.boolean().optional(),
   timeout_ms: z.number().int().optional(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 const GroupingStageConfigSchema = StageConfigSchema.extend({

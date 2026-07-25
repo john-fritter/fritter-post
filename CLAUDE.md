@@ -141,13 +141,21 @@ steps:
    `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
    union-find connected components. Groups of size ≥ 2 become candidate
    clusters; isolated items are singletons.
-3. **Attach** — for each cluster, near-miss singletons (max cosine similarity
-   in the `[attach_floor, similarity_threshold)` band) are offered to a cheap
-   LLM (glm-5.1) that confirms which genuinely belong. Controlled by
-   `grouping.attach.*` in `models.yaml`.
-4. **Describe** — batched LLM call (glm-5.1, nanogpt) that writes a neutral
-   `title;;summary` for every multi-item cluster. Singletons skip this pass.
-   Controlled by `grouping.describe.*` in `models.yaml`.
+3. **Attach** — cluster-centric, two phases. Phase A offers each cluster its
+   candidate singletons (title-cosine ≥ `candidate_floor`) in one LLM call;
+   Phase B forms new clusters from leftover singletons via proto-groups. One
+   bounded cascade re-pass follows. Controlled by `grouping.attach.*`.
+4. **Describe** — batched LLM call that writes a neutral `title;;summary` for
+   every multi-item cluster. Singletons skip this pass. Controlled by
+   `grouping.describe.*`.
+
+Both LLM passes go through `callWithBackoff`. This is not optional: a failed
+attach call returns an empty set, which is indistinguishable from the model
+saying "none of these belong," so the cluster silently doesn't grow and the
+run still reports success. Attach now counts exhausted failures and logs
+`failed_calls=<n>` plus a loud warning — **if that number is non-zero, the
+cluster/singleton split understates real grouping and the run should not be
+used to judge cluster quality or tune `similarity_threshold`.**
 
 Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
 **primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
@@ -237,8 +245,17 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
   An unbounded agentic loop is how you discover a $40 bug.
 - **No SDK-level retries.** `callLLM` sets `maxRetries: 0` on the OpenAI
   client. The SDK's default silent retries masked a 903s hang on one run.
-  Retry logic, where needed, lives in stage code (e.g. editor's
-  retry-once-then-fallback), not in the wrapper.
+  Retry logic lives in application code, not in the HTTP layer.
+- **429/503 backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
+  `callLLM` thunk with exponential backoff and jitter, honoring a
+  `Retry-After` hint when the provider sends one. Configured per-stage via
+  optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
+  translation, prefilter, and grouping (attach + describe).
+  **Any new batched, concurrent stage needs it.** The failure mode is
+  quiet: a rate-limited call that returns a degraded-but-valid-looking
+  result (an empty attach set, a fallback label) is indistinguishable from
+  a real model verdict, so the run reports success while losing work. See
+  `docs/decisions.md`, 2026-07-25.
 - **No top-level await in scripts.** tsx runs scripts under the CJS output
   format, which rejects top-level `await`. Wrap all async entry-point logic
   in `async function main()` and call it as `main().catch(err => { ... })`.

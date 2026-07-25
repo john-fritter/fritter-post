@@ -4,6 +4,7 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import type { GroupingDescribeConfig, GroupingAttachConfig } from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import { getClusteringItems, formatItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
 import type { Cluster } from "../../lib/cluster.js";
@@ -198,6 +199,7 @@ interface AttachPassResult {
   phaseACalls: number;
   phaseBCalls: number;
   totalCalls: number;
+  failedCalls: number;
   attached: number;
   newClusters: number;
   inputTokens: number | null;
@@ -220,6 +222,7 @@ async function attachSingletons(
       phaseACalls: 0,
       phaseBCalls: 0,
       totalCalls: 0,
+      failedCalls: 0,
       attached: 0,
       newClusters: 0,
       inputTokens: 0,
@@ -233,6 +236,7 @@ async function attachSingletons(
 
   let phaseACalls = 0;
   let phaseBCalls = 0;
+  let failedCalls = 0;
   let totalAttached = 0;
   let totalNewClusters = 0;
   let totalInputTokens: number | null = 0;
@@ -262,7 +266,14 @@ async function attachSingletons(
   }
 
   // Run one LLM call for a chunk of candidates. Maps confirmed 1-based indices back to IDs.
-  // Returns empty set on failure (no crash, no merge).
+  //
+  // 429/503 responses are retried with exponential backoff before the call is
+  // allowed to fail. This matters more here than it looks: a failed attach call
+  // returns an empty set, which is indistinguishable from the model saying "none
+  // of these belong" — the cluster silently doesn't grow and the run still
+  // reports success. Run #34 (2026-06-19) lost roughly half its attach
+  // judgments that way. Exhausted failures are counted into failedCalls so the
+  // run summary can report degraded output instead of hiding it.
   async function callAttachChunk(
     phase: "A" | "B",
     label: string,
@@ -273,19 +284,24 @@ async function attachSingletons(
     if (phase === "A") phaseACalls++;
     else phaseBCalls++;
     try {
-      const result = await callLLM({
-        stage: "grouping",
-        stageRunId: runId,
-        model: config.model,
-        systemPrompt,
-        userPrompt,
-        temperature: config.temperature,
-        maxTokens: config.max_tokens,
-        reasoningEffort: config.reasoning_effort,
-        provider: config.provider,
-        timeoutMs: config.timeout_ms,
-        stream: config.stream,
-      });
+      const result = await callWithBackoff(
+        () =>
+          callLLM({
+            stage: "grouping",
+            stageRunId: runId,
+            model: config.model,
+            systemPrompt,
+            userPrompt,
+            temperature: config.temperature,
+            maxTokens: config.max_tokens,
+            reasoningEffort: config.reasoning_effort,
+            provider: config.provider,
+            timeoutMs: config.timeout_ms,
+            stream: config.stream,
+          }),
+        config,
+        `grouping attach ${phase}`,
+      );
       accumTokens(result);
       const confirmedNums = parseAttachOutput(result.text, chunkIds.length);
       const confirmedIds = new Set<number>();
@@ -296,7 +312,11 @@ async function attachSingletons(
       return confirmedIds;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[grouping] attach phase ${phase} ${label}: LLM call failed: ${msg}`);
+      failedCalls++;
+      console.warn(
+        `[grouping] attach phase ${phase} ${label}: LLM call failed after retries ` +
+          `— treating as "attach nothing", grouping is degraded: ${msg}`,
+      );
       return new Set();
     }
   }
@@ -442,8 +462,16 @@ async function attachSingletons(
   const totalCalls = phaseACalls + phaseBCalls;
   console.log(
     `[grouping] attach: phase_a_calls=${phaseACalls}, phase_b_calls=${phaseBCalls}, ` +
-      `total_calls=${totalCalls}`,
+      `total_calls=${totalCalls}, failed_calls=${failedCalls}`,
   );
+  if (failedCalls > 0) {
+    console.warn(
+      `[grouping] WARNING: ${failedCalls}/${totalCalls} attach call(s) failed after ` +
+        `retries. Those clusters were not offered their candidates, so the cluster/` +
+        `singleton split below understates real grouping. Re-run before tuning ` +
+        `similarity_threshold or judging cluster quality.`,
+    );
+  }
 
   return {
     clusters: currentClusters,
@@ -451,6 +479,7 @@ async function attachSingletons(
     phaseACalls,
     phaseBCalls,
     totalCalls,
+    failedCalls,
     attached: totalAttached,
     newClusters: totalNewClusters,
     inputTokens: totalInputTokens,
@@ -532,19 +561,24 @@ async function describeGroups(
           .join("\n");
 
         try {
-          const result = await callLLM({
-            stage: "grouping",
-            stageRunId: runId,
-            model: config.model,
-            systemPrompt: buildDescribeSystemPrompt(),
-            userPrompt: buildDescribeUserPrompt(clusterBlocks),
-            temperature: config.temperature,
-            maxTokens: config.max_tokens,
-            reasoningEffort: config.reasoning_effort,
-            provider: config.provider,
-            timeoutMs: config.timeout_ms,
-            stream: config.stream,
-          });
+          const result = await callWithBackoff(
+            () =>
+              callLLM({
+                stage: "grouping",
+                stageRunId: runId,
+                model: config.model,
+                systemPrompt: buildDescribeSystemPrompt(),
+                userPrompt: buildDescribeUserPrompt(clusterBlocks),
+                temperature: config.temperature,
+                maxTokens: config.max_tokens,
+                reasoningEffort: config.reasoning_effort,
+                provider: config.provider,
+                timeoutMs: config.timeout_ms,
+                stream: config.stream,
+              }),
+            config,
+            "grouping describe",
+          );
 
           const parsed = parseDescribeOutput(result.text, batch.length);
           const descriptions = new Map<number, { title: string; summary: string }>();
@@ -575,7 +609,8 @@ async function describeGroups(
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(
             `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
-              `LLM failed — keeping fallback labels for all ${batch.length}: ${msg}`,
+              `LLM failed after retries — keeping fallback labels for all ` +
+              `${batch.length} cluster(s): ${msg}`,
           );
           return {
             descriptions: new Map(),
@@ -913,6 +948,7 @@ export async function runGrouping(
         `[grouping] step 3 attach: phase_a_calls=${attachResult.phaseACalls}, ` +
           `phase_b_calls=${attachResult.phaseBCalls}, ` +
           `total_calls=${attachResult.totalCalls}, ` +
+          `failed_calls=${attachResult.failedCalls}, ` +
           `attached=${attachResult.attached}, ` +
           `new_clusters=${attachResult.newClusters}, ` +
           `singletons=${singletonsBefore}→${remainingSingletonIds.size}`,

@@ -154,12 +154,19 @@ grouping:
     provider: nanogpt
     temperature: 0.1
     max_tokens: 24000
-    # Governs actual in-flight LLM calls within each concurrent round. Must be > 1
-    # to get parallelism — the old sequential loop ignored this setting.
-    concurrency: 10
+    # Governs actual in-flight LLM calls. Lowered from 10 after run #34 (2026-06-19)
+    # logged 81 rate-limit errors across 163 grouping calls: Phase A and Phase B
+    # both run under this limit, and at 10 the pass saturated the provider. A
+    # failed attach call silently means "attach nothing", so 429s cost cluster
+    # quality invisibly — prefer fewer in-flight calls over retry churn.
+    concurrency: 4
     reasoning_effort: "none"
     stream: true
     timeout_ms: 300000
+    # 429/503 backoff. Without this a rate-limited attach call is indistinguishable
+    # from the model declining every candidate.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
   # Describe pass: cheap batched LLM call that writes a neutral title and
   # short summary for every multi-item cluster. Runs after attach. Singletons
   # skip this pass.
@@ -171,10 +178,14 @@ grouping:
     # Clusters per LLM call. Each call sees batch_size clusters, each shown
     # as its member items (title + body excerpt).
     batch_size: 20
-    concurrency: 10
+    # Lowered alongside attach.concurrency for the same rate-limit reason. A
+    # failed describe batch leaves every cluster in it with a fallback label.
+    concurrency: 4
     reasoning_effort: "none"
     stream: true
     timeout_ms: 120000
+    retry_max_attempts: 5
+    retry_base_ms: 2000
   # Top-N rows (clusters + singletons combined) by bio-relevance score that
   # pass into the editor pile. Replaces the old all-clusters + singleton_pile_target logic.
   pile_target: 150
