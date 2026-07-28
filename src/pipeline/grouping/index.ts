@@ -584,6 +584,7 @@ interface SplitPassResult {
   groups: PreprocessedItemRow[][];
   freedSingletonIds: Set<number>;
   examined: number;
+  suspect: number;
   componentsSplit: number;
   calls: number;
   failedCalls: number;
@@ -645,6 +646,7 @@ async function splitLowDensityComponents(
       groups: candidateGroups,
       freedSingletonIds,
       examined,
+      suspect: 0,
       componentsSplit: 0,
       calls: 0,
       failedCalls: 0,
@@ -765,6 +767,7 @@ async function splitLowDensityComponents(
     groups,
     freedSingletonIds,
     examined,
+    suspect: suspect.length,
     componentsSplit,
     calls,
     failedCalls,
@@ -1195,6 +1198,29 @@ export async function runGrouping(
       }
     }
 
+    // Per-pass counters persisted onto grouping_runs (migration 030) so a report
+    // regenerated from the database can tell whether this run's grouping is
+    // trustworthy. null means "the pass did not run", which is distinct from 0.
+    const runStats: {
+      attachCalls: number | null;
+      attachFailedCalls: number | null;
+      splitExamined: number | null;
+      splitSuspect: number | null;
+      splitCalls: number | null;
+      splitFailedCalls: number | null;
+      splitComponentsSplit: number | null;
+      splitFreedSingletons: number | null;
+    } = {
+      attachCalls: null,
+      attachFailedCalls: null,
+      splitExamined: null,
+      splitSuspect: null,
+      splitCalls: null,
+      splitFailedCalls: null,
+      splitComponentsSplit: null,
+      splitFreedSingletons: null,
+    };
+
     // --- STEP 2b: SPLIT ---
     // Union-find only requires a path between members, so a bridging article can
     // chain unrelated stories into one component. Low-density components are
@@ -1213,6 +1239,12 @@ export async function runGrouping(
       );
       workingGroups = splitResult.groups;
       for (const id of splitResult.freedSingletonIds) singletonIds.add(id);
+      runStats.splitExamined = splitResult.examined;
+      runStats.splitSuspect = splitResult.suspect;
+      runStats.splitCalls = splitResult.calls;
+      runStats.splitFailedCalls = splitResult.failedCalls;
+      runStats.splitComponentsSplit = splitResult.componentsSplit;
+      runStats.splitFreedSingletons = splitResult.freedSingletonIds.size;
       accumulateTokens(
         splitResult.inputTokens,
         splitResult.outputTokens,
@@ -1256,6 +1288,8 @@ export async function runGrouping(
       );
       preClusters = attachResult.clusters;
       remainingSingletonIds = attachResult.remainingSingletonIds;
+      runStats.attachCalls = attachResult.totalCalls;
+      runStats.attachFailedCalls = attachResult.failedCalls;
       accumulateTokens(
         attachResult.inputTokens,
         attachResult.outputTokens,
@@ -1301,19 +1335,48 @@ export async function runGrouping(
 
     await pool.query(
       `UPDATE grouping_runs
-       SET completed_at      = NOW(),
-           input_tokens      = $1,
-           output_tokens     = $2,
-           duration_ms       = $3,
-           digest            = $4,
-           generation_log_id = $5
-       WHERE id = $6`,
-      [totalInputTokens, totalOutputTokens, totalDurationMs, digestText, firstGenerationLogId, runId],
+       SET completed_at            = NOW(),
+           input_tokens            = $1,
+           output_tokens           = $2,
+           duration_ms             = $3,
+           digest                  = $4,
+           generation_log_id       = $5,
+           cluster_count           = $6,
+           singleton_count         = $7,
+           attach_calls            = $8,
+           attach_failed_calls     = $9,
+           split_examined          = $10,
+           split_suspect           = $11,
+           split_calls             = $12,
+           split_failed_calls      = $13,
+           split_components_split  = $14,
+           split_freed_singletons  = $15
+       WHERE id = $16`,
+      [
+        totalInputTokens,
+        totalOutputTokens,
+        totalDurationMs,
+        digestText,
+        firstGenerationLogId,
+        finalClusters.length,
+        remainingSingletonIds.size,
+        runStats.attachCalls,
+        runStats.attachFailedCalls,
+        runStats.splitExamined,
+        runStats.splitSuspect,
+        runStats.splitCalls,
+        runStats.splitFailedCalls,
+        runStats.splitComponentsSplit,
+        runStats.splitFreedSingletons,
+        runId,
+      ],
     );
 
     console.log(
       `[grouping] run #${runId} complete: ${finalClusters.length} clusters, ` +
-        `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms`,
+        `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms, ` +
+        `attach_failed_calls=${runStats.attachFailedCalls ?? "n/a"}, ` +
+        `split_failed_calls=${runStats.splitFailedCalls ?? "n/a"}`,
     );
 
     return await fetchGroupingRun(pool, runId);

@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import { synthesizeGuid } from "./guid.js";
+import { decodeFeedBytes } from "./charset.js";
 import type { Source } from "../../config/sources.js";
 
 const USER_AGENT = "FritterPost/0.1 (+https://post.fritter.lol)";
@@ -11,9 +12,9 @@ type CustomItemFields = {
   dcCreator?: string;      // maps from <dc:creator>
 };
 
+// Transport options are not set here: we fetch and decode the body ourselves
+// (see fetchFeedText) and hand the parser a string, so only parseString runs.
 const parser = new Parser<Record<string, never>, CustomItemFields>({
-  timeout: TIMEOUT_MS,
-  headers: { "User-Agent": USER_AGENT },
   customFields: {
     item: [
       ["content:encoded", "contentEncoded"],
@@ -32,8 +33,42 @@ export interface FetchedItem {
   raw_entry: Parser.Item & CustomItemFields;
 }
 
+/**
+ * Fetches the feed body and decodes it with the charset the publisher actually
+ * used. We do the transport ourselves rather than calling `parser.parseURL`,
+ * which reads the charset from the Content-Type header only — it ignores the
+ * XML declaration and does not support windows-1252, so Latin-1 feeds arrived
+ * as mojibake — accented characters replaced by U+FFFD. See ./charset.ts.
+ */
+async function fetchFeedText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": USER_AGENT },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+    redirect: "follow",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Status code ${res.status}`);
+  }
+
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const { text, charset, recovered } = decodeFeedBytes(
+    bytes,
+    res.headers.get("content-type"),
+  );
+
+  if (recovered) {
+    console.warn(
+      `[collector] ${url}: declared charset did not decode cleanly; ` +
+        `recovered as ${charset}`,
+    );
+  }
+
+  return text;
+}
+
 export async function fetchFeed(source: Source): Promise<FetchedItem[]> {
-  const feed = await parser.parseURL(source.url);
+  const feed = await parser.parseString(await fetchFeedText(source.url));
   const results: FetchedItem[] = [];
 
   for (const item of feed.items) {

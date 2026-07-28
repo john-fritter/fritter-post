@@ -109,6 +109,14 @@ Hits every configured source, writes raw items to `raw_items`. Failure-tolerant
 — a dead feed is logged and skipped. No deduplication here; cross-source pickup
 is signal, not noise.
 
+**Charset handling is ours, not rss-parser's.** `fetch-feed.ts` fetches the body
+itself and hands `parser.parseString` a decoded string; it never calls
+`parseURL`. rss-parser reads the charset from the Content-Type header only — it
+ignores the XML declaration and doesn't support `windows-1252` — so Latin-1
+feeds decoded as UTF-8 and published mojibake. `collector/charset.ts` resolves
+header → XML declaration → UTF-8, and retries when the decode produces U+FFFD.
+See `docs/decisions.md`, 2026-07-28.
+
 ### preprocessor
 URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
 pattern rules in `junk-filter.ts`), track/group assignment from source config.
@@ -161,13 +169,22 @@ steps:
    every multi-item cluster. Singletons skip this pass. Controlled by
    `grouping.describe.*`.
 
-Both LLM passes go through `callWithBackoff`. This is not optional: a failed
-attach call returns an empty set, which is indistinguishable from the model
-saying "none of these belong," so the cluster silently doesn't grow and the
-run still reports success. Attach now counts exhausted failures and logs
-`failed_calls=<n>` plus a loud warning — **if that number is non-zero, the
-cluster/singleton split understates real grouping and the run should not be
-used to judge cluster quality or tune `similarity_threshold`.**
+All three LLM passes go through `callWithBackoff`. This is not optional: a
+failed attach call returns an empty set, which is indistinguishable from the
+model saying "none of these belong," so the cluster silently doesn't grow and
+the run still reports success.
+
+Per-pass counters are persisted onto `grouping_runs` (migration 030) so a
+report regenerated from the database can judge a run without the console log:
+`cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`, and
+`split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
+`split_components_split` / `split_freed_singletons`.
+
+**If `attach_failed_calls` is non-zero, the cluster/singleton split understates
+real grouping and the run must not be used to judge cluster quality or tune
+`similarity_threshold`.** If `split_failed_calls` is non-zero, those components
+were left intact and may still be over-merged. NULL means the pass didn't run,
+which is not the same as zero.
 
 Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
 **primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
@@ -330,7 +347,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **030**.
+number is ambiguous. The next migration is **031**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

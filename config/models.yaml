@@ -51,10 +51,15 @@ prefilter:
   temperature: 0.1
   max_tokens: 4096
   batch_size: 40
-  concurrency: 10
+  # Lowered from 10 after run #37 logged 7 rate-limit errors across 41 calls —
+  # the same saturation grouping hit at 10. Prefilter recovers via
+  # callWithBackoff, so this is throughput tuning, not correctness.
+  concurrency: 4
   reasoning_effort: "none"
   stream: true
   timeout_ms: 600000
+  retry_max_attempts: 5
+  retry_base_ms: 2000
 
 editor:
   # Deterministic formula: combined = relevance + source_weight * ln(sources)

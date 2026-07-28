@@ -46,6 +46,8 @@ const StageConfigSchema = z.object({
 const BatchStageConfigSchema = StageConfigSchema.extend({
   batch_size: z.number().int(),
   concurrency: z.number().int(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({

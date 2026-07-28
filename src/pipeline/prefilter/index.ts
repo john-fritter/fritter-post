@@ -5,7 +5,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
-import { callWithBackoff } from "../../llm/backoff.js";
+import { callWithBackoff, type BackoffConfig } from "../../llm/backoff.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -164,6 +164,7 @@ async function processBatch(
   maxTokens: number,
   systemPrompt: string,
   reasoningEffort: string | undefined,
+  backoff: BackoffConfig,
 ): Promise<PrefilterItemResult[]> {
   const batchPayload: PrefilterBatchItem[] = batch.map((item) => ({
     id: Number(item.id),
@@ -186,7 +187,7 @@ async function processBatch(
           maxTokens,
           reasoningEffort,
         }),
-      {},
+      backoff,
       "prefilter",
     );
 
@@ -278,7 +279,7 @@ export async function runPrefilter(
       batches.push(items.slice(i, i + batchSize));
     }
 
-    // 7. Process batches concurrently — hard cap 3.
+    // 7. Process batches concurrently, capped by prefilter.concurrency.
     const limit = pLimit(concurrency);
 
     const batchResults = await Promise.all(
@@ -294,6 +295,10 @@ export async function runPrefilter(
             maxTokens,
             systemPrompt,
             reasoningEffort,
+            {
+              retry_max_attempts: stageConfig.retry_max_attempts,
+              retry_base_ms: stageConfig.retry_base_ms,
+            },
           ),
         ),
       ),

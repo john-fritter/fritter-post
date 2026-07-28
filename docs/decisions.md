@@ -20,6 +20,38 @@ Entry format:
 
 ---
 
+## 2026-07-28 — Feed charset decoded by us, not rss-parser; grouping stats persisted; prefilter concurrency lowered
+
+Three fixes from run #42's report.
+
+### Feed charset
+
+**Decision:** `fetch-feed.ts` now fetches the feed body itself and passes a decoded string to `parser.parseString`. It never calls `parser.parseURL`. Charset resolution lives in the new `src/pipeline/collector/charset.ts`: Content-Type header, then XML declaration, then UTF-8, with a retry when the first decode yields U+FFFD.
+
+**Context:** Run #42 published four titles containing replacement characters, all from Brazilian feeds — "oposição" appeared as "oposi&#65533;&#65533;o" at rank #94, and similar corruption at #100, #122, and #123. Rank #103, also Portuguese, rendered correctly, so it was not every feed.
+
+The cause is in rss-parser 3.13.0. `utils.getEncodingFromContentType` reads the charset from the **HTTP Content-Type header only**, and its supported list is `['ascii','utf8','utf16le','ucs2','base64','latin1','binary','hex']` with aliases for `utf-8` and `iso-8859-1`. Two consequences: a feed that declares its encoding only in the XML declaration (`<?xml version="1.0" encoding="ISO-8859-1"?>`) while serving a bare `Content-Type: text/xml` is decoded as UTF-8; and `windows-1252` — an extremely common label — is not in the list, so it is discarded and UTF-8 used. Latin-1 bytes read as UTF-8 produce U+FFFD, reproduced exactly in Node: `Buffer.from('oposição','latin1')` decoded as UTF-8 gives `oposi��o`.
+
+**Rationale:** This is a data-integrity bug, not a display bug. The corruption happens at fetch time, so mangled titles were written to `raw_items`, embedded by the grouping stage, and scored by grouping-pass-1. Every downstream stage saw the damage. Fixing at render time would have left the embeddings wrong.
+
+ISO-8859-1 is decoded as windows-1252, matching the WHATWG encoding standard and browser behaviour: bytes 0x80–0x9F are undefined in true Latin-1 but carry printable characters (curly quotes, em dashes) in what publishers actually emit under that label. The header wins over the declaration because it describes what was transmitted; a stale declaration in a re-encoded document is the more common disagreement. The U+FFFD retry exists because some feeds send a header that contradicts their own bytes, which is the specific shape that produced this bug.
+
+`tests/collector-charset.test.ts` uses the four real corrupted titles from run #42, and pins that genuine UTF-8 (including Russian, Korean, and Chinese titles) is untouched.
+
+### Grouping run stats
+
+**Decision:** Migration 030 adds `cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`, and six `split_*` counters to `grouping_runs`. All nullable — NULL means the pass did not run, which is distinct from zero.
+
+**Context:** `failed_calls` and the split pass counters were printed to stdout only. Reports regenerated from persisted records therefore could not show whether a run's grouping was trustworthy, and assessing runs #37 and #42 required inferring the split pass had worked from the shape of the cluster/singleton ratio rather than reading it. Two of these counters are exactly the "is this run usable" signal: a non-zero `attach_failed_calls` means clusters were never offered their candidates, and a non-zero `split_failed_calls` means over-merges were retained.
+
+### Prefilter concurrency
+
+**Decision:** `prefilter.concurrency` 10 → 4, with `retry_max_attempts` / `retry_base_ms` added. `BatchStageConfigSchema` gains the optional retry fields, and `processBatch` now receives them — it was calling `callWithBackoff(fn, {}, "prefilter")`, so any per-stage retry configuration would have been silently ignored.
+
+**Context:** Run #42 logged 7 rate-limit errors across 41 prefilter calls, the same saturation grouping hit at concurrency 10 (fixed 2026-07-25). Prefilter recovers via backoff and fails safe by keeping items as `news`, so this is throughput tuning rather than a correctness fix — but the empty-config bug was real and would have defeated any attempt to tune the retry behaviour.
+
+---
+
 ## 2026-07-25 — Split pass (step 2b): union-find over-merges are re-partitioned by the LLM
 
 **Decision:** A new step between candidate groups and attach. Step-2 connected components that are large enough to chain (`min_size`, default 3) and loosely connected (cohesion below `density_floor`, default 0.5) get one LLM call that re-partitions them into same-event groups. Dense components pass through with no call. Members the model places in no group rejoin the singleton pool, where attach can pick them up. Controlled by `grouping.split.*`.
