@@ -20,6 +20,42 @@ Entry format:
 
 ---
 
+## 2026-07-28 — Run #43 follow-ups: charset retry over-corrected, Accept header restored, translation timeout raised
+
+Three fixes from run #43, the first verification run of the charset change. The headline result was good — 1,857 pre-existing corrupted rows from Folha de São Paulo, zero new ones, and the exact title that was mojibake in run #42 arrived clean. But the run exposed one bug introduced by that change and two regressions it caused.
+
+### The windows-1252 fallback was too eager
+
+**Decision:** `decodeFeedBytes` now retries only when the first decode looks *systematically* wrong: at least 5 replacement characters **and** a rate of at least 1 per 2000 characters. A retry whose output carries the UTF-8-read-as-single-byte signature (`Ã`, `Ð`, `Ñ`, `Â`, `â€` above 1 per 200 characters) is rejected outright.
+
+**Context:** Run #43's collector logged `[collector] https://meduza.io/rss/all: declared charset did not decode cleanly; recovered as windows-1252`. Meduza is UTF-8 Cyrillic — that recovery was wrong. Reproduced locally: a UTF-8 document with a single malformed byte was re-decoded whole as windows-1252, turning "Кризисную группу" into "ÐšÑ€Ð¸Ð·Ð¸ÑÐ½ÑƒÑŽ Ð³Ñ€ÑƒÐ¿Ð¿Ñƒ".
+
+**Why this was the dangerous kind of bug:** windows-1252 maps every byte to some character, so it can never emit U+FFFD. The old logic accepted any retry that removed the replacement characters — which windows-1252 always does, unconditionally. Worse, the resulting mojibake contains no U+FFFD either, so the verification query (`title LIKE '%' || chr(65533) || '%'`) reported zero corrupted rows while the damage was present. A check that cannot see its own failure mode is worse than no check.
+
+**Rationale:** The two cases are three orders of magnitude apart and the rate separates them cleanly. A Latin-1 document read as UTF-8 emits a replacement character for roughly every accented letter (~5 per 1000); a UTF-8 document with one bad byte emits one in the entire file. Gating on rate keeps the Folha recovery working while leaving Meduza alone. The mojibake-signature check is a second, independent guard for cases the rate gate might admit.
+
+Two existing tests had to be rewritten around realistic multi-item documents: a single short title carries too few accented characters to look systematic, which is correct behaviour and not worth weakening the gate for. Real feeds are never one title.
+
+**Action outstanding:** Meduza inserted one item during run #43 while the bug was live. That row is very likely mojibake and is invisible to the replacement-character query — it needs finding by inspecting Meduza rows for the `Ð`/`Ñ` signature, and deleting.
+
+### Accept header restored
+
+**Decision:** `fetchFeedText` sends `Accept: application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8`.
+
+**Context:** The Baffler returned 403 in run #43 after succeeding in #42. Taking over the transport from rss-parser dropped its `DEFAULT_HEADERS`, which included `Accept: application/rss+xml`; some CDNs reject feed requests advertising no acceptable type. This was flagged as a risk when the transport changed and it materialised.
+
+### Translation timeout and concurrency
+
+**Decision:** `preprocessor.translation.timeout_ms` 60000 → 180000, `concurrency` 10 → 4.
+
+**Context:** Run #43 logged 17 translation timeouts, every one at almost exactly 60s. `[preprocessor] WARNING: 171 item(s) fell back to original-language text for embedding` — 171 of 462 non-English items, 37%, were never translated. Call duration totalled 2,202,355 ms across 55 calls, averaging ~40s against a 60s ceiling, so a large share of calls sat near the limit.
+
+**Rationale:** This silently defeats the cross-language English-space embedding the stage exists for (2026-06-17): an untranslated item cannot cluster with its English counterparts, and nothing downstream can tell. `callWithBackoff` retries 429/503 only, so a timeout is a permanent failure, not a retry — the fallback is the first and last outcome. Raising the ceiling addresses the symptom; lowering concurrency addresses the cause, since contention is what pushed per-call latency to 40s. Both, for the same reason the other stages got the same treatment.
+
+**Not changed:** timeouts remain non-retryable. Making them retryable risks five 60s attempts per call, and the translation module already has a split-on-failure retry path (8 fired this run). The proportionate fix is to stop generating timeouts, not to retry them.
+
+---
+
 ## 2026-07-28 — Feed charset decoded by us, not rss-parser; grouping stats persisted; prefilter concurrency lowered
 
 Three fixes from run #42's report.

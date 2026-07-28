@@ -106,12 +106,59 @@ export function resolveCharset(
   );
 }
 
+const REPLACEMENT_CHAR = "�";
+
+// A retry is only worth attempting when the replacement characters look
+// *systematic* — the whole document decoded under the wrong charset — rather
+// than incidental. The two cases are three orders of magnitude apart: a Latin-1
+// document read as UTF-8 emits a replacement character for roughly every
+// accented letter (~5 per 1000 chars), while a UTF-8 document containing one
+// malformed byte emits one in the whole file.
+//
+// The distinction matters because windows-1252 maps every byte to some
+// character and so can never produce U+FFFD. Without a gate, any UTF-8 document
+// with a single bad byte "improves" under windows-1252 and gets silently
+// re-decoded — which for a Cyrillic feed turns "Кризисную" into "ÐšÑ€Ð¸Ð·Ð¸ÑÐ½ÑƒÑŽ".
+// That damage contains no U+FFFD, so it is invisible to the obvious check.
+const MIN_REPLACEMENTS_FOR_RETRY = 5;
+const REPLACEMENT_RATE_FOR_RETRY = 1 / 2000;
+
+function replacementCount(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === REPLACEMENT_CHAR) n++;
+  }
+  return n;
+}
+
+function looksSystematicallyMisdecoded(text: string): boolean {
+  if (text.length === 0) return false;
+  const count = replacementCount(text);
+  if (count < MIN_REPLACEMENTS_FOR_RETRY) return false;
+  return count / text.length >= REPLACEMENT_RATE_FOR_RETRY;
+}
+
+// Second guard on a single-byte retry: UTF-8 bytes read as windows-1252 produce
+// a recognizable signature — "Ã" before Latin accents, "Ð"/"Ñ" before Cyrillic,
+// "â€" before curly quotes and dashes. These are vanishingly rare in genuine
+// windows-1252 text (they are capitals, or a bigram) but appear once per
+// non-ASCII character in mojibake. If a retry produces them, it made things
+// worse and must be rejected.
+const MOJIBAKE_MARKERS = /[ÃÐÑÂ]|â€/g;
+const MOJIBAKE_RATE_LIMIT = 1 / 200;
+
+function looksLikeUtf8ReadAsSingleByte(text: string): boolean {
+  if (text.length === 0) return false;
+  const matches = text.match(MOJIBAKE_MARKERS);
+  if (!matches) return false;
+  return matches.length / text.length >= MOJIBAKE_RATE_LIMIT;
+}
+
 /**
- * Decodes feed bytes using the resolved charset. If the document declared an
- * encoding the transport contradicted, and decoding produced replacement
- * characters, retries with the declared encoding — a feed whose header says
- * UTF-8 but whose body is Latin-1 is exactly the case that produced the
- * mojibake, and the replacement character is the reliable tell.
+ * Decodes feed bytes using the resolved charset, retrying only when the first
+ * decode looks systematically wrong rather than merely imperfect. A feed whose
+ * header claims UTF-8 while its body is Latin-1 is the case worth recovering; a
+ * UTF-8 feed with one malformed byte is not, and must be left alone.
  */
 export function decodeFeedBytes(
   bytes: Uint8Array,
@@ -120,21 +167,29 @@ export function decodeFeedBytes(
   const charset = resolveCharset(contentType, bytes);
   const text = new TextDecoder(charset).decode(bytes);
 
-  if (!text.includes("�")) return { text, charset, recovered: false };
+  if (!looksSystematicallyMisdecoded(text)) {
+    return { text, charset, recovered: false };
+  }
 
+  // The transport and the document disagree — prefer what the document says.
   const declared = charsetFromXmlDeclaration(bytes);
   if (declared && declared !== charset) {
     const retry = new TextDecoder(declared).decode(bytes);
-    if (!retry.includes("�")) {
+    if (
+      !looksSystematicallyMisdecoded(retry) &&
+      !looksLikeUtf8ReadAsSingleByte(retry)
+    ) {
       return { text: retry, charset: declared, recovered: true };
     }
   }
 
-  // windows-1252 maps every byte to a character, so it cannot produce U+FFFD.
-  // It is the last resort for a document that is simply not UTF-8.
+  // Last resort for a document nothing correctly labelled.
   if (charset !== "windows-1252") {
     const retry = new TextDecoder("windows-1252").decode(bytes);
-    if (!retry.includes("�")) {
+    if (
+      !looksSystematicallyMisdecoded(retry) &&
+      !looksLikeUtf8ReadAsSingleByte(retry)
+    ) {
       return { text: retry, charset: "windows-1252", recovered: true };
     }
   }

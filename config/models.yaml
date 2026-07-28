@@ -31,12 +31,19 @@ preprocessor:
     max_tokens: 4096
     reasoning_effort: "none"
     stream: false
-    timeout_ms: 60000
+    # Raised from 60s after run #43: calls averaged ~40s against a 60s ceiling,
+    # so 17 timed out and 171 of 462 non-English items (37%) fell back to
+    # original-language text for embedding — silently defeating the
+    # English-space clustering this stage exists for. callWithBackoff retries
+    # 429/503 only, so a timeout is a permanent failure, not a retry.
+    timeout_ms: 180000
     # One LLM call per batch covers both title and body for all N items. Reduces
     # total calls from 2×items to ceil(non_english/batch_size). Alignment safety
     # via id-keyed JSONL output and recursive split-on-failure retry.
     translation_batch_size: 10
-    concurrency: 10
+    # Lowered from 10 alongside the timeout increase: less contention per call is
+    # what actually brings the per-call latency back under the ceiling.
+    concurrency: 4
     # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
     retry_max_attempts: 5
     retry_base_ms: 2000

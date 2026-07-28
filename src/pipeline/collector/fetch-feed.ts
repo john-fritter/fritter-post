@@ -42,7 +42,13 @@ export interface FetchedItem {
  */
 async function fetchFeedText(url: string): Promise<string> {
   const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT },
+    headers: {
+      "User-Agent": USER_AGENT,
+      // rss-parser sent `Accept: application/rss+xml`. Dropping it when we took
+      // over the transport made The Baffler start returning 403 in run #43 —
+      // some CDNs reject feed requests that advertise no acceptable type.
+      Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    },
     signal: AbortSignal.timeout(TIMEOUT_MS),
     redirect: "follow",
   });

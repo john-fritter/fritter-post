@@ -111,10 +111,15 @@ function testLatin1BodyWithBareHeaderDecodesCleanly() {
 }
 
 function testLyingHeaderIsRecovered() {
-  // Header claims UTF-8 but the body is Latin-1. The replacement character is
-  // the tell; we retry with the declared encoding.
+  // Header claims UTF-8 but the body is Latin-1, so the declared encoding wins.
+  // Uses a multi-item document because recovery is deliberately gated on the
+  // corruption looking systematic — see testUtf8WithOneBadByteIsNotRedecoded.
   const title = "Boom de IA distorce dados e pode levar a erros na política monetária, alerta BIS";
-  const bytes = latin1(`<?xml version="1.0" encoding="ISO-8859-1"?><rss><title>${title}</title></rss>`);
+  const items = Array.from(
+    { length: 20 },
+    (_, i) => `<item><title>${title} (${i})</title></item>`,
+  ).join("");
+  const bytes = latin1(`<?xml version="1.0" encoding="ISO-8859-1"?><rss>${items}</rss>`);
 
   const { text, charset, recovered } = decodeFeedBytes(bytes, "text/xml; charset=utf-8");
   assert.equal(recovered, true, "should report that it recovered");
@@ -124,9 +129,14 @@ function testLyingHeaderIsRecovered() {
 }
 
 function testLatin1WithoutDeclarationStillRecovers() {
-  // No declaration and no header: UTF-8 is tried, fails, windows-1252 rescues it.
+  // No declaration and no header: UTF-8 is tried, fails, windows-1252 rescues
+  // it. Multi-item for the same reason as the lying-header case.
   const title = "Visa deve demitir mais de 2.000 funcionários e busca maior eficiência";
-  const bytes = latin1(`<rss><title>${title}</title></rss>`);
+  const items = Array.from(
+    { length: 20 },
+    (_, i) => `<item><title>${title} (${i})</title></item>`,
+  ).join("");
+  const bytes = latin1(`<rss>${items}</rss>`);
 
   const { text, recovered } = decodeFeedBytes(bytes, null);
   assert.equal(recovered, true);
@@ -156,6 +166,59 @@ function testNonLatinUtf8Survives() {
   assert.ok(text.includes(title));
 }
 
+function testUtf8WithOneBadByteIsNotRedecoded() {
+  // Regression, run #43. Meduza is UTF-8 Cyrillic; one malformed byte made the
+  // first version of this module re-decode the entire document as windows-1252,
+  // turning "Кризисную" into "ÐšÑ€Ð¸Ð·Ð¸ÑÐ½ÑƒÑŽ". windows-1252 maps every byte to
+  // some character and so never emits U+FFFD, meaning the corruption passed a
+  // replacement-character check silently. A single bad byte must be left alone.
+  const title = "Кризисную группу СК SOS объявили «экстремистской» организацией";
+  const bytes = new Uint8Array(
+    Buffer.concat([
+      Buffer.from(`<?xml version="1.0" encoding="UTF-8"?><rss><title>${title}</title></rss>`, "utf-8"),
+      Buffer.from([0xc3]),
+    ]),
+  );
+
+  const { text, charset, recovered } = decodeFeedBytes(bytes, "text/xml; charset=utf-8");
+  assert.equal(charset, "utf-8", "must not abandon a correctly declared charset");
+  assert.equal(recovered, false);
+  assert.ok(text.includes(title), "Cyrillic must survive intact");
+  assert.ok(!text.includes("ÐšÑ€"), "must not produce mojibake");
+}
+
+function testWidespreadCorruptionStillTriggersRetry() {
+  // The gate must not be so strict that it stops rescuing genuine mismatches.
+  // A Latin-1 body served as UTF-8 corrupts on nearly every accented word.
+  const line = "Visa deve demitir mais de 2.000 funcionários e busca maior eficiência. ";
+  const bytes = new Uint8Array(
+    Buffer.from(
+      `<?xml version="1.0" encoding="ISO-8859-1"?><rss>${line.repeat(20)}</rss>`,
+      "latin1",
+    ),
+  );
+
+  const { text, recovered } = decodeFeedBytes(bytes, "text/xml; charset=utf-8");
+  assert.equal(recovered, true, "systematic corruption must still be recovered");
+  assert.ok(text.includes("funcionários"));
+  assert.ok(!text.includes(REPLACEMENT));
+}
+
+function testMojibakeRetryIsRejected() {
+  // If a retry would produce the UTF-8-read-as-single-byte signature, keep the
+  // original rather than shipping mojibake.
+  const cyrillic = "Украинские дроны атаковали НПЗ в Тюмени. ".repeat(20);
+  const bytes = new Uint8Array(
+    Buffer.concat([Buffer.from(cyrillic, "utf-8"), Buffer.from([0xff, 0xfe, 0xff])]),
+  );
+
+  const { text } = decodeFeedBytes(bytes, null);
+  assert.ok(
+    !text.includes("Ð£ÐºÑ€Ð°"),
+    "a windows-1252 retry that yields mojibake must be rejected",
+  );
+}
+
 function testUndecodableContentIsReturnedNotThrown() {
   // A byte sequence valid in no encoding must still return a string — the
   // collector is failure-tolerant and one bad feed must not crash the run.
@@ -180,5 +243,8 @@ testLyingHeaderIsRecovered();
 testLatin1WithoutDeclarationStillRecovers();
 testGenuineUtf8IsUntouched();
 testNonLatinUtf8Survives();
+testUtf8WithOneBadByteIsNotRedecoded();
+testWidespreadCorruptionStillTriggersRetry();
+testMojibakeRetryIsRejected();
 testUndecodableContentIsReturnedNotThrown();
 console.log("collector charset tests passed");
