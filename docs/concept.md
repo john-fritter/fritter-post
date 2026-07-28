@@ -26,7 +26,7 @@ These are the things the project is *for*. Implementation details exist to serve
 
 ## Pipeline architecture
 
-The paper is produced by a daily cron running eight stages.
+The paper is produced by a daily cron running nine stages.
 
 ```
 1. Collector (software)
@@ -35,18 +35,20 @@ The paper is produced by a daily cron running eight stages.
    ↓
 3. Prefilter (bio-aware relevance floor, LLM)
    ↓
-4. Grouping (embedding-based clustering)
+4. Grouping (embedding-based clustering — same event?)
    ↓
-5. Grouping-pass-1 (bio-aware scoring + pile assembly, LLM)
+5. Grouping-pass-1 (bio-aware scoring, LLM)
    ↓
-6. Editor (deterministic ranking + tiering, LLM tie-break only)
+6. Thread (same ongoing situation?, LLM)
    ↓
-7. Writers (parallel LLM calls)
+7. Editor (deterministic ranking + tiering, LLM tie-break only)
    ↓
-8. Publisher (software)
+8. Writers (parallel LLM calls)
+   ↓
+9. Publisher (software)
 ```
 
-Stages 1–6 are built. Writers and publisher are not.
+Stages 1–7 are built. Writers and publisher are not.
 
 **This section has been reconciled with what was actually built.** The
 original conception had seven stages including an agentic *Researcher*
@@ -74,7 +76,13 @@ Sits between collector and grouping. Does the obvious mechanical work the LLM sh
 
 The LLM should never be the first entity to notice that ten articles have nearly identical headlines. Software handles it deterministically.
 
-### Stage 3: Grouping (embedding-based clustering)
+### Stage 3: Prefilter (bio-aware relevance floor)
+
+A relevance floor between the preprocessor and the clusterer, and the first stage that reads the bio. Each item gets one of three verdicts: `cut` for noise this reader has no interest in and non-article material, `news` for anything flowing into clustering, `opinion` for pieces routed out of clustering toward a Longer Reads section.
+
+Conservative by design: when unsure, keep. A low-interest topic becomes a keep the moment it carries a substantive angle.
+
+### Stage 4: Grouping (embedding-based clustering)
 
 Clusters the kept news items into same-story groups. Each item's title and body excerpt is embedded; a cosine-similarity graph plus union-find produces candidate clusters, an LLM attach pass pulls in near-miss singletons, and a final LLM describe pass writes a neutral title and summary for each multi-item cluster. The output is a flat digest of clusters and singletons.
 
@@ -82,13 +90,23 @@ Mostly software, with two cheap bounded LLM passes (attach, describe). The prima
 
 (This replaces the original conception of an LLM "triage" digest. The earlier LLM-based triage clusterer was removed once embedding-based grouping proved out — see `docs/decisions.md`.)
 
-### Stage 5: Grouping-pass-1 (bio-aware scoring + pile assembly)
+### Stage 5: Grouping-pass-1 (bio-aware scoring)
 
 Scores every grouping output row — clusters and singletons on the same 0–100 scale — for relevance to this reader. Clusters are scored on their describe-pass title and summary; singletons on title plus body excerpt. Source count is deliberately withheld from the scorer: this judgment is purely about reader relevance, and prominence is applied later by the editor's formula.
 
 Sorts by score and takes the top `grouping.pile_target` rows as the editor pile.
 
-### Stage 6: Editor (deterministic ranking + tiering)
+### Stage 6: Thread (same ongoing situation?)
+
+Groups related clusters and singletons into one continuing story. Grouping asks whether two articles cover the same *event*; threading asks whether several events are the same *situation* — a state's fire emergency, one war, one city's fight over one project.
+
+Both questions are needed and neither can answer the other. That separation is what lets event clustering stay strict: grouping can split an over-merge without the paper losing the connection, because threading puts it back at the right level.
+
+A thread carries `max(member score)` as relevance and `sum(member sources)` as prominence, so it is a first-class row the editor ranks with the same formula as everything else — not presentation metadata.
+
+The line to hold is between a concrete situation anchored in a place and a time, and an abstract theme spanning unrelated places and actors. Fires in Oregon and fires in Spain are two threads. Data centers straining grids in three states is a topic, not a situation.
+
+### Stage 7: Editor (deterministic ranking + tiering)
 
 Not an LLM ranker. The editor combines the pass-1 relevance score with a prominence lift derived from cross-source pickup:
 
@@ -102,13 +120,13 @@ This replaced an earlier conception of the editor as an orchestrated multi-call 
 
 **Open question:** the writer package (angle, voice brief, editorial notes, length target) has no home now. Either the editor grows a package-creation step, or the writers work directly from the cluster digest plus tier. This is the main thing to decide before building the writers.
 
-### Stage 7: Writers (parallel LLM calls)
+### Stage 8: Writers (parallel LLM calls)
 
 One call per piece. Writers run in parallel — no inter-dependencies. Each writer receives the source material for its story, a target length driven by tier, and the paper's voice.
 
 Writers don't see each other's work.
 
-### Stage 8: Publisher (software)
+### Stage 9: Publisher (software)
 
 Pure rendering. Takes the structured document from the editor (ordered list of stories with size tiers, body text, image refs, sources) and produces the page according to layout rules. No judgment. All editorial work happened upstream.
 

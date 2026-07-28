@@ -42,8 +42,8 @@ features in the direction of any of these. When in doubt, less is more.
   stored in `item_embeddings`. Used by the grouping stage.
 - **Deployment:** Docker container, fronted by Caddy, on fritter.lol
 - **Cron:** *planned* — a systemd timer on the host invoking a pipeline
-  entrypoint. Not built. There is no single entrypoint script; the six stages
-  are run by hand, in order, threading run ids between them.
+  entrypoint. Not built. There is no single entrypoint script; the stages are
+  run by hand, in order, threading run ids between them.
 
 ---
 
@@ -72,6 +72,7 @@ fritter-post/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
+│   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # (not built — empty)
 │   │   └── publisher/           # (not built — empty)
@@ -81,7 +82,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–029)
+├── migrations/                  # numbered SQL migrations (001–031)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -89,7 +90,7 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The pipeline is eight stages (see `docs/concept.md`). The six below are built
+The pipeline is nine stages (see `docs/concept.md`). The seven below are built
 and production-ready. Writers and publisher are not built — their directories
 are empty.
 
@@ -101,7 +102,8 @@ Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
 grouping proved out; see `docs/decisions.md`.)
 
 ```
-collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1  →  editor
+collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
+           →  thread  →  editor
 ```
 
 ### collector
@@ -202,10 +204,47 @@ Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
 
-`assembleGroupingPile` — sorts all scored rows by score descending, takes the
-top `grouping.pile_target` (config: 150), and writes to `editor_piles` (with
-`grouping_run_id` set) + `editor_pile_items`. Source count travels to the
-editor via the grouping digest's id-list length.
+`assembleGroupingPile` — ranks threads and un-threaded rows together by score
+descending, takes the top `grouping.pile_target` (config: 150), and writes to
+`editor_piles` + `editor_pile_items`. Rows absorbed into a thread are withheld:
+a threaded row must not also appear on its own.
+
+### thread
+**Groups related clusters and singletons into one ongoing situation.** Runs
+between grouping-pass-1 scoring and pile assembly. `src/pipeline/thread/`.
+
+Grouping asks *"is this the same event?"*; threading asks *"is this the same
+continuing story?"*. Both are needed and neither can do the other's job — which
+is precisely what lets the split pass keep event clustering strict. Run #43
+published five separate Oregon wildfire clusters, four in the top fifteen,
+because the fires are one situation made of many distinct events.
+
+The merge criterion is a **concrete situation anchored in a place and a time**
+(one state's fire emergency, one war, one city's fight over one project) — not
+an abstract theme spanning unrelated places and actors (data centers straining
+grids in three states is a topic, not a situation). Most items belong to no
+thread; that is the expected answer. Reads `docs/bio.md`.
+
+A thread's numbers are derived in software, never asked of the model:
+
+```
+relevance = max(member score)      sources = sum(member source counts)
+```
+
+That is what makes a thread a first-class row the editor ranks with its
+existing formula, unchanged. On run #43's data the five fire rows thread to
+`score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead at
+111.64, and free four pile slots for other stories.
+
+**One LLM call covers the whole candidate set.** This is deliberate: a thread's
+members are spread across the score range (the fires scored 85, 80, 80, 78, 60),
+so chunking by score would hide members of one situation from each other.
+`thread.candidate_target` (config: 220) is therefore bounded by what a single
+call can hold, not by cost.
+
+Writes `thread_runs` / `threads` / `thread_members` (migration 031). A failed
+call yields zero threads — the pass not running, rather than a wrong answer —
+recorded in `thread_runs.failed_calls`.
 
 ### editor
 **Deterministic formula, not an LLM ranker.** Reads all clusters and
@@ -215,8 +254,9 @@ singletons from the editor pile and ranks them by a combined score:
 combined = relevance + source_weight * ln(sources)
 ```
 
-`relevance` is the grouping-pass-1 score (0–100); `sources` is the cluster
-member count (1 for singletons, and `ln(1) = 0`, so singletons get no lift);
+`relevance` is the grouping-pass-1 score (0–100), or `max(member score)` for a
+thread; `sources` is the cluster member count (1 for singletons, and
+`ln(1) = 0`, so singletons get no lift), or `sum(member sources)` for a thread;
 `source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
 Rows sort by combined descending, then relevance, then ref.
 
@@ -347,7 +387,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **031**.
+number is ambiguous. The next migration is **032**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -356,7 +396,8 @@ number is ambiguous. The next migration is **031**.
 - `npm run grouping [-- --preprocessor-run-id <n>] [-- --model <id>]` —
   embed items, build candidate groups, run attach + describe passes, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
-  score all clusters + singletons on 0–100 bio-relevance scale, assemble pile
+  score all clusters + singletons on 0–100 bio-relevance scale, run the thread
+  pass (`thread.enabled`), assemble pile
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Inspection**

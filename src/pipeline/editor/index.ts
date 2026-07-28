@@ -32,13 +32,14 @@ interface DigestCluster {
 
 interface EditorPileItem {
   ref: string;
-  itemType: "cluster" | "singleton";
+  itemType: "cluster" | "singleton" | "thread";
   clusterIndex: number | null;
   preprocessedItemId: number | null;
-  score: number;       // grouping-pass-1 relevance score (0–100)
-  sourceCount: number; // cluster member count; 1 for singleton
+  threadId: number | null;
+  score: number;       // grouping-pass-1 relevance score (0–100); max(member) for a thread
+  sourceCount: number; // cluster member count; 1 for singleton; sum(members) for a thread
   title: string;
-  bodyText: string;    // cluster summary or singleton body excerpt, for tie-break prompt
+  bodyText: string;    // cluster/thread summary or singleton body excerpt, for tie-break prompt
 }
 
 const BODY_CAP = 300;
@@ -277,6 +278,7 @@ export async function runEditor(
         itemType: "cluster",
         clusterIndex: row.cluster_index,
         preprocessedItemId: null,
+        threadId: null,
         score: row.score,
         sourceCount: detail.itemCount,
         title: detail.title,
@@ -290,13 +292,44 @@ export async function runEditor(
     itemType: "singleton" as const,
     clusterIndex: null,
     preprocessedItemId: Number(row.preprocessed_item_id),
+    threadId: null,
     score: row.score,
     sourceCount: 1,
     title: row.title,
     bodyText: (row.body_text ?? "").slice(0, BODY_CAP),
   }));
 
-  const pileItems: EditorPileItem[] = [...clusterItems, ...singletonItems];
+  // Threads carry their own title, summary, score and source count — the thread
+  // pass derived them from the members it absorbed, so nothing here needs to
+  // resolve them from the digest.
+  const { rows: threadPileRows } = await pool.query<{
+    thread_id: string;
+    thread_index: number;
+    title: string;
+    summary: string | null;
+    score: number;
+    source_count: number;
+  }>(
+    `SELECT epi.thread_id, t.thread_index, t.title, t.summary, t.score, t.source_count
+     FROM editor_pile_items epi
+     JOIN threads t ON t.id = epi.thread_id
+     WHERE epi.pile_id = $1 AND epi.item_type = 'thread' AND epi.in_pile = true`,
+    [pileId],
+  );
+
+  const threadItems: EditorPileItem[] = threadPileRows.map((row) => ({
+    ref: `T${row.thread_index}`,
+    itemType: "thread" as const,
+    clusterIndex: null,
+    preprocessedItemId: null,
+    threadId: Number(row.thread_id),
+    score: row.score,
+    sourceCount: row.source_count,
+    title: row.title,
+    bodyText: (row.summary ?? "").slice(0, BODY_CAP),
+  }));
+
+  const pileItems: EditorPileItem[] = [...threadItems, ...clusterItems, ...singletonItems];
 
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
@@ -378,8 +411,8 @@ export async function runEditor(
       const chunk = sorted.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_r, j) => {
-          const base = j * 7;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+          const base = j * 8;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
         })
         .join(", ");
       const params: Array<number | string | null> = [];
@@ -391,11 +424,20 @@ export async function runEditor(
         const reason =
           `combined=${r.combined.toFixed(2)} (score=${r.score}, sources=${r.sourceCount})` +
           (tieRank !== undefined ? ` tie-rank:${tieRank}` : "");
-        params.push(runId, r.itemType, r.clusterIndex, r.preprocessedItemId, tier, rank, reason);
+        params.push(
+          runId,
+          r.itemType,
+          r.clusterIndex,
+          r.preprocessedItemId,
+          r.threadId,
+          tier,
+          rank,
+          reason,
+        );
       });
       await pool.query(
         `INSERT INTO editor_stories
-           (run_id, item_type, cluster_index, preprocessed_item_id, tier, rank, reason)
+           (run_id, item_type, cluster_index, preprocessed_item_id, thread_id, tier, rank, reason)
          VALUES ${placeholders}`,
         params,
       );

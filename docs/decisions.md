@@ -20,6 +20,40 @@ Entry format:
 
 ---
 
+## 2026-07-28 — Thread layer: threads are first-class rows the editor ranks
+
+**Decision:** A new stage between grouping-pass-1 scoring and pile assembly groups related clusters and singletons into ongoing situations. A thread is a **first-class row the editor ranks**, not presentation metadata the publisher nests. Its numbers are derived in software, never asked of the model:
+
+```
+relevance = max(member score)      sources = sum(member source counts)
+```
+
+The editor's formula is unchanged. Migration 031 adds `thread_runs` / `threads` / `thread_members`, plus `thread_id` on `editor_pile_items` and `editor_stories`. Rows absorbed into a thread are withheld from the pile — a threaded row must not also appear on its own.
+
+**Context:** Run #43 published **five separate Oregon wildfire clusters, four of them in the top fifteen**: "Wildfires surge across Central Oregon" (12 sources), "Bench and Beachcomb fires merge, destroying homes on Warm Springs Reservation" (5), "Oregon wildfires prompt evacuations across over 1.1 million acres" (2), "Oregon National Guard activates aircraft for wildfire response" (2), and "Aid groups support Eastern Oregon farmworkers amid wildfire smoke" (2). Run #42 had carried the same story as one cluster of 11.
+
+Grouping was not wrong by its own criterion — those are genuinely distinct events, and the attach prompt explicitly excludes items sharing only "a region, a topic, an ongoing situation." The reader's framing is the opposite: all the fires in the state right now are one ongoing thing.
+
+**Rationale:** These are two different questions and one layer cannot answer both. Grouping asks *is this the same event?*; threading asks *is this the same continuing story?*. Trying to encode both in `similarity_threshold` fails in both directions at once, which is exactly what runs #35 and #43 showed: over-merges (a Virginia power line chained to a New York moratorium) coexisting with under-merges (the fires) in the same run.
+
+Separating them is also what makes the split pass (2026-07-25) safe. Event clustering can be strict — can split an over-merge — without the paper losing the connection, because threading restores it at the level the reader experiences.
+
+**Why threads rank rather than decorate:** the two options were a first-class row or publisher-only nesting. Nesting would leave the pile still holding five fire rows, so the flooding — four of fifteen feature slots on one situation — would persist and only be hidden at render time. Ranking removes the repetition at the point where it is created. Summing sources is what makes the thread outrank every member it absorbed: on run #43's data the fires thread to `score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead (Trump/Zelenskyy/Graham at 111.64), and free four pile slots for other stories. Both properties are unit-tested.
+
+**One LLM call covers the whole candidate set.** A thread's members are spread across the score range — the fires scored 85, 80, 80, 78 and 60 — so chunking by score would hide members of one situation from each other and defeat the pass. `thread.candidate_target` (220) is therefore bounded by what a single call can hold, not by cost. It is deliberately well past `pile_target` so a situation's weaker members are still visible for absorption.
+
+**The line the prompt has to hold** is between a concrete situation anchored in a place and a time (one state's fire emergency, one war, one city's fight over one project) and an abstract theme spanning unrelated places and actors (data centers straining grids in three states; several countries separately regulating AI). Fires in Oregon and fires in Spain are two threads. The prompt states that most items belong to no thread, because the failure mode to guard against is a model grouping for the sake of thoroughness.
+
+**Failure handling:** a failed call yields zero threads — the pass not running, rather than a wrong answer. The pile keeps its un-threaded rows and `thread_runs.failed_calls` records it. Consistent with the attach and split passes.
+
+**Ref namespace:** threads are `T<index>`, so `src/lib/refs.ts` now recognizes `[cst]\d+`. The editor tie-break and any future stage that parses refs get thread support for free.
+
+`inspect editor` renders a thread's absorbed members as an indented tree under the thread row, so the ranked list stays traceable without a second query.
+
+**Deferred:** run #43's `Trump meets Zelenskyy and Netanyahu; Lindsey Graham funeral held in Washington` (42 sources, at #1) is a genuine over-merge that the split pass let through because it is a dense component rather than a chained one — cohesion protects it. Density catches chaining, not dense topical cliques. Raising `split.density_floor` from 0.5 may catch it; that is a separate change and should be tuned against a run where the thread layer is already in place, since threading changes what the pile looks like.
+
+---
+
 ## 2026-07-28 — Run #43 follow-ups: charset retry over-corrected, Accept header restored, translation timeout raised
 
 Three fixes from run #43, the first verification run of the charset change. The headline result was good — 1,857 pre-existing corrupted rows from Folha de São Paulo, zero new ones, and the exact title that was mojibake in run #42 arrived clean. But the run exposed one bug introduced by that change and two regressions it caused.

@@ -144,10 +144,20 @@ const GroupingStageConfigSchema = StageConfigSchema.extend({
   pile_target: z.number().int(),
 });
 
+const ThreadStageConfigSchema = StageConfigSchema.extend({
+  enabled: z.boolean(),
+  // Top-scoring grouping-pass-1 rows offered to the pass. Bounded by what one
+  // LLM call can hold, not by cost — see runThreading on why it is one call.
+  candidate_target: z.number().int(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
+});
+
 const ModelsConfigSchema = z.object({
   preprocessor: PreprocessorConfigSchema,
   prefilter: BatchStageConfigSchema,
   editor: EditorStageConfigSchema,
+  thread: ThreadStageConfigSchema,
   writers: StageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
@@ -161,6 +171,7 @@ export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;
 export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
 export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
+export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
 export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;

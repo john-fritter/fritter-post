@@ -99,9 +99,13 @@ interface EditorRunRow {
 
 interface EditorStoryRow {
   id: string;
-  item_type: "cluster" | "singleton";
+  item_type: "cluster" | "singleton" | "thread";
   cluster_index: number | null;
   preprocessed_item_id: string | null;
+  thread_id: string | null;
+  thread_index: number | null;
+  thread_title: string | null;
+  thread_source_count: number | null;
   tier: string;
   rank: number;
   reason: string;
@@ -564,10 +568,15 @@ async function main() {
           }
 
           const { rows: storyRows } = await pool.query<EditorStoryRow>(
-            `SELECT es.id, es.item_type, es.cluster_index, es.preprocessed_item_id::text AS preprocessed_item_id,
+            `SELECT es.id, es.item_type, es.cluster_index,
+                    es.preprocessed_item_id::text AS preprocessed_item_id,
+                    es.thread_id::text AS thread_id,
+                    t.thread_index, t.title AS thread_title,
+                    t.source_count AS thread_source_count,
                     es.tier, es.rank, es.reason, pi.title AS resolved_title
              FROM editor_stories es
              LEFT JOIN preprocessed_items pi ON pi.id = es.preprocessed_item_id
+             LEFT JOIN threads t ON t.id = es.thread_id
              WHERE es.run_id = $1
              ORDER BY es.rank ASC`,
             [runId]
@@ -582,18 +591,53 @@ async function main() {
               // Promoted-singleton merged entries have item_type='cluster' but
               // cluster_index=null; fall back to the singleton ref/title path.
               const ref =
-                row.item_type === "cluster"
-                  ? (row.cluster_index !== null
-                      ? `C${row.cluster_index}`
-                      : `S${row.preprocessed_item_id ?? "?"}`)
-                  : `S${row.preprocessed_item_id}`;
+                row.item_type === "thread"
+                  ? `T${row.thread_index ?? "?"}`
+                  : row.item_type === "cluster"
+                    ? (row.cluster_index !== null
+                        ? `C${row.cluster_index}`
+                        : `S${row.preprocessed_item_id ?? "?"}`)
+                    : `S${row.preprocessed_item_id}`;
               const title =
-                row.item_type === "cluster" && row.cluster_index !== null
-                  ? clusterTitles.get(row.cluster_index) ?? "(cluster title unresolved)"
-                  : row.resolved_title ?? "(item title unresolved)";
+                row.item_type === "thread"
+                  ? row.thread_title ?? "(thread title unresolved)"
+                  : row.item_type === "cluster" && row.cluster_index !== null
+                    ? clusterTitles.get(row.cluster_index) ?? "(cluster title unresolved)"
+                    : row.resolved_title ?? "(item title unresolved)";
               const tier = row.tier.padEnd(8);
               console.log(`  ${String(row.rank).padStart(3)}. [${tier}] ${ref.padEnd(7)} ${title}`);
               console.log(`       ${row.reason}`);
+              // A thread stands in for several rows; show what it absorbed so
+              // the ranked list stays traceable without a separate query.
+              if (row.item_type === "thread" && row.thread_id !== null) {
+                const { rows: memberRows } = await pool.query<{
+                  item_type: string;
+                  cluster_index: number | null;
+                  preprocessed_item_id: string | null;
+                  score: number;
+                  member_title: string | null;
+                }>(
+                  `SELECT m.item_type, m.cluster_index,
+                          m.preprocessed_item_id::text AS preprocessed_item_id,
+                          m.score, pi.title AS member_title
+                   FROM thread_members m
+                   LEFT JOIN preprocessed_items pi ON pi.id = m.preprocessed_item_id
+                   WHERE m.thread_id = $1
+                   ORDER BY m.score DESC`,
+                  [row.thread_id],
+                );
+                for (const m of memberRows) {
+                  const mRef =
+                    m.item_type === "cluster"
+                      ? `C${m.cluster_index}`
+                      : `S${m.preprocessed_item_id}`;
+                  const mTitle =
+                    m.item_type === "cluster"
+                      ? clusterTitles.get(m.cluster_index ?? -1) ?? "(unresolved)"
+                      : m.member_title ?? "(unresolved)";
+                  console.log(`         ├─ ${mRef.padEnd(7)} [${m.score}] ${mTitle}`);
+                }
+              }
               if (row.reason.startsWith("fail-safe:")) flagged.push(row);
             }
 
