@@ -408,6 +408,22 @@ number is ambiguous. The next migration is **032**.
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
 
+**Experiments**
+- `npm run embedding-experiment -- --list <provider>` — enumerate a provider's
+  models, flagging likely embedding models. Model ids must come from the
+  provider, not from guesswork.
+- `npm run embedding-experiment -- --model <provider>:<id> [--model …]
+  [--body-cap <n>] [--grouping-run-id <n>] [--max-pairs <n>]` — measures whether
+  translation earns its keep. Uses existing clusters as ground truth: a cluster
+  with both English and non-English members is a validated same-event
+  cross-language pair. Embeds the **originals** with each candidate model and
+  reports same-event vs different-event cosine separation, against the
+  translated-text numbers production gets today. If a model's original-text
+  same-event p10 clears the threshold while its diff-event p90 stays below it,
+  the translation stage can be deleted rather than hardened. Repeating
+  `--body-cap` also measures truncation sensitivity. Read-only apart from the
+  `generation_logs` rows every LLM call writes.
+
 There is **no** `inspect grouping` or `inspect grouping-pass1` subcommand yet.
 Those two stages currently have no inspection view, which is a gap: the
 project convention is that LLM stages' feedback loop is the inspection CLI,
