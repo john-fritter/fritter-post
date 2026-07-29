@@ -357,8 +357,9 @@ export async function runEditor(
   const tiedGroups = [...byScore.values()].filter((g) => g.length >= 2);
 
   console.log(
-    `[editor] pile #${pileId}: ${clusterItems.length} clusters, ${singletonItems.length} singletons, ` +
-      `${pileItems.length} items total — formula W=${W}, tiers=${featureCount}/${standardCount}/..., ` +
+    `[editor] pile #${pileId}: ${threadItems.length} threads, ${clusterItems.length} clusters, ` +
+      `${singletonItems.length} singletons, ${pileItems.length} items total — ` +
+      `formula W=${W}, tiers=${featureCount}/${standardCount}/..., ` +
       `${tiedGroups.length} tied group(s)`,
   );
 

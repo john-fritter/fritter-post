@@ -637,6 +637,24 @@ async function splitLowDensityComponents(
     if (cohesion < config.density_floor) suspect.push(i);
   }
 
+  // Log every examined component, not just the suspect ones. Without the
+  // cohesion of components that *passed*, there is no way to tell how far
+  // density_floor would have to move to catch a specific over-merge — run #44's
+  // 44-source "Trump meets Zelenskyy and Netanyahu amid Graham funeral" cluster
+  // was never logged, so its cohesion is unknown and the threshold cannot be
+  // tuned against it.
+  if (examined > 0) {
+    const summary = [...cohesions.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(
+        ([idx, c]) =>
+          `${idx}:size=${candidateGroups[idx]!.length},cohesion=${c.toFixed(2)}` +
+          (c < config.density_floor ? "*" : ""),
+      )
+      .join(" ");
+    console.log(`[grouping] split cohesion (* = suspect): ${summary}`);
+  }
+
   if (suspect.length === 0) {
     console.log(
       `[grouping] split: examined=${examined}, suspect=0, calls=0 — ` +
