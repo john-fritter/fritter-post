@@ -409,9 +409,17 @@ number is ambiguous. The next migration is **032**.
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
 
 **Experiments**
-- `npm run embedding-experiment -- --list <provider>` — enumerate a provider's
-  models, flagging likely embedding models. Model ids must come from the
-  provider, not from guesswork.
+- `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
+  determine which embedding models a provider actually serves, by making a
+  one-text embedding call per candidate and reporting the returned dimension.
+  **This is the discovery mechanism for embedding models, not `--list`.** On both
+  nanogpt and openrouter, `/v1/models` enumerates chat models only: it returned
+  295 and 367 entries respectively with zero embedding models, omitting even
+  `qwen/qwen3-embedding-8b`, which production embeds through successfully. A
+  catalog absence therefore proves nothing.
+- `npm run embedding-experiment -- --list <provider>` — raw `/v1/models` dump.
+  Useful for chat models; see above for why it can't answer embedding
+  availability.
 - `npm run embedding-experiment -- --model <provider>:<id> [--model …]
   [--body-cap <n>] [--grouping-run-id <n>] [--max-pairs <n>]` — measures whether
   translation earns its keep. Uses existing clusters as ground truth: a cluster

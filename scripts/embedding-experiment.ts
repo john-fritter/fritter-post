@@ -77,10 +77,16 @@ function parseArgs(argv: string[]) {
   let groupingRunId: number | undefined;
   let maxPairs = DEFAULT_MAX_PAIRS;
   let listProvider: string | undefined;
+  let probeProvider: string | undefined;
+  const extraCandidates: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--model" && i + 1 < args.length) {
+    if (arg === "--probe" && i + 1 < args.length) {
+      probeProvider = args[++i];
+    } else if (arg === "--candidate" && i + 1 < args.length) {
+      extraCandidates.push(args[++i]!);
+    } else if (arg === "--model" && i + 1 < args.length) {
       const raw = args[++i]!;
       const idx = raw.indexOf(":");
       if (idx === -1) {
@@ -107,6 +113,8 @@ function parseArgs(argv: string[]) {
     groupingRunId,
     maxPairs,
     listProvider,
+    probeProvider,
+    extraCandidates,
   };
 }
 
@@ -126,9 +134,103 @@ function providerEnv(provider: string): { baseUrl: string; apiKey: string } {
 }
 
 /**
- * Lists a provider's models, flagging ones whose id looks like an embedding
- * model. Model ids must come from the provider, not from guesswork — the same
- * rule CLAUDE.md states for Ollama Cloud chat models.
+ * Candidates for the probe, in rough order of interest for cross-lingual
+ * alignment. The first entry is the incumbent and serves as the positive
+ * control: if it fails, the probe itself is broken, not the catalog.
+ *
+ * Several spellings per family are included on purpose — gateways differ on
+ * casing and namespace (`baai/bge-m3` vs `BAAI/bge-m3`), and a probe is cheap.
+ */
+const PROBE_CANDIDATES: string[] = [
+  // Incumbent / positive control.
+  "qwen/qwen3-embedding-8b",
+  "Qwen/Qwen3-Embedding-8B",
+  "qwen/qwen3-embedding-4b",
+  "qwen/qwen3-embedding-0.6b",
+  // BGE-M3 — built for multilingual + cross-lingual retrieval.
+  "baai/bge-m3",
+  "BAAI/bge-m3",
+  "bge-m3",
+  // multilingual-e5 — strong cross-lingual alignment.
+  "intfloat/multilingual-e5-large",
+  "intfloat/multilingual-e5-large-instruct",
+  "multilingual-e5-large",
+  // LaBSE — purpose-built for cross-lingual sentence alignment.
+  "sentence-transformers/LaBSE",
+  "LaBSE",
+  // Others plausibly carried by an OpenAI-compatible gateway.
+  "jinaai/jina-embeddings-v3",
+  "jina-embeddings-v3",
+  "Alibaba-NLP/gte-multilingual-base",
+  "gte-multilingual-base",
+  "openai/text-embedding-3-large",
+  "text-embedding-3-large",
+  "openai/text-embedding-3-small",
+  "cohere/embed-multilingual-v3.0",
+  "embed-multilingual-v3.0",
+  "mistralai/mistral-embed",
+  "mistral-embed",
+  "nomic-ai/nomic-embed-text-v2-moe",
+  "voyage/voyage-multilingual-2",
+];
+
+/**
+ * Probes candidate model ids with a one-text embedding call and reports which
+ * ones the provider actually serves, with the dimension each returns.
+ *
+ * This exists because `/v1/models` on these gateways does NOT enumerate
+ * embedding models: both nanogpt and openrouter returned 295 and 367 chat
+ * models respectively and zero embedding models, including omitting
+ * `qwen/qwen3-embedding-8b` — which production embeds through successfully.
+ * Cataloguing therefore cannot answer "is this model available"; asking can.
+ *
+ * This is not guessing at ids and hoping. A probe converts a guess into a
+ * provider-sourced yes/no before anything depends on it, which is what the
+ * "ids must come from the provider" rule is protecting against.
+ */
+async function probeModels(provider: LLMProvider, extra: string[]): Promise<void> {
+  const candidates = [...PROBE_CANDIDATES, ...extra];
+  console.log(
+    `Probing ${candidates.length} candidate id(s) on ${provider} with a ` +
+      `single-text embedding call each.\n`,
+  );
+
+  const available: Array<{ id: string; dims: number }> = [];
+
+  for (const model of candidates) {
+    try {
+      const vectors = await embed(["probe"], {
+        stage: "embedding-experiment",
+        model,
+        provider,
+        timeoutMs: 60_000,
+      });
+      const dims = vectors[0]?.length ?? 0;
+      available.push({ id: model, dims });
+      console.log(`  OK    ${model.padEnd(44)} dims=${dims}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // One line, trimmed — a 404 body can be very long.
+      console.log(`  fail  ${model.padEnd(44)} ${msg.slice(0, 90)}`);
+    }
+  }
+
+  console.log(`\n${available.length} of ${candidates.length} available on ${provider}:`);
+  for (const a of available) {
+    console.log(`  --model ${provider}:${a.id}    (dims=${a.dims})`);
+  }
+  if (available.length === 0) {
+    console.log(
+      "  none — if even the incumbent qwen/qwen3-embedding-8b failed, the probe\n" +
+        "  or the credentials are at fault rather than the catalog.",
+    );
+  }
+}
+
+/**
+ * Lists a provider's models. NOTE: on both nanogpt and openrouter this returns
+ * chat/completion models only and omits embedding models entirely — use
+ * --probe to determine embedding availability.
  */
 async function listModels(provider: string): Promise<void> {
   const { baseUrl, apiKey } = providerEnv(provider);
@@ -379,9 +481,20 @@ function reportRow(label: string, s: Stats): void {
 }
 
 async function main() {
-  const { models, bodyCaps, groupingRunId, maxPairs, listProvider } = parseArgs(
-    process.argv,
-  );
+  const {
+    models,
+    bodyCaps,
+    groupingRunId,
+    maxPairs,
+    listProvider,
+    probeProvider,
+    extraCandidates,
+  } = parseArgs(process.argv);
+
+  if (probeProvider) {
+    await probeModels(probeProvider as LLMProvider, extraCandidates);
+    process.exit(0);
+  }
 
   if (listProvider) {
     await listModels(listProvider);
@@ -391,8 +504,11 @@ async function main() {
   if (models.length === 0) {
     console.error(
       "No --model given. Example:\n" +
-        "  tsx scripts/embedding-experiment.ts --model openrouter:qwen/qwen3-embedding-8b\n" +
-        "Discover ids with: --list nanogpt | --list openrouter",
+        "  tsx scripts/embedding-experiment.ts --model openrouter:qwen/qwen3-embedding-8b\n\n" +
+        "Discover which embedding models a provider actually serves with:\n" +
+        "  --probe openrouter   (or --probe nanogpt)\n" +
+        "`--list` shows the /v1/models catalog, but on these gateways that\n" +
+        "enumerates chat models only and omits embedding models entirely.",
     );
     process.exit(1);
   }
