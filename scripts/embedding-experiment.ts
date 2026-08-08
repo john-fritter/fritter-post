@@ -471,6 +471,51 @@ function fmt(x: number): string {
   return Number.isNaN(x) ? "  n/a" : x.toFixed(3);
 }
 
+/**
+ * Reports where a usable threshold would have to sit, not merely whether one
+ * exists. A bare "separation > 0" is misleading: multilingual-e5-large scored
+ * a positive 0.018 separation while rating *unrelated* articles 0.734 median,
+ * so its only viable threshold is ~0.78 — nowhere near the 0.66 production
+ * runs, and a hair's width wide. A model is only usable here if its
+ * different-event p90 sits below the threshold the pipeline actually uses.
+ */
+function reportSeparation(same: Stats, diff: Stats): void {
+  const gap = same.p10 - diff.p90;
+  const midpoint = (same.p10 + diff.p90) / 2;
+
+  if (!(gap > 0)) {
+    console.log(
+      `    separation: p10(same)=${fmt(same.p10)} p90(diff)=${fmt(diff.p90)} → ` +
+        `classes overlap; no threshold separates them`,
+    );
+    return;
+  }
+
+  const usableAtProduction =
+    diff.p90 < PRODUCTION_THRESHOLD && same.p10 >= PRODUCTION_THRESHOLD;
+
+  console.log(
+    `    separation: p10(same)=${fmt(same.p10)} p90(diff)=${fmt(diff.p90)} → ` +
+      `gap ${fmt(gap)}, threshold would sit near ${fmt(midpoint)}`,
+  );
+
+  if (usableAtProduction) {
+    console.log(
+      `      → usable at the production threshold ${PRODUCTION_THRESHOLD}`,
+    );
+  } else if (diff.p90 >= PRODUCTION_THRESHOLD) {
+    console.log(
+      `      → UNUSABLE at ${PRODUCTION_THRESHOLD}: unrelated articles clear it ` +
+        `(diff-event p90 ${fmt(diff.p90)}). This model calls everything similar.`,
+    );
+  } else {
+    console.log(
+      `      → separable, but only below ${PRODUCTION_THRESHOLD} ` +
+        `(same-event p10 ${fmt(same.p10)}). Adopting it means retuning the threshold.`,
+    );
+  }
+}
+
 function reportRow(label: string, s: Stats): void {
   console.log(
     `    ${label.padEnd(28)} n=${String(s.n).padStart(3)}  ` +
@@ -536,9 +581,13 @@ async function main() {
   console.log(`  pairs — same-event same-language:   ${pairs.sameLangSame.length}`);
   console.log(`  pairs — diff-event cross-language:  ${pairs.xlangDiff.length}`);
   console.log(`  unique items to embed: ${involved.length}`);
+  // x2: every model/cap pair is embedded twice, once on original text and once
+  // on translated text, so the incumbent behaviour is measured in the same run.
+  const projectedCalls =
+    Math.ceil(involved.length / EMBED_BATCH) * models.length * bodyCaps.length * 2;
   console.log(
-    `  projected embed calls: ${Math.ceil(involved.length / EMBED_BATCH) * models.length * bodyCaps.length} ` +
-      `(${models.length} model(s) x ${bodyCaps.length} cap(s))`,
+    `  projected embed calls: ${projectedCalls} ` +
+      `(${models.length} model(s) x ${bodyCaps.length} cap(s) x 2 text variants)`,
   );
 
   if (pairs.xlangSame.length === 0) {
@@ -572,13 +621,7 @@ async function main() {
       reportRow("diff-event cross-language", origDiff);
       reportRow("same-event same-language", origCalib);
 
-      const separation = origSame.p10 - origDiff.p90;
-      console.log(
-        `    separation (p10 same - p90 diff): ${fmt(separation)}` +
-          (separation > 0
-            ? "  → a clean threshold exists"
-            : "  → the classes overlap; no single threshold separates them"),
-      );
+      reportSeparation(origSame, origDiff);
 
       console.log("  TRANSLATED text (what production does today):");
       const transVectors = await embedAll(
@@ -590,9 +633,7 @@ async function main() {
       const transDiff = stats(scorePairs(pairs.xlangDiff, transVectors));
       reportRow("same-event cross-language", transSame);
       reportRow("diff-event cross-language", transDiff);
-      console.log(
-        `    separation (p10 same - p90 diff): ${fmt(transSame.p10 - transDiff.p90)}`,
-      );
+      reportSeparation(transSame, transDiff);
 
       console.log(
         `  VERDICT for ${spec.model} @ cap ${cap}: original-text same-event median ` +
@@ -608,7 +649,13 @@ async function main() {
     "\nHow to read this: translation can be dropped only if a model's ORIGINAL-text\n" +
       "same-event cross-language p10 sits above the threshold you intend to run, AND\n" +
       "its diff-event p90 sits below it. A high same-event mean with an equally high\n" +
-      "diff-event mean means the model calls everything similar and is useless here.",
+      "diff-event mean means the model calls everything similar and is useless here.\n" +
+      "\n" +
+      "What this does NOT measure: same-language different-event pairs. Those are the\n" +
+      "false merges a *lower* threshold would risk, so this experiment cannot on its\n" +
+      "own justify adopting a model that needs the threshold moved down. Compare the\n" +
+      "same-language same-event row against the threshold to see how much headroom a\n" +
+      "model has before same-language clustering starts to suffer.",
   );
 
   process.exit(0);
