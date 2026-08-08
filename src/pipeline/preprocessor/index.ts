@@ -296,7 +296,13 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
       console.log(
         `[preprocessor] translation: ${translationStats.nonEnglish} non-English → ` +
         `${translationStats.batches} batch(es), ${translationStats.translated} translated, ` +
-        `${translationStats.splitRetries} split-retries, ${translationStats.fallbacks} fallback(s)`,
+        `${translationStats.splitRetries} split-retries ` +
+        `(${translationStats.callSplits} from call failures), ` +
+        `${translationStats.fallbacks} fallback(s) — ` +
+        `${(
+          (translationStats.fallbacks / Math.max(1, translationStats.nonEnglish)) *
+          100
+        ).toFixed(1)}% loss`,
       );
     }
     if (translationStats.fallbacks > 0) {
@@ -318,8 +324,8 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
           `INSERT INTO preprocessed_items
              (preprocessor_run_id, raw_item_id, source_name, source_type, track, "group",
               title, canonical_url, original_url, body_text, english_title, english_body,
-              published_at, fetched_at, also_appeared_in)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+              published_at, fetched_at, also_appeared_in, translation_failed)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
           [
             runId,
             item.rawItemId,
@@ -336,6 +342,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
             item.publishedAt,
             item.fetchedAt,
             item.alsoAppearedIn.length > 0 ? item.alsoAppearedIn.join(", ") : null,
+            eng.failed,
           ]
         );
       }

@@ -41,9 +41,14 @@ preprocessor:
     # total calls from 2×items to ceil(non_english/batch_size). Alignment safety
     # via id-keyed JSONL output and recursive split-on-failure retry.
     translation_batch_size: 10
-    # Lowered from 10 alongside the timeout increase: less contention per call is
-    # what actually brings the per-call latency back under the ceiling.
-    concurrency: 4
+    # Raised back to 8. The 10→4 drop was made alongside the timeout increase on
+    # the theory that contention was causing the timeouts, but run #44 settled
+    # that: translation logged 2 timeouts and *zero* rate-limit errors, so the
+    # provider was never the constraint. At concurrency 4, 61 batches take ~16
+    # sequential rounds — most of the stage's 13.5 minutes. Slow calls are now
+    # handled by splitting rather than by starving the pipeline, and any 429s
+    # that do appear go through callWithBackoff.
+    concurrency: 8
     # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
     retry_max_attempts: 5
     retry_base_ms: 2000

@@ -20,6 +20,38 @@ Entry format:
 
 ---
 
+## 2026-07-29 — Translation: split on call failure instead of dumping the batch
+
+**Decision:** When a translation LLM call fails after backoff, the batch is halved and each half retried — the same recovery the missing-id path already used — rather than falling back every item in it. Only an item that fails alone, with nothing left to split, falls back to original-language text. Migration 032 adds `preprocessed_items.translation_failed` so the loss is queryable. `translation.concurrency` goes 4 → 8.
+
+**Context:** Run #44 translated 601 non-English items and lost 23. Two LLM calls failed, both timeouts at the full 180s ceiling. With `translation_batch_size: 10`, those two failures accounted for **20 of the 23 losses** — the old code caught the error and fell back the entire batch:
+
+```ts
+} catch {
+  for (const item of batch) {
+    results.set(item.id, { english_title: item.title, ... , failed: true });
+    stats.fallbacks++;
+  }
+  return results;
+}
+```
+
+The remaining 3 came from the missing-id path, which already split correctly. So one error class at the worst possible granularity produced 87% of the loss.
+
+**Rationale:** A timeout means *this payload was too slow*. Re-sending it unchanged is the one response least likely to work; halving it directly addresses the cause, and the machinery to do so already existed a few lines below. Splitting also degrades gracefully — a batch of 10 becomes 5+5, then 2+3, down to singles — so a genuinely bad item costs one fallback instead of nine bystanders.
+
+Retrying timeouts through `callWithBackoff` was the alternative and is worse here: at 180s a retry ladder costs minutes per batch and re-sends the payload that just failed. `callWithBackoff` keeps its 429/503-only contract, which matters because it is shared with grouping, whose calls run to 600s.
+
+**Why the flag:** the fallback writes the *original* text into `english_title`, so nothing in the database distinguished "this item is English" from "this item is Russian and we failed". The item embeds in its own language space, cannot cluster cross-language, and no query could find it. Recording the failure makes the loss measurable and lets a future pass retry exactly the affected rows.
+
+**Concurrency:** the 10 → 4 drop (2026-07-28) assumed contention was causing the timeouts. Run #44 disproved that — translation logged 2 timeouts and **zero** rate-limit errors, so the provider was never the constraint. At 4, 61 batches take ~16 sequential rounds, which is most of the stage's 13.5 minutes. Slow calls are now handled by splitting rather than by starving the pipeline. 8 is a return toward the original setting with the failure path fixed underneath it; any 429s that appear go through `callWithBackoff`.
+
+**Not changed:** `timeout_ms` stays 180000. Lowering it would fail slow calls faster and split sooner, which may well be better, but changing it in the same run as the split fix would make the measurement uninterpretable.
+
+`tests/preprocessor-translation.test.ts` pins the three behaviours: a batch that times out but whose halves succeed loses nothing, splitting recurses to single items when only single-item calls succeed, and an item that fails alone still falls back *and is flagged*.
+
+---
+
 ## 2026-07-28 — Thread layer: threads are first-class rows the editor ranks
 
 **Decision:** A new stage between grouping-pass-1 scoring and pile assembly groups related clusters and singletons into ongoing situations. A thread is a **first-class row the editor ranks**, not presentation metadata the publisher nests. Its numbers are derived in software, never asked of the model:

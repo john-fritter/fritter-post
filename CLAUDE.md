@@ -82,7 +82,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–031)
+├── migrations/                  # numbered SQL migrations (001–032)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -387,7 +387,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **032**.
+number is ambiguous. The next migration is **033**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
