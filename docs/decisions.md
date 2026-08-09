@@ -20,6 +20,44 @@ Entry format:
 
 ---
 
+## 2026-08-09 — Thread budget exhaustion; split floor raised to catch 4-item chains
+
+Two changes from run #40/#105, the first run with per-component cohesion logged.
+
+### The thread pass burned its whole budget and returned nothing
+
+**Decision:** `thread.max_tokens` 24000 → 48000 and `thread.reasoning_effort` `"medium"` → `"low"`. `callLLM` now names the cause when an empty response coincides with an exhausted budget.
+
+**Context:** Thread run #2 produced zero threads. Telemetry: `calls=1, errors=0, input_tokens=16776, output_tokens=24000, duration_ms=658039`. Output tokens landed **exactly** on `max_tokens` — the model spent its entire budget reasoning and emitted no content, so `callLLM` threw "LLM returned empty response" and the pass recorded `failed_calls=1`.
+
+Run #44 had done the same job on the same 220 candidates in 4,651 output tokens and 63 seconds. Same input scale, 5× less output, 10× faster. So this is variance in how far the model spirals, not a task that needs 24k tokens.
+
+**Rationale:** Both levers move because they address different halves of the failure. Headroom means a long reasoning pass still leaves room to answer; lower effort makes the long pass less likely at all. Finding a handful of ongoing situations among 220 headlines is pattern-matching rather than deep inference — grouping's attach and describe passes run at `"none"`. If thread quality drops, revert `reasoning_effort` to `"medium"` first and keep the larger budget, which isolates the lever.
+
+**Not retried:** an empty response is not in `callWithBackoff`'s 429/503 contract, and adding it would mean re-issuing an 11-minute call that failed for a reason a retry does not address. Same reasoning as the translation timeout fix — treat the cause, not the symptom.
+
+**Timeout note:** the call ran 658s against `timeout_ms: 600000`. With `stream: true` that setting is effectively a headers timeout: once headers arrive the stream stays alive. The token budget, not the timeout, is the real bound on a streaming call.
+
+**Diagnostic:** `callLLM` previously threw a bare "LLM returned empty response", leaving an 11-minute failure with no explanation outside the telemetry table. It now reports the exhausted budget and names the two settings that cause it.
+
+### density_floor 0.5 → 0.55
+
+**Decision:** `grouping.split.density_floor` raised to 0.55.
+
+**Context:** A pure chain — the exact shape the split pass exists to catch — has *n−1* edges among *n(n−1)/2* pairs, so raw density is `2/n`. At n=4 that is **exactly 0.500**. The production check is `cohesion < density_floor`, so at 0.5 the canonical four-item chain passed on a boundary equality. Run #40's cohesion line showed four components sitting precisely at 0.50, three of them size 4.
+
+**Rationale:** 0.55 catches them; the next component up in that run scored 0.57, so nothing legitimate is swept in. Cost is roughly four extra LLM calls per run, and the model remains the precision gate — a component that is genuinely one story comes back as one group.
+
+Chains of size 3 score 0.667 and stay out of reach. Catching those would need a floor above 0.67, which is where many legitimate components sit. That limit is inherent to a connectedness measure and is recorded rather than worked around.
+
+**What this run could NOT settle:** the C45-class defect — run #44's 44-source `Trump meets Zelenskyy and Netanyahu amid Graham funeral`, a dense topical clique rather than a chain — **did not recur**. Run #40's largest component was size 21 (split at cohesion 0.15) and its largest unsplit was size 18 at cohesion 0.83. With no instance present, `density_floor` could not be calibrated against it, and the 0.55 change is justified by the chain-boundary argument alone. Dense cliques remain unaddressed by a connectedness measure; that needs a different signal if it recurs.
+
+### Evidence for the thread layer, by its absence
+
+With threading failed, run #105's paper carried **13 wildfire items across 150**, three of them in the top twenty: `Pacific Northwest wildfire season intensifies` (rank 1), `Wildfires impact Warm Springs and Klamath County` (rank 10), `Spokane wildfires burn into suburban areas` (rank 19), plus smoke-health, insurance, SNAP-relief, firefighter, and federal-tactics singletons scattered down the tiers. This is precisely the flooding the thread pass was built to remove, observed in a run where the pass did not execute.
+
+---
+
 ## 2026-07-29 — Translation: split on call failure instead of dumping the batch
 
 **Decision:** When a translation LLM call fails after backoff, the batch is halved and each half retried — the same recovery the missing-id path already used — rather than falling back every item in it. Only an item that fails alone, with nothing left to split, falls back to original-language text. Migration 032 adds `preprocessed_items.translation_failed` so the loss is queryable. `translation.concurrency` goes 4 → 8.

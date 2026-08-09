@@ -62,16 +62,37 @@ function testLongChainApproachesTwoOverN() {
   assert.equal(computeComponentDensity([1, 2, 3, 4, 5], edges), 0.4);
 }
 
-function testFourItemChainSitsAtTheFloor() {
-  // 1—2—3—4: 3 edges of 6 pairs = 0.5, exactly density_floor. The production
-  // check is `density < floor`, so this is deliberately NOT suspect — it pins
-  // the boundary case documented in models.yaml.
+function testFourItemChainSitsAtExactlyOneHalf() {
+  // 1—2—3—4: 3 edges of 6 pairs = 0.5 exactly. This is the boundary that
+  // motivated raising density_floor from 0.5 to 0.55: the production check is
+  // `cohesion < floor`, so at 0.5 the canonical 4-item chain — the exact
+  // over-merge shape — passed on an equality. Run #40 had four components
+  // sitting precisely here.
   const edges = edgesFrom([
     [1, 2],
     [2, 3],
     [3, 4],
   ]);
   assert.equal(computeComponentDensity([1, 2, 3, 4], edges), 0.5);
+  assert.equal(computeCohesion([1, 2, 3, 4], edges, 15), 0.5);
+  assert.ok(0.5 < 0.55, "the production floor must now catch this shape");
+  assert.ok(!(0.5 < 0.5), "the old floor let it through on a boundary equality");
+}
+
+function testChainCohesionFallsWithSize() {
+  // A pure chain scores 2/n raw. Only n=3 and n=4 land at or above 0.5, which
+  // is why the floor sits just above the n=4 value and why 3-item chains stay
+  // out of reach — catching those would need a floor above 0.667, where many
+  // legitimate components live.
+  const chain = (n: number) =>
+    edgesFrom(Array.from({ length: n - 1 }, (_, i): [number, number] => [i + 1, i + 2]));
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  assert.ok(Math.abs(computeCohesion(ids(3), chain(3), 15) - 2 / 3) < 1e-9);
+  assert.equal(computeCohesion(ids(4), chain(4), 15), 0.5);
+  assert.ok(Math.abs(computeCohesion(ids(5), chain(5), 15) - 0.4) < 1e-9);
+  assert.ok(computeCohesion(ids(12), chain(12), 15) < 0.2);
+  assert.ok(computeCohesion(ids(21), chain(21), 15) < 0.15);
 }
 
 function testPairIsAlwaysDense() {
@@ -246,7 +267,8 @@ function testPowerGridOverMergeIsDetectedAndSplit() {
 testFullyConnectedIsOne();
 testChainIsLowDensity();
 testLongChainApproachesTwoOverN();
-testFourItemChainSitsAtTheFloor();
+testFourItemChainSitsAtExactlyOneHalf();
+testChainCohesionFallsWithSize();
 testPairIsAlwaysDense();
 testSingletonIsDense();
 testMissingAdjacencyEntryDoesNotThrow();

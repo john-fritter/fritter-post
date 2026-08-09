@@ -235,7 +235,20 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   }
 
   if (responseText === null) {
-    throw new Error("LLM returned empty response");
+    // A thinking model can spend its entire token budget on reasoning and emit
+    // no content at all. The tell is outputTokens landing exactly on maxTokens,
+    // and without it the failure looks like an unexplained empty response — the
+    // thread pass burned 24,000 tokens over 11 minutes on run #40 before anyone
+    // could see why. Say it in the error rather than leaving it in telemetry.
+    const budgetExhausted =
+      outputTokens !== null && maxTokens !== undefined && outputTokens >= maxTokens;
+    throw new Error(
+      budgetExhausted
+        ? `LLM returned empty response after consuming its entire ${maxTokens}-token ` +
+          `budget (output_tokens=${outputTokens}) — reasoning exhausted it before any ` +
+          `content was emitted. Raise max_tokens or lower reasoning_effort.`
+        : "LLM returned empty response",
+    );
   }
 
   return { text: responseText, inputTokens, outputTokens, durationMs, generationLogId };
