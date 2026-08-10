@@ -65,6 +65,10 @@ export interface TranslationStats {
   batches: number;
   translated: number;
   splitRetries: number;
+  /** Batches split because the LLM call itself failed, rather than because ids
+   *  were missing from an otherwise-good response. Distinguishing the two says
+   *  whether the provider is timing out or the model is dropping ids. */
+  callSplits: number;
   fallbacks: number;
 }
 
@@ -157,6 +161,27 @@ async function translateBatchWithSplit(
 ): Promise<Map<string, EnglishFields>> {
   const results = new Map<string, EnglishFields>();
 
+  // Halves the given items and recurses. Shared by the call-failure and
+  // missing-id paths, which want identical recovery behaviour.
+  async function splitAndRetry(
+    items: TranslationInputItem[],
+    into: Map<string, EnglishFields>,
+  ): Promise<void> {
+    const mid = Math.ceil(items.length / 2);
+    for (const half of [items.slice(0, mid), items.slice(mid)]) {
+      if (half.length === 0) continue;
+      stats.splitRetries++;
+      const halfResults = await translateBatchWithSplit(
+        half,
+        config,
+        runId,
+        callBatchLLM,
+        stats,
+      );
+      for (const [id, fields] of halfResults) into.set(id, fields);
+    }
+  }
+
   let rawText: string;
   try {
     rawText = await callWithBackoff(
@@ -164,12 +189,29 @@ async function translateBatchWithSplit(
       { retry_max_attempts: config.retry_max_attempts, retry_base_ms: config.retry_base_ms },
       "translation",
     );
-  } catch {
-    // Call failed even after backoff — fall back all items in this batch.
-    for (const item of batch) {
-      results.set(item.id, { english_title: item.title, english_body: item.body, failed: true });
-      stats.fallbacks++;
+  } catch (err) {
+    // The call failed after backoff — in practice a timeout, since 429/503 are
+    // already retried above. A timeout means this payload was too slow, so
+    // re-sending it unchanged would likely time out again. Split instead, the
+    // same recovery the missing-id path uses: half the work per call is the
+    // thing that actually addresses the cause.
+    //
+    // Before this, a single slow call fell back its whole batch at once — two
+    // timeouts cost 20 of run #44's 23 lost items.
+    if (batch.length > 1) {
+      stats.callSplits++;
+      await splitAndRetry(batch, results);
+      return results;
     }
+    // A single item that still fails has nowhere left to split.
+    const msg = err instanceof Error ? err.message : String(err);
+    const item = batch[0]!;
+    console.warn(
+      `[translation] item ${item.id} failed alone (${msg.slice(0, 80)}) — ` +
+        `falling back to original-language text`,
+    );
+    results.set(item.id, { english_title: item.title, english_body: item.body, failed: true });
+    stats.fallbacks++;
     return results;
   }
 
@@ -208,12 +250,7 @@ async function translateBatchWithSplit(
     );
     for (const [id, fields] of retryResult) results.set(id, fields);
   } else {
-    const mid = Math.ceil(missingItems.length / 2);
-    for (const half of [missingItems.slice(0, mid), missingItems.slice(mid)]) {
-      stats.splitRetries++;
-      const halfResults = await translateBatchWithSplit(half, config, runId, callBatchLLM, stats);
-      for (const [id, fields] of halfResults) results.set(id, fields);
-    }
+    await splitAndRetry(missingItems, results);
   }
 
   return results;
@@ -252,6 +289,7 @@ export async function batchTranslateItems(
     batches: 0,
     translated: 0,
     splitRetries: 0,
+    callSplits: 0,
     fallbacks: 0,
   };
   const allFields = new Map<string, EnglishFields>();

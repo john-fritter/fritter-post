@@ -20,6 +20,252 @@ Entry format:
 
 ---
 
+## 2026-08-09 — Thread budget exhaustion; split floor raised to catch 4-item chains
+
+Two changes from run #40/#105, the first run with per-component cohesion logged.
+
+### The thread pass burned its whole budget and returned nothing
+
+**Decision:** `thread.max_tokens` 24000 → 48000 and `thread.reasoning_effort` `"medium"` → `"low"`. `callLLM` now names the cause when an empty response coincides with an exhausted budget.
+
+**Context:** Thread run #2 produced zero threads. Telemetry: `calls=1, errors=0, input_tokens=16776, output_tokens=24000, duration_ms=658039`. Output tokens landed **exactly** on `max_tokens` — the model spent its entire budget reasoning and emitted no content, so `callLLM` threw "LLM returned empty response" and the pass recorded `failed_calls=1`.
+
+Run #44 had done the same job on the same 220 candidates in 4,651 output tokens and 63 seconds. Same input scale, 5× less output, 10× faster. So this is variance in how far the model spirals, not a task that needs 24k tokens.
+
+**Rationale:** Both levers move because they address different halves of the failure. Headroom means a long reasoning pass still leaves room to answer; lower effort makes the long pass less likely at all. Finding a handful of ongoing situations among 220 headlines is pattern-matching rather than deep inference — grouping's attach and describe passes run at `"none"`. If thread quality drops, revert `reasoning_effort` to `"medium"` first and keep the larger budget, which isolates the lever.
+
+**Not retried:** an empty response is not in `callWithBackoff`'s 429/503 contract, and adding it would mean re-issuing an 11-minute call that failed for a reason a retry does not address. Same reasoning as the translation timeout fix — treat the cause, not the symptom.
+
+**Timeout note:** the call ran 658s against `timeout_ms: 600000`. With `stream: true` that setting is effectively a headers timeout: once headers arrive the stream stays alive. The token budget, not the timeout, is the real bound on a streaming call.
+
+**Diagnostic:** `callLLM` previously threw a bare "LLM returned empty response", leaving an 11-minute failure with no explanation outside the telemetry table. It now reports the exhausted budget and names the two settings that cause it.
+
+### density_floor 0.5 → 0.55
+
+**Decision:** `grouping.split.density_floor` raised to 0.55.
+
+**Context:** A pure chain — the exact shape the split pass exists to catch — has *n−1* edges among *n(n−1)/2* pairs, so raw density is `2/n`. At n=4 that is **exactly 0.500**. The production check is `cohesion < density_floor`, so at 0.5 the canonical four-item chain passed on a boundary equality. Run #40's cohesion line showed four components sitting precisely at 0.50, three of them size 4.
+
+**Rationale:** 0.55 catches them; the next component up in that run scored 0.57, so nothing legitimate is swept in. Cost is roughly four extra LLM calls per run, and the model remains the precision gate — a component that is genuinely one story comes back as one group.
+
+Chains of size 3 score 0.667 and stay out of reach. Catching those would need a floor above 0.67, which is where many legitimate components sit. That limit is inherent to a connectedness measure and is recorded rather than worked around.
+
+**What this run could NOT settle:** the C45-class defect — run #44's 44-source `Trump meets Zelenskyy and Netanyahu amid Graham funeral`, a dense topical clique rather than a chain — **did not recur**. Run #40's largest component was size 21 (split at cohesion 0.15) and its largest unsplit was size 18 at cohesion 0.83. With no instance present, `density_floor` could not be calibrated against it, and the 0.55 change is justified by the chain-boundary argument alone. Dense cliques remain unaddressed by a connectedness measure; that needs a different signal if it recurs.
+
+### Evidence for the thread layer, by its absence
+
+With threading failed, run #105's paper carried **13 wildfire items across 150**, three of them in the top twenty: `Pacific Northwest wildfire season intensifies` (rank 1), `Wildfires impact Warm Springs and Klamath County` (rank 10), `Spokane wildfires burn into suburban areas` (rank 19), plus smoke-health, insurance, SNAP-relief, firefighter, and federal-tactics singletons scattered down the tiers. This is precisely the flooding the thread pass was built to remove, observed in a run where the pass did not execute.
+
+---
+
+## 2026-07-29 — Translation: split on call failure instead of dumping the batch
+
+**Decision:** When a translation LLM call fails after backoff, the batch is halved and each half retried — the same recovery the missing-id path already used — rather than falling back every item in it. Only an item that fails alone, with nothing left to split, falls back to original-language text. Migration 032 adds `preprocessed_items.translation_failed` so the loss is queryable. `translation.concurrency` goes 4 → 8.
+
+**Context:** Run #44 translated 601 non-English items and lost 23. Two LLM calls failed, both timeouts at the full 180s ceiling. With `translation_batch_size: 10`, those two failures accounted for **20 of the 23 losses** — the old code caught the error and fell back the entire batch:
+
+```ts
+} catch {
+  for (const item of batch) {
+    results.set(item.id, { english_title: item.title, ... , failed: true });
+    stats.fallbacks++;
+  }
+  return results;
+}
+```
+
+The remaining 3 came from the missing-id path, which already split correctly. So one error class at the worst possible granularity produced 87% of the loss.
+
+**Rationale:** A timeout means *this payload was too slow*. Re-sending it unchanged is the one response least likely to work; halving it directly addresses the cause, and the machinery to do so already existed a few lines below. Splitting also degrades gracefully — a batch of 10 becomes 5+5, then 2+3, down to singles — so a genuinely bad item costs one fallback instead of nine bystanders.
+
+Retrying timeouts through `callWithBackoff` was the alternative and is worse here: at 180s a retry ladder costs minutes per batch and re-sends the payload that just failed. `callWithBackoff` keeps its 429/503-only contract, which matters because it is shared with grouping, whose calls run to 600s.
+
+**Why the flag:** the fallback writes the *original* text into `english_title`, so nothing in the database distinguished "this item is English" from "this item is Russian and we failed". The item embeds in its own language space, cannot cluster cross-language, and no query could find it. Recording the failure makes the loss measurable and lets a future pass retry exactly the affected rows.
+
+**Concurrency:** the 10 → 4 drop (2026-07-28) assumed contention was causing the timeouts. Run #44 disproved that — translation logged 2 timeouts and **zero** rate-limit errors, so the provider was never the constraint. At 4, 61 batches take ~16 sequential rounds, which is most of the stage's 13.5 minutes. Slow calls are now handled by splitting rather than by starving the pipeline. 8 is a return toward the original setting with the failure path fixed underneath it; any 429s that appear go through `callWithBackoff`.
+
+**Not changed:** `timeout_ms` stays 180000. Lowering it would fail slow calls faster and split sooner, which may well be better, but changing it in the same run as the split fix would make the measurement uninterpretable.
+
+`tests/preprocessor-translation.test.ts` pins the three behaviours: a batch that times out but whose halves succeed loses nothing, splitting recurses to single items when only single-item calls succeed, and an item that fails alone still falls back *and is flagged*.
+
+---
+
+## 2026-07-28 — Thread layer: threads are first-class rows the editor ranks
+
+**Decision:** A new stage between grouping-pass-1 scoring and pile assembly groups related clusters and singletons into ongoing situations. A thread is a **first-class row the editor ranks**, not presentation metadata the publisher nests. Its numbers are derived in software, never asked of the model:
+
+```
+relevance = max(member score)      sources = sum(member source counts)
+```
+
+The editor's formula is unchanged. Migration 031 adds `thread_runs` / `threads` / `thread_members`, plus `thread_id` on `editor_pile_items` and `editor_stories`. Rows absorbed into a thread are withheld from the pile — a threaded row must not also appear on its own.
+
+**Context:** Run #43 published **five separate Oregon wildfire clusters, four of them in the top fifteen**: "Wildfires surge across Central Oregon" (12 sources), "Bench and Beachcomb fires merge, destroying homes on Warm Springs Reservation" (5), "Oregon wildfires prompt evacuations across over 1.1 million acres" (2), "Oregon National Guard activates aircraft for wildfire response" (2), and "Aid groups support Eastern Oregon farmworkers amid wildfire smoke" (2). Run #42 had carried the same story as one cluster of 11.
+
+Grouping was not wrong by its own criterion — those are genuinely distinct events, and the attach prompt explicitly excludes items sharing only "a region, a topic, an ongoing situation." The reader's framing is the opposite: all the fires in the state right now are one ongoing thing.
+
+**Rationale:** These are two different questions and one layer cannot answer both. Grouping asks *is this the same event?*; threading asks *is this the same continuing story?*. Trying to encode both in `similarity_threshold` fails in both directions at once, which is exactly what runs #35 and #43 showed: over-merges (a Virginia power line chained to a New York moratorium) coexisting with under-merges (the fires) in the same run.
+
+Separating them is also what makes the split pass (2026-07-25) safe. Event clustering can be strict — can split an over-merge — without the paper losing the connection, because threading restores it at the level the reader experiences.
+
+**Why threads rank rather than decorate:** the two options were a first-class row or publisher-only nesting. Nesting would leave the pile still holding five fire rows, so the flooding — four of fifteen feature slots on one situation — would persist and only be hidden at render time. Ranking removes the repetition at the point where it is created. Summing sources is what makes the thread outrank every member it absorbed: on run #43's data the fires thread to `score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead (Trump/Zelenskyy/Graham at 111.64), and free four pile slots for other stories. Both properties are unit-tested.
+
+**One LLM call covers the whole candidate set.** A thread's members are spread across the score range — the fires scored 85, 80, 80, 78 and 60 — so chunking by score would hide members of one situation from each other and defeat the pass. `thread.candidate_target` (220) is therefore bounded by what a single call can hold, not by cost. It is deliberately well past `pile_target` so a situation's weaker members are still visible for absorption.
+
+**The line the prompt has to hold** is between a concrete situation anchored in a place and a time (one state's fire emergency, one war, one city's fight over one project) and an abstract theme spanning unrelated places and actors (data centers straining grids in three states; several countries separately regulating AI). Fires in Oregon and fires in Spain are two threads. The prompt states that most items belong to no thread, because the failure mode to guard against is a model grouping for the sake of thoroughness.
+
+**Failure handling:** a failed call yields zero threads — the pass not running, rather than a wrong answer. The pile keeps its un-threaded rows and `thread_runs.failed_calls` records it. Consistent with the attach and split passes.
+
+**Ref namespace:** threads are `T<index>`, so `src/lib/refs.ts` now recognizes `[cst]\d+`. The editor tie-break and any future stage that parses refs get thread support for free.
+
+`inspect editor` renders a thread's absorbed members as an indented tree under the thread row, so the ranked list stays traceable without a second query.
+
+**Deferred:** run #43's `Trump meets Zelenskyy and Netanyahu; Lindsey Graham funeral held in Washington` (42 sources, at #1) is a genuine over-merge that the split pass let through because it is a dense component rather than a chained one — cohesion protects it. Density catches chaining, not dense topical cliques. Raising `split.density_floor` from 0.5 may catch it; that is a separate change and should be tuned against a run where the thread layer is already in place, since threading changes what the pile looks like.
+
+---
+
+## 2026-07-28 — Run #43 follow-ups: charset retry over-corrected, Accept header restored, translation timeout raised
+
+Three fixes from run #43, the first verification run of the charset change. The headline result was good — 1,857 pre-existing corrupted rows from Folha de São Paulo, zero new ones, and the exact title that was mojibake in run #42 arrived clean. But the run exposed one bug introduced by that change and two regressions it caused.
+
+### The windows-1252 fallback was too eager
+
+**Decision:** `decodeFeedBytes` now retries only when the first decode looks *systematically* wrong: at least 5 replacement characters **and** a rate of at least 1 per 2000 characters. A retry whose output carries the UTF-8-read-as-single-byte signature (`Ã`, `Ð`, `Ñ`, `Â`, `â€` above 1 per 200 characters) is rejected outright.
+
+**Context:** Run #43's collector logged `[collector] https://meduza.io/rss/all: declared charset did not decode cleanly; recovered as windows-1252`. Meduza is UTF-8 Cyrillic — that recovery was wrong. Reproduced locally: a UTF-8 document with a single malformed byte was re-decoded whole as windows-1252, turning "Кризисную группу" into "ÐšÑ€Ð¸Ð·Ð¸ÑÐ½ÑƒÑŽ Ð³Ñ€ÑƒÐ¿Ð¿Ñƒ".
+
+**Why this was the dangerous kind of bug:** windows-1252 maps every byte to some character, so it can never emit U+FFFD. The old logic accepted any retry that removed the replacement characters — which windows-1252 always does, unconditionally. Worse, the resulting mojibake contains no U+FFFD either, so the verification query (`title LIKE '%' || chr(65533) || '%'`) reported zero corrupted rows while the damage was present. A check that cannot see its own failure mode is worse than no check.
+
+**Rationale:** The two cases are three orders of magnitude apart and the rate separates them cleanly. A Latin-1 document read as UTF-8 emits a replacement character for roughly every accented letter (~5 per 1000); a UTF-8 document with one bad byte emits one in the entire file. Gating on rate keeps the Folha recovery working while leaving Meduza alone. The mojibake-signature check is a second, independent guard for cases the rate gate might admit.
+
+Two existing tests had to be rewritten around realistic multi-item documents: a single short title carries too few accented characters to look systematic, which is correct behaviour and not worth weakening the gate for. Real feeds are never one title.
+
+**Action outstanding:** Meduza inserted one item during run #43 while the bug was live. That row is very likely mojibake and is invisible to the replacement-character query — it needs finding by inspecting Meduza rows for the `Ð`/`Ñ` signature, and deleting.
+
+### Accept header restored
+
+**Decision:** `fetchFeedText` sends `Accept: application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8`.
+
+**Context:** The Baffler returned 403 in run #43 after succeeding in #42. Taking over the transport from rss-parser dropped its `DEFAULT_HEADERS`, which included `Accept: application/rss+xml`; some CDNs reject feed requests advertising no acceptable type. This was flagged as a risk when the transport changed and it materialised.
+
+### Translation timeout and concurrency
+
+**Decision:** `preprocessor.translation.timeout_ms` 60000 → 180000, `concurrency` 10 → 4.
+
+**Context:** Run #43 logged 17 translation timeouts, every one at almost exactly 60s. `[preprocessor] WARNING: 171 item(s) fell back to original-language text for embedding` — 171 of 462 non-English items, 37%, were never translated. Call duration totalled 2,202,355 ms across 55 calls, averaging ~40s against a 60s ceiling, so a large share of calls sat near the limit.
+
+**Rationale:** This silently defeats the cross-language English-space embedding the stage exists for (2026-06-17): an untranslated item cannot cluster with its English counterparts, and nothing downstream can tell. `callWithBackoff` retries 429/503 only, so a timeout is a permanent failure, not a retry — the fallback is the first and last outcome. Raising the ceiling addresses the symptom; lowering concurrency addresses the cause, since contention is what pushed per-call latency to 40s. Both, for the same reason the other stages got the same treatment.
+
+**Not changed:** timeouts remain non-retryable. Making them retryable risks five 60s attempts per call, and the translation module already has a split-on-failure retry path (8 fired this run). The proportionate fix is to stop generating timeouts, not to retry them.
+
+---
+
+## 2026-07-28 — Feed charset decoded by us, not rss-parser; grouping stats persisted; prefilter concurrency lowered
+
+Three fixes from run #42's report.
+
+### Feed charset
+
+**Decision:** `fetch-feed.ts` now fetches the feed body itself and passes a decoded string to `parser.parseString`. It never calls `parser.parseURL`. Charset resolution lives in the new `src/pipeline/collector/charset.ts`: Content-Type header, then XML declaration, then UTF-8, with a retry when the first decode yields U+FFFD.
+
+**Context:** Run #42 published four titles containing replacement characters, all from Brazilian feeds — "oposição" appeared as "oposi&#65533;&#65533;o" at rank #94, and similar corruption at #100, #122, and #123. Rank #103, also Portuguese, rendered correctly, so it was not every feed.
+
+The cause is in rss-parser 3.13.0. `utils.getEncodingFromContentType` reads the charset from the **HTTP Content-Type header only**, and its supported list is `['ascii','utf8','utf16le','ucs2','base64','latin1','binary','hex']` with aliases for `utf-8` and `iso-8859-1`. Two consequences: a feed that declares its encoding only in the XML declaration (`<?xml version="1.0" encoding="ISO-8859-1"?>`) while serving a bare `Content-Type: text/xml` is decoded as UTF-8; and `windows-1252` — an extremely common label — is not in the list, so it is discarded and UTF-8 used. Latin-1 bytes read as UTF-8 produce U+FFFD, reproduced exactly in Node: `Buffer.from('oposição','latin1')` decoded as UTF-8 gives `oposi��o`.
+
+**Rationale:** This is a data-integrity bug, not a display bug. The corruption happens at fetch time, so mangled titles were written to `raw_items`, embedded by the grouping stage, and scored by grouping-pass-1. Every downstream stage saw the damage. Fixing at render time would have left the embeddings wrong.
+
+ISO-8859-1 is decoded as windows-1252, matching the WHATWG encoding standard and browser behaviour: bytes 0x80–0x9F are undefined in true Latin-1 but carry printable characters (curly quotes, em dashes) in what publishers actually emit under that label. The header wins over the declaration because it describes what was transmitted; a stale declaration in a re-encoded document is the more common disagreement. The U+FFFD retry exists because some feeds send a header that contradicts their own bytes, which is the specific shape that produced this bug.
+
+`tests/collector-charset.test.ts` uses the four real corrupted titles from run #42, and pins that genuine UTF-8 (including Russian, Korean, and Chinese titles) is untouched.
+
+### Grouping run stats
+
+**Decision:** Migration 030 adds `cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`, and six `split_*` counters to `grouping_runs`. All nullable — NULL means the pass did not run, which is distinct from zero.
+
+**Context:** `failed_calls` and the split pass counters were printed to stdout only. Reports regenerated from persisted records therefore could not show whether a run's grouping was trustworthy, and assessing runs #37 and #42 required inferring the split pass had worked from the shape of the cluster/singleton ratio rather than reading it. Two of these counters are exactly the "is this run usable" signal: a non-zero `attach_failed_calls` means clusters were never offered their candidates, and a non-zero `split_failed_calls` means over-merges were retained.
+
+### Prefilter concurrency
+
+**Decision:** `prefilter.concurrency` 10 → 4, with `retry_max_attempts` / `retry_base_ms` added. `BatchStageConfigSchema` gains the optional retry fields, and `processBatch` now receives them — it was calling `callWithBackoff(fn, {}, "prefilter")`, so any per-stage retry configuration would have been silently ignored.
+
+**Context:** Run #42 logged 7 rate-limit errors across 41 prefilter calls, the same saturation grouping hit at concurrency 10 (fixed 2026-07-25). Prefilter recovers via backoff and fails safe by keeping items as `news`, so this is throughput tuning rather than a correctness fix — but the empty-config bug was real and would have defeated any attempt to tune the retry behaviour.
+
+---
+
+## 2026-07-25 — Split pass (step 2b): union-find over-merges are re-partitioned by the LLM
+
+**Decision:** A new step between candidate groups and attach. Step-2 connected components that are large enough to chain (`min_size`, default 3) and loosely connected (cohesion below `density_floor`, default 0.5) get one LLM call that re-partitions them into same-event groups. Dense components pass through with no call. Members the model places in no group rejoin the singleton pool, where attach can pick them up. Controlled by `grouping.split.*`.
+
+**Context:** Run #35 was the first clean run (`failed_calls: 0`), so its grouping output was finally trustworthy — and it showed both over-merge and under-merge at once. The over-merge case: feature #15, "Power grid strains and data center moratoriums amid AI growth," joined a fallen Northern Virginia power line, Hochul's New York data center moratorium, and a delayed New York transmission line. Three unrelated events.
+
+The cause is that `src/pipeline/grouping/index.ts` turned every union-find component of size ≥ 2 straight into a cluster via `buildAutoCluster`, with **no LLM validation at any point**. Attach only ever adds to those clusters; nothing splits them. So the attach prompt's carefully written rule —
+
+> *A candidate that shares only a region, a topic, an ongoing situation, or a cast of actors — while reporting a development that stands on its own — is NOT the same event*
+
+— never applied to the clusters that needed it most, because they were formed before any model looked at them. Union-find requires only a *path*: A~B and B~C puts A, B, C together even when A and C are unrelated.
+
+**Rationale:** Density separates the two shapes cleanly. A genuine same-event cluster is near-fully connected — every article about one fire resembles every other — while a chained component is a path. Thresholding on it means the dense majority never costs a call, so the pass is a small bounded addition rather than another per-cluster LLM stage.
+
+**The correction that makes it work:** raw density is size-dependent under the `top_k` cap. Each item can hold at most `top_k` neighbours, so a component of size *n* cannot exceed `top_k/(n-1)` density — at `top_k: 15` a 37-item component tops out at 0.42, *below* the 0.5 floor. Thresholding raw density would therefore flag run #35's 37-source US-Iran cluster (the paper's lead) as maximally chained, every single run, and risk shattering it. `computeCohesion` divides by `maxAchievableDensity` so 1.0 means "as connected as it could possibly be" at any size, while a chain stays near zero regardless of size. This was caught before the first run, not after.
+
+**Failure handling:** a split call that fails after retries leaves its component intact. That is the conservative direction — the outcome is the over-merge we already had, not a shattered cluster. It is deliberately distinguished from the model legitimately answering "none" (which does dissolve a component into singletons), so `failed_calls` counts only real failures. Same reasoning as the attach-pass backoff entry above.
+
+**Not addressed here:** the *under*-merge half of run #35 — the Oregon wildfire coverage fragmenting into four separate rows (Akawa Butte/Sisters, statewide intensification, OSHA smoke guidance, ranchers assisting), plus eight wildfire items across the 150-item paper. That is the opposite error and needs the opposite fix: a thread layer above clusters that groups related clusters into one ongoing situation, scored as `max(member scores)` with `sum(member sources)`. The reader's framing is that all the fires in the state right now are one ongoing thing. Splitting event-level clustering from situation-level threading is what lets event clustering get *stricter* (this entry) without losing relatedness. Deliberately deferred to its own change.
+
+`tests/grouping-split.test.ts` covers `computeComponentDensity`, `maxAchievableDensity`, `computeCohesion`, and `parseSplitOutput`, including the large-coherent-cluster and large-chain cases that the cohesion correction exists for, and a regression for the power-grid component shape.
+
+---
+
+## 2026-07-25 — Grouping attach/describe wrapped in 429 backoff; concurrency lowered from 10 to 4
+
+**Decision:** `grouping`'s attach and describe passes now call the LLM through `callWithBackoff` (`src/llm/backoff.ts`), configured by new optional `retry_max_attempts` / `retry_base_ms` fields on `grouping.attach` and `grouping.describe`. Both passes drop from `concurrency: 10` to `concurrency: 4`. The attach pass counts calls that fail after retries into a new `failedCalls` field, logs `failed_calls=<n>` in its summary, and emits an explicit warning that the run's cluster/singleton split understates real grouping when that count is non-zero.
+
+**Context:** Run #34 (2026-06-19) logged **81 rate-limit errors across 163 grouping LLM calls** — roughly half the pass. Grouping was the only batched, concurrent stage that never adopted `callWithBackoff`; preprocessor translation and prefilter had it, grouping did not. Worse, the attach pass caught every error and returned an empty set:
+
+```ts
+} catch (err) {
+  console.warn(`[grouping] attach phase ${phase} ${label}: LLM call failed: ${msg}`);
+  return new Set();
+}
+```
+
+An empty set is exactly what the model returns when it declines every candidate. So a 429 was indistinguishable from a legitimate "none of these belong" verdict: the cluster silently didn't grow, the run reported success, and the recorded result (114 clusters, 588 singletons) was presented as a real grouping outcome. The describe pass had the same shape, degrading to fallback labels.
+
+The damage is visible in editor run #99's output. S32649 ("How many Americans can afford high-quality health care? A new poll finds the number has fallen", score 70, rank 80) and S32362 (the same AP story with a `- AP News` suffix, score 65, rank 117) survived as two separate singletons ranked 37 positions apart. Title-only embedding at `candidate_floor: 0.55` should catch a near-identical headline pair trivially.
+
+**Rationale:** Retrying is the obvious half. The more important half is that a degraded result must not be able to impersonate a real one. Phase A and Phase B both run under the same `pLimit`, so `concurrency: 10` meant up to ten in-flight calls against nanogpt for the whole pass; 4 trades wall time for not triggering the limiter, which is the right trade when the failure is invisible rather than loud. Backoff remains the safety net for what still slips through, and `failed_calls` makes any residual loss legible in the run summary rather than buried in a warning line.
+
+This also means **run #34's grouping output should not be used to evaluate cluster quality or to tune `similarity_threshold`** — including the two conjoined feature clusters in editor #99 (C1 "Ukraine drone attacks on Moscow and Hegseth NATO review", C15 "Apple price increases and Intel chip deal"). Whether those are genuine over-merges at 0.66 or artifacts of the degraded run is not answerable from that data. Re-run first.
+
+`tests/llm-backoff.test.ts` added: pins retry-then-succeed, exhaust-then-throw, fail-fast on non-rate-limit errors, message-variant recognition, and `Retry-After` honoring. `callWithBackoff` had no direct test despite now being load-bearing for three stages.
+
+**Supersedes:** Nothing — this is the retry policy the 2026-05-30 "No retry logic in V1" entry deliberately deferred, and the no-SDK-retries rule still holds. Retries live in application code; this just extends the existing `callWithBackoff` to the stage that was missing it.
+
+---
+
+## 2026-07-25 — Researcher stage dropped; docs reconciled with what was actually built
+
+**Decision:** The researcher stage is removed from the pipeline. The editor's ranked, tiered output feeds the writers directly. `src/pipeline/researcher/` is deleted, the `researcher:` block is removed from `config/models.yaml`, and `researcher` is removed from `ModelsConfigSchema`. The pipeline is now eight stages: collector → preprocessor → prefilter → grouping → grouping-pass-1 → editor → writers → publisher, of which the first six are built.
+
+Alongside this, the docs were reconciled with the code after a month of structural drift:
+
+- **CLAUDE.md's editor section was wrong.** It described a whole-pile single LLM call emitting `tier;;ref;;reason`, recognition-based parsing, and retry-once-then-fallback via `editor.fallback`. The editor has been a deterministic combined-score formula with an LLM tie-break since 2026-06-16, and `editor.fallback` no longer exists in `models.yaml`. Rewritten to match.
+- **Dead `filter:` block removed from `models.yaml`.** The filter stage was folded into the prefilter (2026-06-13) and its table dropped by migration 026. The block was not in `ModelsConfigSchema`, so Zod had been silently discarding it.
+- **`docs/concept.md` stage architecture rewritten** to match reality: prefilter and grouping-pass-1 added as named stages, the researcher section replaced by grouping-pass-1 and the real editor, storage table list and model assignments corrected, and the standing memo reframed as a writers-stage voice document rather than an editor one.
+- **README** referenced `docs/standing-memo.md`, which does not exist; corrected, along with the stage count and script list.
+- **Migration numbering:** `025` was used twice. The runner sorts and tracks by filename, so both apply correctly and deterministically — no action needed beyond documenting that the next number is 030.
+- **`npm test` added** (`scripts/test.ts`): discovers every `tests/*.test.ts` and runs each in its own tsx process. The ten test files already existed and passed, but there was no way to run them as a suite.
+
+**Context:** Development from mid-June onward pushed editorial judgment upstream — into the bio-aware prefilter and the grouping-pass-1 scorer — and progressively simplified the editor until it became arithmetic. The researcher was conceived when the editor was imagined as an orchestrated multi-call stage consuming "article ideas": self-contained units the researcher would build by fetching full text and following threads. That consumer no longer exists in that form. Grouping already does the clustering the researcher was going to do during research, and it does it on embeddings rather than an agentic loop.
+
+**Rationale:** The researcher's remaining unique job would have been fetching full article text beyond the RSS excerpt. That is a real need for the writers, but it is a bounded fetch-and-extract problem, not an agentic loop with step budgets — and it belongs to whatever feeds the writers, not to a separate stage between grouping and the editor. Keeping an unbuilt agentic stage in the architecture diagram was actively misleading about what the pipeline is: seven of its eight stages are software or bounded LLM calls, and the one genuinely agentic component was the one nobody built. Dropping it also removes the "independent reporting" pressure that CLAUDE.md already lists as out of scope for V1.
+
+**Open question this creates:** the writer package — angle, voice brief, editorial notes, target length — was going to be produced by the editor's phase 4 from the researcher's article ideas. Neither exists now. Before the writers stage can be built, decide whether the editor grows a package step or the writers work directly from the grouping digest plus tier. Recorded in `concept.md` under Stage 6.
+
+**Supersedes:** The seven-stage architecture in `concept.md`, and every description of the researcher as a planned stage.
+
+---
+
 ## 2026-06-19 — Attach pass rebuilt as cluster-centric (Phase A + Phase B), replacing anchor-centric round loop
 
 **Decision:** Replaced the anchor-centric attach loop (one LLM call per singleton, ~1,200+ calls/run) with a cluster-centric two-phase design where calls scale with clusters and proto-groups, not singletons.

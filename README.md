@@ -28,9 +28,10 @@ npm run dev
 
 The app runs at http://localhost:3000.
 
-**Type checking:**
+**Type checking and tests:**
 ```bash
 npm run typecheck
+npm test
 ```
 
 **Pipeline inspection** (requires a running database with data):
@@ -131,13 +132,16 @@ container name. The Caddy configuration lives outside this repo.
 ## Project layout
 
 ```
-src/pipeline/   Seven-stage pipeline (collector → publisher)
+src/pipeline/   Six-stage pipeline (collector → publisher)
 src/llm/        OpenAI SDK wrapper with logging and budgets
 src/db/         Postgres connection pool
-src/app/        Next.js App Router (the reading view)
+src/app/        Next.js App Router (the reading view — currently a placeholder)
 src/lib/        Shared utilities
-scripts/        CLI tools (migrate, inspect, collect)
+scripts/        CLI tools (migrate, inspect, test, one per pipeline stage)
 migrations/     Numbered SQL migrations
 config/         sources.yaml, models.yaml
-docs/           concept.md, decisions.md, standing-memo.md, …
+docs/           concept.md, decisions.md, bio.md
 ```
+
+Built and working: collector → preprocessor → prefilter → grouping →
+grouping-pass-1 → editor. Writers and publisher are not built yet.

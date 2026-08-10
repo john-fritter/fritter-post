@@ -41,7 +41,9 @@ features in the direction of any of these. When in doubt, less is more.
   Embedding vectors (4096-dim, `qwen/qwen3-embedding-8b` via OpenRouter)
   stored in `item_embeddings`. Used by the grouping stage.
 - **Deployment:** Docker container, fronted by Caddy, on fritter.lol
-- **Cron:** systemd timer on the host invoking the pipeline entrypoint
+- **Cron:** *planned* — a systemd timer on the host invoking a pipeline
+  entrypoint. Not built. There is no single entrypoint script; the stages are
+  run by hand, in order, threading run ids between them.
 
 ---
 
@@ -70,17 +72,17 @@ fritter-post/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
-│   │   ├── editor/              # whole-pile tiering and ranking (grouping pile)
-│   │   ├── researcher/          # (stub)
-│   │   ├── writers/             # (stub)
-│   │   └── publisher/           # (stub)
+│   │   ├── thread/              # groups related rows into one ongoing situation
+│   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
+│   │   ├── writers/             # (not built — empty)
+│   │   └── publisher/           # (not built — empty)
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
 │   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–024)
+├── migrations/                  # numbered SQL migrations (001–032)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -88,21 +90,34 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The full concept is seven stages (see `docs/concept.md`). The following are
-built and production-ready. Researcher, writers, and publisher are stubs.
+The pipeline is nine stages (see `docs/concept.md`). The seven below are built
+and production-ready. Writers and publisher are not built — their directories
+are empty.
+
+The researcher stage was dropped; the editor's tiered output feeds the writers
+directly (see `docs/decisions.md`).
 
 Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
 `triage` clusterer — seed + parallel spines + semantic merge — was removed once
 grouping proved out; see `docs/decisions.md`.)
 
 ```
-collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1  →  editor
+collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
+           →  thread  →  editor
 ```
 
 ### collector
 Hits every configured source, writes raw items to `raw_items`. Failure-tolerant
 — a dead feed is logged and skipped. No deduplication here; cross-source pickup
 is signal, not noise.
+
+**Charset handling is ours, not rss-parser's.** `fetch-feed.ts` fetches the body
+itself and hands `parser.parseString` a decoded string; it never calls
+`parseURL`. rss-parser reads the charset from the Content-Type header only — it
+ignores the XML declaration and doesn't support `windows-1252` — so Latin-1
+feeds decoded as UTF-8 and published mojibake. `collector/charset.ts` resolves
+header → XML declaration → UTF-8, and retries when the decode produces U+FFFD.
+See `docs/decisions.md`, 2026-07-28.
 
 ### preprocessor
 URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
@@ -136,13 +151,42 @@ steps:
    `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
    union-find connected components. Groups of size ≥ 2 become candidate
    clusters; isolated items are singletons.
-3. **Attach** — for each cluster, near-miss singletons (max cosine similarity
-   in the `[attach_floor, similarity_threshold)` band) are offered to a cheap
-   LLM (glm-5.1) that confirms which genuinely belong. Controlled by
-   `grouping.attach.*` in `models.yaml`.
-4. **Describe** — batched LLM call (glm-5.1, nanogpt) that writes a neutral
-   `title;;summary` for every multi-item cluster. Singletons skip this pass.
-   Controlled by `grouping.describe.*` in `models.yaml`.
+2b. **Split** — repairs over-merges that union-find creates. A connected
+   component only requires a *path* between members, so a bridging article
+   chains unrelated stories into one cluster, and until this pass no LLM ever
+   saw a step-2 component. Components that are large enough to chain
+   (`min_size`) and loosely connected (cohesion < `density_floor`) get one LLM
+   call that re-partitions them; dense components pass through without a call.
+   Freed members rejoin the singleton pool for attach to place.
+   **Cohesion, not raw density:** `top_k` caps each item's neighbours, so raw
+   density has a ceiling that falls as components grow — a 37-item component
+   cannot exceed `top_k/(n-1)`. Cohesion divides that ceiling out so the
+   threshold means the same thing at every size. Controlled by
+   `grouping.split.*`.
+3. **Attach** — cluster-centric, two phases. Phase A offers each cluster its
+   candidate singletons (title-cosine ≥ `candidate_floor`) in one LLM call;
+   Phase B forms new clusters from leftover singletons via proto-groups. One
+   bounded cascade re-pass follows. Controlled by `grouping.attach.*`.
+4. **Describe** — batched LLM call that writes a neutral `title;;summary` for
+   every multi-item cluster. Singletons skip this pass. Controlled by
+   `grouping.describe.*`.
+
+All three LLM passes go through `callWithBackoff`. This is not optional: a
+failed attach call returns an empty set, which is indistinguishable from the
+model saying "none of these belong," so the cluster silently doesn't grow and
+the run still reports success.
+
+Per-pass counters are persisted onto `grouping_runs` (migration 030) so a
+report regenerated from the database can judge a run without the console log:
+`cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`, and
+`split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
+`split_components_split` / `split_freed_singletons`.
+
+**If `attach_failed_calls` is non-zero, the cluster/singleton split understates
+real grouping and the run must not be used to judge cluster quality or tune
+`similarity_threshold`.** If `split_failed_calls` is non-zero, those components
+were left intact and may still be over-merged. NULL means the pass didn't run,
+which is not the same as zero.
 
 Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
 **primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
@@ -160,29 +204,81 @@ Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
 
-`assembleGroupingPile` — sorts all scored rows by score descending, takes the
-top `grouping.pile_target` (config: 150), and writes to `editor_piles` (with
-`grouping_run_id` set) + `editor_pile_items`. Source count travels to the
-editor via the grouping digest's id-list length.
+`assembleGroupingPile` — ranks threads and un-threaded rows together by score
+descending, takes the top `grouping.pile_target` (config: 150), and writes to
+`editor_piles` + `editor_pile_items`. Rows absorbed into a thread are withheld:
+a threaded row must not also appear on its own.
+
+### thread
+**Groups related clusters and singletons into one ongoing situation.** Runs
+between grouping-pass-1 scoring and pile assembly. `src/pipeline/thread/`.
+
+Grouping asks *"is this the same event?"*; threading asks *"is this the same
+continuing story?"*. Both are needed and neither can do the other's job — which
+is precisely what lets the split pass keep event clustering strict. Run #43
+published five separate Oregon wildfire clusters, four in the top fifteen,
+because the fires are one situation made of many distinct events.
+
+The merge criterion is a **concrete situation anchored in a place and a time**
+(one state's fire emergency, one war, one city's fight over one project) — not
+an abstract theme spanning unrelated places and actors (data centers straining
+grids in three states is a topic, not a situation). Most items belong to no
+thread; that is the expected answer. Reads `docs/bio.md`.
+
+A thread's numbers are derived in software, never asked of the model:
+
+```
+relevance = max(member score)      sources = sum(member source counts)
+```
+
+That is what makes a thread a first-class row the editor ranks with its
+existing formula, unchanged. On run #43's data the five fire rows thread to
+`score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead at
+111.64, and free four pile slots for other stories.
+
+**One LLM call covers the whole candidate set.** This is deliberate: a thread's
+members are spread across the score range (the fires scored 85, 80, 80, 78, 60),
+so chunking by score would hide members of one situation from each other.
+`thread.candidate_target` (config: 220) is therefore bounded by what a single
+call can hold, not by cost.
+
+Writes `thread_runs` / `threads` / `thread_members` (migration 031). A failed
+call yields zero threads — the pass not running, rather than a wrong answer —
+recorded in `thread_runs.failed_calls`.
 
 ### editor
-Whole-pile single LLM call. Reads all clusters and singletons from the editor
-pile, ranks and tiers them: `feature`, `standard`, or `brief`. Emits
-`tier;;ref;;reason` lines in rank order;
-software derives rank from line position. Streaming always on (`stream: true`).
-Retry-once-then-fallback resilience: primary → retry primary once → optional
-fallback model (`editor.fallback` in `models.yaml`). Reads `docs/bio.md`.
+**Deterministic formula, not an LLM ranker.** Reads all clusters and
+singletons from the editor pile and ranks them by a combined score:
 
-The system prompt is fully static (no runtime file reads). The bio travels in
-the user message alongside the pile. The output parser is recognition-based:
-each `;;`-delimited line is scanned for a tier keyword (`feature`, `standard`,
-`brief`, `cut`) and a C/S ref pattern (`C\d+` / `S\d+`) independently of
-column position, so format variation from the model (swapped columns, leading
-numbering) doesn't break parsing.
+```
+combined = relevance + source_weight * ln(sources)
+```
 
-Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`,
-then presents the pile to the model as `EditorClusterPileItem` +
-`EditorSingletonPileItem` blocks.
+`relevance` is the grouping-pass-1 score (0–100), or `max(member score)` for a
+thread; `sources` is the cluster member count (1 for singletons, and
+`ln(1) = 0`, so singletons get no lift), or `sum(member sources)` for a thread;
+`source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
+Rows sort by combined descending, then relevance, then ref.
+
+Tiers are assigned by rank position from fixed counts in `editor.tiers`
+(config: feature 15, standard 60, brief 75). Features fill first, then
+standard, then brief — the last tier absorbs the shortfall on a smaller pile.
+
+The only LLM in this stage is the **tie-break**: items sharing an identical
+combined score are grouped and ranked against each other by one small
+bio-aware call per tie group, run concurrently under
+`editor.tie_break.concurrency`. Reads `docs/bio.md`. Ties that the LLM
+doesn't resolve fall back to ref ordering.
+
+Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
+and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
+`tests/editor-tie-break.test.ts`).
+
+Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`.
+
+(This replaced an earlier whole-pile LLM tierer with retry-once-then-fallback
+resilience. `editor.fallback` no longer exists in `models.yaml`. See
+`docs/decisions.md`, 2026-06-16.)
 
 ---
 
@@ -218,8 +314,17 @@ then presents the pile to the model as `EditorClusterPileItem` +
   An unbounded agentic loop is how you discover a $40 bug.
 - **No SDK-level retries.** `callLLM` sets `maxRetries: 0` on the OpenAI
   client. The SDK's default silent retries masked a 903s hang on one run.
-  Retry logic, where needed, lives in stage code (e.g. editor's
-  retry-once-then-fallback), not in the wrapper.
+  Retry logic lives in application code, not in the HTTP layer.
+- **429/503 backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
+  `callLLM` thunk with exponential backoff and jitter, honoring a
+  `Retry-After` hint when the provider sends one. Configured per-stage via
+  optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
+  translation, prefilter, and grouping (attach + describe).
+  **Any new batched, concurrent stage needs it.** The failure mode is
+  quiet: a rate-limited call that returns a degraded-but-valid-looking
+  result (an empty attach set, a fallback label) is indistinguishable from
+  a real model verdict, so the run reports success while losing work. See
+  `docs/decisions.md`, 2026-07-25.
 - **No top-level await in scripts.** tsx runs scripts under the CJS output
   format, which rejects top-level `await`. Wrap all async entry-point logic
   in `async function main()` and call it as `main().catch(err => { ... })`.
@@ -276,7 +381,13 @@ anything with quoted arguments).
 - `npm run dev` — Next.js dev server
 - `npm run build` — production build
 - `npm run typecheck` — TypeScript check
+- `npm test` — run every `tests/*.test.ts` file (each in its own tsx process)
 - `npm run migrate` — apply numbered SQL migrations
+
+Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
+`025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
+tracks by *filename*, so both apply correctly and in a stable order — but the
+number is ambiguous. The next migration is **033**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -285,7 +396,8 @@ anything with quoted arguments).
 - `npm run grouping [-- --preprocessor-run-id <n>] [-- --model <id>]` —
   embed items, build candidate groups, run attach + describe passes, write digest
 - `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
-  score all clusters + singletons on 0–100 bio-relevance scale, assemble pile
+  score all clusters + singletons on 0–100 bio-relevance scale, run the thread
+  pass (`thread.enabled`), assemble pile
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 
 **Inspection**
@@ -295,6 +407,37 @@ anything with quoted arguments).
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
+
+**Experiments**
+- `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
+  determine which embedding models a provider actually serves, by making a
+  one-text embedding call per candidate and reporting the returned dimension.
+  **This is the discovery mechanism for embedding models, not `--list`.** On both
+  nanogpt and openrouter, `/v1/models` enumerates chat models only: it returned
+  295 and 367 entries respectively with zero embedding models, omitting even
+  `qwen/qwen3-embedding-8b`, which production embeds through successfully. A
+  catalog absence therefore proves nothing.
+- `npm run embedding-experiment -- --list <provider>` — raw `/v1/models` dump.
+  Useful for chat models; see above for why it can't answer embedding
+  availability.
+- `npm run embedding-experiment -- --model <provider>:<id> [--model …]
+  [--body-cap <n>] [--grouping-run-id <n>] [--max-pairs <n>]` — measures whether
+  translation earns its keep. Uses existing clusters as ground truth: a cluster
+  with both English and non-English members is a validated same-event
+  cross-language pair. Embeds the **originals** with each candidate model and
+  reports same-event vs different-event cosine separation, against the
+  translated-text numbers production gets today. If a model's original-text
+  same-event p10 clears the threshold while its diff-event p90 stays below it,
+  the translation stage can be deleted rather than hardened. Repeating
+  `--body-cap` also measures truncation sensitivity. Read-only apart from the
+  `generation_logs` rows every LLM call writes.
+
+There is **no** `inspect grouping` or `inspect grouping-pass1` subcommand yet.
+Those two stages currently have no inspection view, which is a gap: the
+project convention is that LLM stages' feedback loop is the inspection CLI,
+and `grouping.embedding.similarity_threshold` is the pipeline's primary tuning
+lever. Inspecting either stage means querying `grouping_runs` /
+`grouping_pass1_results` by hand.
 
 In production, run CLI stages inside the app container:
 

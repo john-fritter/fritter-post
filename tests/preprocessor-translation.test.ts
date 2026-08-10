@@ -258,6 +258,103 @@ async function testEnglishItemsNeverBatched() {
   assert.equal(stats.batches, 0);
 }
 
+// --- split-on-call-failure (run #44 regression) ---
+//
+// Run #44 logged 2 translation timeouts and lost 23 of 601 items. Twenty of
+// those came from one behaviour: a failed call fell back its ENTIRE batch at
+// once. Since a timeout means the payload was too slow, re-sending it unchanged
+// is unlikely to help — halving it is. These pin that.
+
+/** Four non-English items, enough to split twice. */
+function nonEnglishItems(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `raw-${i + 1}`,
+    title: `Сенаторы США согласовали законопроект номер ${i + 1}`,
+    bodyText:
+      "Российские власти сообщили о новых мерах в отношении иностранных компаний, " +
+      "работающих на территории страны, и объявили о дополнительных ограничениях.",
+  }));
+}
+
+function jsonlFor(items: TranslationInputItem[]): string {
+  return items
+    .map((i) =>
+      JSON.stringify({ id: i.id, title: `EN ${i.id}`, body: `EN body ${i.id}` }),
+    )
+    .join("\n");
+}
+
+async function testTimeoutSplitsInsteadOfDumpingTheBatch() {
+  // The full batch of 4 times out; each half of 2 succeeds. Before the fix all
+  // four items fell back. Now all four are translated.
+  const seen: number[] = [];
+  const callBatchLLM: BatchLLMCallFn = async (batch) => {
+    seen.push(batch.length);
+    if (batch.length > 2) throw new Error("Request timed out.");
+    return jsonlFor(batch);
+  };
+
+  const { fields, stats } = await batchTranslateItems(
+    nonEnglishItems(4),
+    MOCK_CONFIG,
+    MOCK_RUN_ID,
+    callBatchLLM,
+  );
+
+  assert.equal(stats.fallbacks, 0, "no item should fall back when halves succeed");
+  assert.equal(stats.translated, 4);
+  assert.ok(stats.callSplits >= 1, "the failed call should be recorded as a split");
+  assert.ok(seen.includes(4) && seen.includes(2), `expected 4 then 2s, saw ${seen}`);
+  for (let i = 1; i <= 4; i++) {
+    assert.equal(fields.get(`raw-${i}`)?.english_title, `EN raw-${i}`);
+    assert.equal(fields.get(`raw-${i}`)?.failed, false);
+  }
+}
+
+async function testSplitRecursesToSingleItems() {
+  // Only single-item calls succeed — the split must go all the way down rather
+  // than giving up at the first half.
+  const callBatchLLM: BatchLLMCallFn = async (batch) => {
+    if (batch.length > 1) throw new Error("Request timed out.");
+    return jsonlFor(batch);
+  };
+
+  const { fields, stats } = await batchTranslateItems(
+    nonEnglishItems(4),
+    MOCK_CONFIG,
+    MOCK_RUN_ID,
+    callBatchLLM,
+  );
+
+  assert.equal(stats.fallbacks, 0);
+  assert.equal(stats.translated, 4);
+  for (let i = 1; i <= 4; i++) {
+    assert.equal(fields.get(`raw-${i}`)?.english_title, `EN raw-${i}`);
+  }
+}
+
+async function testItemFailingAloneStillFallsBack() {
+  // The floor must still hold: an item that fails at batch size 1 has nowhere
+  // to split, keeps its original text, and is marked failed so the loss is
+  // recorded rather than silent.
+  const callBatchLLM: BatchLLMCallFn = async () => {
+    throw new Error("Request timed out.");
+  };
+
+  const items = nonEnglishItems(2);
+  const { fields, stats } = await batchTranslateItems(
+    items,
+    MOCK_CONFIG,
+    MOCK_RUN_ID,
+    callBatchLLM,
+  );
+
+  assert.equal(stats.fallbacks, 2, "both items exhaust the split and fall back");
+  assert.equal(fields.get("raw-1")?.english_title, items[0]!.title);
+  assert.equal(fields.get("raw-1")?.failed, true, "failure must be flagged, not silent");
+  assert.equal(fields.get("raw-2")?.failed, true);
+}
+
 // --- Run all tests ---
 
 testIsEnglishReturnsTrueForEng();
@@ -277,6 +374,9 @@ async function main() {
   await test429ThenSuccess();
   await testExhaustedRetriesFallsBackToOriginal();
   await testEnglishItemsNeverBatched();
+  await testTimeoutSplitsInsteadOfDumpingTheBatch();
+  await testSplitRecursesToSingleItems();
+  await testItemFailingAloneStillFallsBack();
   console.log("preprocessor translation tests passed");
 }
 

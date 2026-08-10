@@ -2,8 +2,13 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import type { GroupingDescribeConfig, GroupingAttachConfig } from "../../config/models.js";
+import type {
+  GroupingDescribeConfig,
+  GroupingAttachConfig,
+  GroupingSplitConfig,
+} from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import { getClusteringItems, formatItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
 import type { Cluster } from "../../lib/cluster.js";
@@ -14,6 +19,8 @@ import {
   buildPhaseAUserPrompt,
   buildPhaseBSystemPrompt,
   buildPhaseBUserPrompt,
+  buildSplitSystemPrompt,
+  buildSplitUserPrompt,
 } from "./prompt.js";
 
 export interface GroupingRun {
@@ -179,6 +186,90 @@ function formatNumberedCandidateBlocks(
     .join("\n");
 }
 
+// Fraction of possible member pairs that are actually connected by an edge.
+//
+// Step 2 forms clusters from union-find connected components, which only requires
+// a *path* between members: A~B and B~C puts A, B, C in one component even when A
+// and C are unrelated. Density separates the two shapes. A genuine same-event
+// cluster is near-fully connected (every article about one fire resembles every
+// other), so density approaches 1.0. A component chained through a bridging
+// article is a path, so density falls toward 2/n.
+//
+// Components of size 2 are density 1.0 by construction and cannot be chained.
+// Exported for testing.
+export function computeComponentDensity(
+  memberIds: number[],
+  edges: Map<number, Set<number>>,
+): number {
+  const n = memberIds.length;
+  if (n < 2) return 1;
+  const possiblePairs = (n * (n - 1)) / 2;
+  let present = 0;
+  for (let i = 0; i < n; i++) {
+    const neighbors = edges.get(memberIds[i]!);
+    if (!neighbors) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (neighbors.has(memberIds[j]!)) present++;
+    }
+  }
+  return present / possiblePairs;
+}
+
+// Highest density a component of this size can reach, given that step 2 caps
+// each item at top_k neighbours. A 37-item component can hold at most 37*15/2
+// edges against 37*36/2 possible pairs, so its density cannot exceed 15/36 =
+// 0.42 no matter how coherent it is. Without this correction the largest and
+// most important clusters (run #35's 37-source US-Iran cluster) would look
+// maximally chained. Exported for testing.
+export function maxAchievableDensity(size: number, topK: number): number {
+  if (size < 2) return 1;
+  return Math.min(1, topK / (size - 1));
+}
+
+// Density expressed as a fraction of what the top_k cap actually allows, so the
+// measure means the same thing at every component size. 1.0 = as connected as it
+// could possibly be; a chain stays near zero regardless of size. This is what the
+// split pass thresholds on. Exported for testing.
+export function computeCohesion(
+  memberIds: number[],
+  edges: Map<number, Set<number>>,
+  topK: number,
+): number {
+  const density = computeComponentDensity(memberIds, edges);
+  const ceiling = maxAchievableDensity(memberIds.length, topK);
+  return ceiling > 0 ? Math.min(1, density / ceiling) : 1;
+}
+
+// Parses the split pass output into groups of 1-based member indices: one line
+// per group, comma- or space-separated numbers. Out-of-range numbers are dropped.
+// An index claimed by more than one group stays with the first — the partition
+// must not duplicate an item into two clusters. Groups that fall below two
+// members after that are discarded, and any member never claimed is left out
+// entirely (the caller turns those into singletons). Exported for testing.
+export function parseSplitOutput(text: string, memberCount: number): number[][] {
+  const trimmed = text.trim();
+  if (!trimmed || /^none$/i.test(trimmed)) return [];
+
+  const claimed = new Set<number>();
+  const groups: number[][] = [];
+
+  for (const line of trimmed.split(/\r?\n/)) {
+    if (!line.trim() || /^none$/i.test(line.trim())) continue;
+    const group: number[] = [];
+    for (const part of line.split(/[\s,]+/)) {
+      const n = parseInt(part.trim(), 10);
+      if (isNaN(n) || n < 1 || n > memberCount) continue;
+      if (claimed.has(n)) continue;
+      claimed.add(n);
+      group.push(n);
+    }
+    if (group.length >= 2) groups.push(group);
+    else for (const n of group) claimed.delete(n);
+  }
+
+  return groups;
+}
+
 // Parses "1,3" or "none" from attach LLM output into a 1-based index set.
 // Exported for testing.
 export function parseAttachOutput(text: string, candidateCount: number): Set<number> {
@@ -198,6 +289,7 @@ interface AttachPassResult {
   phaseACalls: number;
   phaseBCalls: number;
   totalCalls: number;
+  failedCalls: number;
   attached: number;
   newClusters: number;
   inputTokens: number | null;
@@ -220,6 +312,7 @@ async function attachSingletons(
       phaseACalls: 0,
       phaseBCalls: 0,
       totalCalls: 0,
+      failedCalls: 0,
       attached: 0,
       newClusters: 0,
       inputTokens: 0,
@@ -233,6 +326,7 @@ async function attachSingletons(
 
   let phaseACalls = 0;
   let phaseBCalls = 0;
+  let failedCalls = 0;
   let totalAttached = 0;
   let totalNewClusters = 0;
   let totalInputTokens: number | null = 0;
@@ -262,7 +356,14 @@ async function attachSingletons(
   }
 
   // Run one LLM call for a chunk of candidates. Maps confirmed 1-based indices back to IDs.
-  // Returns empty set on failure (no crash, no merge).
+  //
+  // 429/503 responses are retried with exponential backoff before the call is
+  // allowed to fail. This matters more here than it looks: a failed attach call
+  // returns an empty set, which is indistinguishable from the model saying "none
+  // of these belong" — the cluster silently doesn't grow and the run still
+  // reports success. Run #34 (2026-06-19) lost roughly half its attach
+  // judgments that way. Exhausted failures are counted into failedCalls so the
+  // run summary can report degraded output instead of hiding it.
   async function callAttachChunk(
     phase: "A" | "B",
     label: string,
@@ -273,19 +374,24 @@ async function attachSingletons(
     if (phase === "A") phaseACalls++;
     else phaseBCalls++;
     try {
-      const result = await callLLM({
-        stage: "grouping",
-        stageRunId: runId,
-        model: config.model,
-        systemPrompt,
-        userPrompt,
-        temperature: config.temperature,
-        maxTokens: config.max_tokens,
-        reasoningEffort: config.reasoning_effort,
-        provider: config.provider,
-        timeoutMs: config.timeout_ms,
-        stream: config.stream,
-      });
+      const result = await callWithBackoff(
+        () =>
+          callLLM({
+            stage: "grouping",
+            stageRunId: runId,
+            model: config.model,
+            systemPrompt,
+            userPrompt,
+            temperature: config.temperature,
+            maxTokens: config.max_tokens,
+            reasoningEffort: config.reasoning_effort,
+            provider: config.provider,
+            timeoutMs: config.timeout_ms,
+            stream: config.stream,
+          }),
+        config,
+        `grouping attach ${phase}`,
+      );
       accumTokens(result);
       const confirmedNums = parseAttachOutput(result.text, chunkIds.length);
       const confirmedIds = new Set<number>();
@@ -296,7 +402,11 @@ async function attachSingletons(
       return confirmedIds;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[grouping] attach phase ${phase} ${label}: LLM call failed: ${msg}`);
+      failedCalls++;
+      console.warn(
+        `[grouping] attach phase ${phase} ${label}: LLM call failed after retries ` +
+          `— treating as "attach nothing", grouping is degraded: ${msg}`,
+      );
       return new Set();
     }
   }
@@ -442,8 +552,16 @@ async function attachSingletons(
   const totalCalls = phaseACalls + phaseBCalls;
   console.log(
     `[grouping] attach: phase_a_calls=${phaseACalls}, phase_b_calls=${phaseBCalls}, ` +
-      `total_calls=${totalCalls}`,
+      `total_calls=${totalCalls}, failed_calls=${failedCalls}`,
   );
+  if (failedCalls > 0) {
+    console.warn(
+      `[grouping] WARNING: ${failedCalls}/${totalCalls} attach call(s) failed after ` +
+        `retries. Those clusters were not offered their candidates, so the cluster/` +
+        `singleton split below understates real grouping. Re-run before tuning ` +
+        `similarity_threshold or judging cluster quality.`,
+    );
+  }
 
   return {
     clusters: currentClusters,
@@ -451,8 +569,226 @@ async function attachSingletons(
     phaseACalls,
     phaseBCalls,
     totalCalls,
+    failedCalls,
     attached: totalAttached,
     newClusters: totalNewClusters,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    firstGenerationLogId,
+  };
+}
+
+// --- SPLIT PASS ---
+
+interface SplitPassResult {
+  groups: PreprocessedItemRow[][];
+  freedSingletonIds: Set<number>;
+  examined: number;
+  suspect: number;
+  componentsSplit: number;
+  calls: number;
+  failedCalls: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  firstGenerationLogId: bigint | null;
+}
+
+// Re-partitions step-2 connected components that union-find may have chained
+// together. Only components that are both large enough to chain (size >=
+// min_size) and loosely connected (density < density_floor) are sent to the LLM;
+// dense components are the same-event clusters we want and pass through without
+// a call. Members the model does not place in any group are returned as freed
+// singletons, where the attach pass can pick them up again.
+//
+// A call that fails after retries leaves its component intact. That is the
+// conservative direction: the result is the over-merge we already had, not a
+// shattered cluster. It is distinct from the model legitimately answering
+// "none", which does dissolve the component, so failures are counted separately.
+async function splitLowDensityComponents(
+  candidateGroups: PreprocessedItemRow[][],
+  edges: Map<number, Set<number>>,
+  topK: number,
+  config: GroupingSplitConfig,
+  runId: number,
+): Promise<SplitPassResult> {
+  const freedSingletonIds = new Set<number>();
+  let examined = 0;
+  let componentsSplit = 0;
+  let calls = 0;
+  let failedCalls = 0;
+  let totalInputTokens: number | null = 0;
+  let totalOutputTokens: number | null = 0;
+  let firstGenerationLogId: bigint | null = null;
+
+  // Decide up front which components need a call, so the pass-through majority
+  // never touches the limiter.
+  const suspect: number[] = [];
+  const cohesions = new Map<number, number>();
+  for (let i = 0; i < candidateGroups.length; i++) {
+    const group = candidateGroups[i]!;
+    if (group.length < config.min_size) continue;
+    const cohesion = computeCohesion(
+      group.map((item) => Number(item.id)),
+      edges,
+      topK,
+    );
+    cohesions.set(i, cohesion);
+    examined++;
+    if (cohesion < config.density_floor) suspect.push(i);
+  }
+
+  // Log every examined component, not just the suspect ones. Without the
+  // cohesion of components that *passed*, there is no way to tell how far
+  // density_floor would have to move to catch a specific over-merge — run #44's
+  // 44-source "Trump meets Zelenskyy and Netanyahu amid Graham funeral" cluster
+  // was never logged, so its cohesion is unknown and the threshold cannot be
+  // tuned against it.
+  if (examined > 0) {
+    const summary = [...cohesions.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(
+        ([idx, c]) =>
+          `${idx}:size=${candidateGroups[idx]!.length},cohesion=${c.toFixed(2)}` +
+          (c < config.density_floor ? "*" : ""),
+      )
+      .join(" ");
+    console.log(`[grouping] split cohesion (* = suspect): ${summary}`);
+  }
+
+  if (suspect.length === 0) {
+    console.log(
+      `[grouping] split: examined=${examined}, suspect=0, calls=0 — ` +
+        `no low-density components`,
+    );
+    return {
+      groups: candidateGroups,
+      freedSingletonIds,
+      examined,
+      suspect: 0,
+      componentsSplit: 0,
+      calls: 0,
+      failedCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      firstGenerationLogId: null,
+    };
+  }
+
+  const limit = pLimit(config.concurrency);
+
+  const outcomes = await Promise.all(
+    suspect.map((groupIdx) =>
+      limit(async (): Promise<{ groupIdx: number; partition: number[][] | null }> => {
+        const members = candidateGroups[groupIdx]!;
+        const memberBlocks = members
+          .map((item, idx) => `(${idx + 1}) ${item.title}`)
+          .join("\n");
+        calls++;
+        try {
+          const result = await callWithBackoff(
+            () =>
+              callLLM({
+                stage: "grouping",
+                stageRunId: runId,
+                model: config.model,
+                systemPrompt: buildSplitSystemPrompt(),
+                userPrompt: buildSplitUserPrompt(memberBlocks),
+                temperature: config.temperature,
+                maxTokens: config.max_tokens,
+                reasoningEffort: config.reasoning_effort,
+                provider: config.provider,
+                timeoutMs: config.timeout_ms,
+                stream: config.stream,
+              }),
+            config,
+            "grouping split",
+          );
+          if (result.inputTokens !== null && totalInputTokens !== null) {
+            totalInputTokens += result.inputTokens;
+          } else if (result.generationLogId !== null) {
+            totalInputTokens = null;
+          }
+          if (result.outputTokens !== null && totalOutputTokens !== null) {
+            totalOutputTokens += result.outputTokens;
+          } else if (result.generationLogId !== null) {
+            totalOutputTokens = null;
+          }
+          if (result.generationLogId !== null && firstGenerationLogId === null) {
+            firstGenerationLogId = result.generationLogId;
+          }
+          return {
+            groupIdx,
+            partition: parseSplitOutput(result.text, members.length),
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          failedCalls++;
+          console.warn(
+            `[grouping] split component ${groupIdx} (size ${members.length}): ` +
+              `LLM call failed after retries — leaving the component intact, ` +
+              `possible over-merge retained: ${msg}`,
+          );
+          return { groupIdx, partition: null };
+        }
+      }),
+    ),
+  );
+
+  // Apply deterministically, in component order, after every call has returned.
+  const replacements = new Map<number, PreprocessedItemRow[][]>();
+  for (const { groupIdx, partition } of outcomes) {
+    if (partition === null) continue; // failed call — keep original
+    const members = candidateGroups[groupIdx]!;
+    const rebuilt: PreprocessedItemRow[][] = [];
+    const placed = new Set<number>();
+    for (const group of partition) {
+      const rows = group.map((n) => members[n - 1]!);
+      for (const n of group) placed.add(n);
+      rebuilt.push(rows);
+    }
+    for (let n = 1; n <= members.length; n++) {
+      if (!placed.has(n)) freedSingletonIds.add(Number(members[n - 1]!.id));
+    }
+    replacements.set(groupIdx, rebuilt);
+    if (rebuilt.length !== 1 || rebuilt[0]!.length !== members.length) {
+      componentsSplit++;
+      const cohesion = cohesions.get(groupIdx) ?? 0;
+      console.log(
+        `[grouping] split component ${groupIdx}: size ${members.length} ` +
+          `(cohesion ${cohesion.toFixed(2)}) → ${rebuilt.length} group(s) + ` +
+          `${members.length - placed.size} singleton(s)`,
+      );
+    }
+  }
+
+  const groups: PreprocessedItemRow[][] = [];
+  for (let i = 0; i < candidateGroups.length; i++) {
+    const replacement = replacements.get(i);
+    if (replacement) groups.push(...replacement);
+    else groups.push(candidateGroups[i]!);
+  }
+
+  console.log(
+    `[grouping] split: examined=${examined}, suspect=${suspect.length}, ` +
+      `calls=${calls}, failed_calls=${failedCalls}, ` +
+      `components_split=${componentsSplit}, freed_singletons=${freedSingletonIds.size}, ` +
+      `groups ${candidateGroups.length}→${groups.length}`,
+  );
+  if (failedCalls > 0) {
+    console.warn(
+      `[grouping] WARNING: ${failedCalls}/${calls} split call(s) failed after retries. ` +
+        `Those components were left intact and may still be over-merged.`,
+    );
+  }
+
+  return {
+    groups,
+    freedSingletonIds,
+    examined,
+    suspect: suspect.length,
+    componentsSplit,
+    calls,
+    failedCalls,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     firstGenerationLogId,
@@ -532,19 +868,24 @@ async function describeGroups(
           .join("\n");
 
         try {
-          const result = await callLLM({
-            stage: "grouping",
-            stageRunId: runId,
-            model: config.model,
-            systemPrompt: buildDescribeSystemPrompt(),
-            userPrompt: buildDescribeUserPrompt(clusterBlocks),
-            temperature: config.temperature,
-            maxTokens: config.max_tokens,
-            reasoningEffort: config.reasoning_effort,
-            provider: config.provider,
-            timeoutMs: config.timeout_ms,
-            stream: config.stream,
-          });
+          const result = await callWithBackoff(
+            () =>
+              callLLM({
+                stage: "grouping",
+                stageRunId: runId,
+                model: config.model,
+                systemPrompt: buildDescribeSystemPrompt(),
+                userPrompt: buildDescribeUserPrompt(clusterBlocks),
+                temperature: config.temperature,
+                maxTokens: config.max_tokens,
+                reasoningEffort: config.reasoning_effort,
+                provider: config.provider,
+                timeoutMs: config.timeout_ms,
+                stream: config.stream,
+              }),
+            config,
+            "grouping describe",
+          );
 
           const parsed = parseDescribeOutput(result.text, batch.length);
           const descriptions = new Map<number, { title: string; summary: string }>();
@@ -575,7 +916,8 @@ async function describeGroups(
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(
             `[grouping] describe batch ${batchIdx + 1}/${batches.length}: ` +
-              `LLM failed — keeping fallback labels for all ${batch.length}: ${msg}`,
+              `LLM failed after retries — keeping fallback labels for all ` +
+              `${batch.length} cluster(s): ${msg}`,
           );
           return {
             descriptions: new Map(),
@@ -874,6 +1216,66 @@ export async function runGrouping(
       }
     }
 
+    // Per-pass counters persisted onto grouping_runs (migration 030) so a report
+    // regenerated from the database can tell whether this run's grouping is
+    // trustworthy. null means "the pass did not run", which is distinct from 0.
+    const runStats: {
+      attachCalls: number | null;
+      attachFailedCalls: number | null;
+      splitExamined: number | null;
+      splitSuspect: number | null;
+      splitCalls: number | null;
+      splitFailedCalls: number | null;
+      splitComponentsSplit: number | null;
+      splitFreedSingletons: number | null;
+    } = {
+      attachCalls: null,
+      attachFailedCalls: null,
+      splitExamined: null,
+      splitSuspect: null,
+      splitCalls: null,
+      splitFailedCalls: null,
+      splitComponentsSplit: null,
+      splitFreedSingletons: null,
+    };
+
+    // --- STEP 2b: SPLIT ---
+    // Union-find only requires a path between members, so a bridging article can
+    // chain unrelated stories into one component. Low-density components are
+    // re-partitioned by the LLM before anything downstream treats them as
+    // clusters; dense ones pass through untouched. Freed members rejoin the
+    // singleton pool, where the attach pass can place them properly.
+    let workingGroups = candidateGroups;
+
+    if (groupingConfig.split.enabled) {
+      const splitResult = await splitLowDensityComponents(
+        candidateGroups,
+        edges,
+        topK,
+        groupingConfig.split,
+        runId,
+      );
+      workingGroups = splitResult.groups;
+      for (const id of splitResult.freedSingletonIds) singletonIds.add(id);
+      runStats.splitExamined = splitResult.examined;
+      runStats.splitSuspect = splitResult.suspect;
+      runStats.splitCalls = splitResult.calls;
+      runStats.splitFailedCalls = splitResult.failedCalls;
+      runStats.splitComponentsSplit = splitResult.componentsSplit;
+      runStats.splitFreedSingletons = splitResult.freedSingletonIds.size;
+      accumulateTokens(
+        splitResult.inputTokens,
+        splitResult.outputTokens,
+        splitResult.firstGenerationLogId,
+      );
+      console.log(
+        `[grouping] step 2b split: groups=${workingGroups.length}, ` +
+          `singletons=${singletonIds.size}`,
+      );
+    } else {
+      console.log(`[grouping] step 2b split: disabled`);
+    }
+
     // --- STEP 3: ATTACH ---
     // Anchor-centric, title-embedding-based. Covers two cases:
     //   singleton → existing cluster  (LLM confirms same event as cluster)
@@ -890,10 +1292,10 @@ export async function runGrouping(
       console.log(
         `[grouping] step 3 attach: disabled — ${singletonIds.size} singletons unchanged`,
       );
-      preClusters = candidateGroups.map(buildAutoCluster);
+      preClusters = workingGroups.map(buildAutoCluster);
       remainingSingletonIds = new Set(singletonIds);
     } else {
-      const initialClusters = candidateGroups.map(buildAutoCluster);
+      const initialClusters = workingGroups.map(buildAutoCluster);
       const attachResult = await attachSingletons(
         initialClusters,
         singletonIds,
@@ -904,6 +1306,8 @@ export async function runGrouping(
       );
       preClusters = attachResult.clusters;
       remainingSingletonIds = attachResult.remainingSingletonIds;
+      runStats.attachCalls = attachResult.totalCalls;
+      runStats.attachFailedCalls = attachResult.failedCalls;
       accumulateTokens(
         attachResult.inputTokens,
         attachResult.outputTokens,
@@ -913,6 +1317,7 @@ export async function runGrouping(
         `[grouping] step 3 attach: phase_a_calls=${attachResult.phaseACalls}, ` +
           `phase_b_calls=${attachResult.phaseBCalls}, ` +
           `total_calls=${attachResult.totalCalls}, ` +
+          `failed_calls=${attachResult.failedCalls}, ` +
           `attached=${attachResult.attached}, ` +
           `new_clusters=${attachResult.newClusters}, ` +
           `singletons=${singletonsBefore}→${remainingSingletonIds.size}`,
@@ -948,19 +1353,48 @@ export async function runGrouping(
 
     await pool.query(
       `UPDATE grouping_runs
-       SET completed_at      = NOW(),
-           input_tokens      = $1,
-           output_tokens     = $2,
-           duration_ms       = $3,
-           digest            = $4,
-           generation_log_id = $5
-       WHERE id = $6`,
-      [totalInputTokens, totalOutputTokens, totalDurationMs, digestText, firstGenerationLogId, runId],
+       SET completed_at            = NOW(),
+           input_tokens            = $1,
+           output_tokens           = $2,
+           duration_ms             = $3,
+           digest                  = $4,
+           generation_log_id       = $5,
+           cluster_count           = $6,
+           singleton_count         = $7,
+           attach_calls            = $8,
+           attach_failed_calls     = $9,
+           split_examined          = $10,
+           split_suspect           = $11,
+           split_calls             = $12,
+           split_failed_calls      = $13,
+           split_components_split  = $14,
+           split_freed_singletons  = $15
+       WHERE id = $16`,
+      [
+        totalInputTokens,
+        totalOutputTokens,
+        totalDurationMs,
+        digestText,
+        firstGenerationLogId,
+        finalClusters.length,
+        remainingSingletonIds.size,
+        runStats.attachCalls,
+        runStats.attachFailedCalls,
+        runStats.splitExamined,
+        runStats.splitSuspect,
+        runStats.splitCalls,
+        runStats.splitFailedCalls,
+        runStats.splitComponentsSplit,
+        runStats.splitFreedSingletons,
+        runId,
+      ],
     );
 
     console.log(
       `[grouping] run #${runId} complete: ${finalClusters.length} clusters, ` +
-        `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms`,
+        `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms, ` +
+        `attach_failed_calls=${runStats.attachFailedCalls ?? "n/a"}, ` +
+        `split_failed_calls=${runStats.splitFailedCalls ?? "n/a"}`,
     );
 
     return await fetchGroupingRun(pool, runId);

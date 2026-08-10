@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { runGroupingPass1 } from "../src/pipeline/editor-pass-1/index.js";
 import { assembleGroupingPile } from "../src/pipeline/editor-pass-1/assemble-pile.js";
+import { runThreading } from "../src/pipeline/thread/index.js";
+import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -28,10 +30,23 @@ async function main() {
       `${run.itemsIn} items scored, model=${run.modelUsed}`,
   );
 
-  const pile = await assembleGroupingPile(run.id);
+  // Thread pass runs between scoring and pile assembly: it needs the scores to
+  // pick candidates, and the pile needs its results so a threaded row does not
+  // also appear on its own.
+  const { thread: threadConfig } = loadModelConfig();
+  let threadRunId: number | undefined;
+  if (threadConfig.enabled) {
+    const threadRun = await runThreading({ groupingPass1RunId: run.id });
+    threadRunId = threadRun.threadRunId;
+  } else {
+    console.log("[thread] disabled — pile will contain un-threaded rows");
+  }
+
+  const pile = await assembleGroupingPile(run.id, threadRunId);
   console.log(
     `[grouping-pass-1] pile #${pile.pileId}: ` +
-      `${pile.clustersInPile} clusters + ${pile.singletonsInPile} singletons in pile ` +
+      `${pile.threadsInPile} threads + ${pile.clustersInPile} clusters + ` +
+      `${pile.singletonsInPile} singletons in pile ` +
       `(target=${pile.pileTarget}, score_cutoff=${pile.scoreCutoff ?? "n/a"}, ` +
       `below_line=${pile.itemsBelowLine})`,
   );
