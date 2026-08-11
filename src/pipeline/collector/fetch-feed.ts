@@ -23,6 +23,21 @@ const TIMEOUT_MS = 20_000;
 const ACCEPT_HEADER =
   "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8";
 
+// Sent only on the escalation attempt. Run #48 showed a UA swap alone is not
+// enough for The Baffler or Inside Climate News: the retry fired and was
+// refused again. A bot score is built from the whole request, and a "browser"
+// that sends no Accept-Language and no Sec-Fetch headers still reads as
+// automation. This is the cheap half of the remaining gap — if it does not move
+// those two, the block is TLS-fingerprint or IP based and no header set will
+// fix it, which is the point at which the honest answer is to drop the source.
+const BROWSER_HINT_HEADERS: Record<string, string> = {
+  "Accept-Language": "en-US,en;q=0.9",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Upgrade-Insecure-Requests": "1",
+};
+
 // Custom item fields beyond the rss-parser defaults.
 type CustomItemFields = {
   contentEncoded?: string; // maps from <content:encoded>
@@ -51,7 +66,7 @@ export interface FetchedItem {
 }
 
 /** One GET for a feed, with the given UA. No status handling — that's the caller's. */
-function requestOnce(url: string, userAgent: string): Promise<Response> {
+function requestOnce(url: string, userAgent: string, asBrowser = false): Promise<Response> {
   return fetch(url, {
     headers: {
       "User-Agent": userAgent,
@@ -59,6 +74,7 @@ function requestOnce(url: string, userAgent: string): Promise<Response> {
       // over the transport made The Baffler start returning 403 in run #43 —
       // some CDNs reject feed requests that advertise no acceptable type.
       Accept: ACCEPT_HEADER,
+      ...(asBrowser ? BROWSER_HINT_HEADERS : {}),
     },
     signal: AbortSignal.timeout(TIMEOUT_MS),
     redirect: "follow",
@@ -80,7 +96,7 @@ async function fetchFeedText(url: string): Promise<string> {
   // other status — 404, 410, 5xx — is the feed genuinely being gone or broken,
   // and retrying it would only double the request for no new information.
   if (res.status === 403) {
-    const retry = await requestOnce(url, FALLBACK_USER_AGENT);
+    const retry = await requestOnce(url, FALLBACK_USER_AGENT, true);
     if (retry.ok) {
       console.warn(
         `[collector] ${url}: 403 for the FritterPost UA, served with a browser UA — ` +
@@ -88,6 +104,14 @@ async function fetchFeedText(url: string): Promise<string> {
       );
       res = retry;
     } else {
+      // Log the failed escalation too. Without this line a report can only say
+      // "no rescue happened", which reads identically to "the retry never ran"
+      // — exactly the ambiguity run #48's report hit. A 403 here means the
+      // block is not UA-based and no header set will get past it.
+      console.warn(
+        `[collector] ${url}: 403 for the FritterPost UA, and ${retry.status} for the ` +
+          `browser UA too — not a UA rule. Consider dropping the source.`,
+      );
       // Report the original refusal; the retry told us nothing new.
       throw new Error(`Status code ${res.status}`);
     }
