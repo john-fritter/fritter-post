@@ -138,12 +138,27 @@ Writes `preprocessed_items`. The assembler (`assembler.ts`) queries the kept set
 for downstream stages, composing prefilter and junk-filter results by
 simple set intersection.
 
+**The junk filter is the hard gate, and it is the only one.** `getClusteringItems`
+is the sole path into both grouping and grouping-pass-1, so an item it drops
+cannot reach the pile as a cluster member or as a singleton. That is why the
+link-dump rules live there rather than in a prompt: the prefilter prompt had
+said "cut link-dump roundups" since it was written and still let Just
+Security's daily "Early Edition" reach the feature tier in run #109. Rules are
+high-precision and evidence-driven — extend them from audit logs, never
+speculatively, and add a `tests/junk-filter.test.ts` case for both the cut and
+the near-miss that must survive.
+
 ### prefilter
 Bio-aware relevance floor between the preprocessor and the clusterer. Batched,
 concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
 - `cut` — obvious noise this reader has no interest in (routine sports scores,
   celebrity tabloid, market-movement wire filler) plus non-article material
-  (event calendars, horoscopes, photo galleries, house ads, link-dump roundups)
+  (event calendars, horoscopes, photo galleries, house ads) and **every digest**
+  — roundups, link dumps, newsletter editions, date-only titles. A digest is
+  judged on shape, not topic: its body lists many unrelated stories, so it reads
+  as more relevant than any single article. That density is the tell. The
+  deterministic junk filter is the actual guarantee here; the prompt is the
+  second line.
 - `news` — flows into clustering (grouping) and grouping-pass-1 scoring
 - `opinion` — kept but routed out of clustering; pools with `track=analysis`
   items for a future Longer Reads section
@@ -210,7 +225,17 @@ Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
 supplies its model and prompt). Two functions:
 
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
-clusters and singletons on the same scale. Clusters are scored on their
+clusters and singletons on the same scale. **The model emits two axes, not one**
+(`id;;interest;;consequence;;reason`, each 0–50); software sums them into
+`score`, and both axes are persisted (migration 033). One integer collapsed the
+distribution onto round attractors — 55, 58, 60, 62, 65, 68, 70, 72 — and since
+a singleton's editor lift is `ln(1) = 0`, its combined score *is* its relevance
+score, so equal integers are exact ties. Run #109 put 115 of 119 tied rows in
+that shape. Two axes also give the pipeline its principled defence against
+digests: a link roundup is legitimately high **interest** and near-zero
+**consequence**, which one number could not express. See `docs/decisions.md`,
+2026-08-11.
+Clusters are scored on their
 describe-pass title + summary (capped at `editor_pass_1.summary_cap`);
 singletons on their English title + body excerpt (capped at
 `editor_pass_1.body_cap`). Those two caps are the stage's quality lever: when
@@ -419,7 +444,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **033**.
+number is ambiguous. The next migration is **034**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

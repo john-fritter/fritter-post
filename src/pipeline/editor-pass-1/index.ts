@@ -32,8 +32,23 @@ function loadBio(): string {
 
 export interface EditorPass1ItemResult {
   id: number;
+  /** interest + consequence, 0-100. The authoritative value everything downstream reads. */
   score: number;
+  /** Bio-relevance axis, 0-50. Null when the line was fail-safed. */
+  interest: number | null;
+  /** Event-weight axis, 0-50. Null when the line was fail-safed. */
+  consequence: number | null;
   reason: string;
+}
+
+/** Axis bound. Two axes of 0-50 sum to the same 0-100 scale the pipeline already uses. */
+const AXIS_MAX = 50;
+
+/** Sum used when a line is missing or unparseable — the midpoint, as before. */
+const FAIL_SAFE_SCORE = 50;
+
+function clampAxis(value: number): number {
+  return Math.max(0, Math.min(AXIS_MAX, value));
 }
 
 export interface EditorPass1BatchParseResult {
@@ -52,6 +67,8 @@ export function parseBatchOutput(
   const expected = new Set(expectedIds);
   const parsed = new Map<number, EditorPass1ItemResult>();
 
+  // Format: id;;interest;;consequence;;reason
+  // The reason is last so any ;; inside it cannot shift a numeric column.
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line.length === 0 || !/^\d+/.test(line)) continue;
@@ -60,27 +77,33 @@ export function parseBatchOutput(
     if (firstDelimiter === -1) continue;
     const secondDelimiter = line.indexOf(";;", firstDelimiter + 2);
     if (secondDelimiter === -1) continue;
+    const thirdDelimiter = line.indexOf(";;", secondDelimiter + 2);
+    if (thirdDelimiter === -1) continue;
 
     const idField = line.slice(0, firstDelimiter).trim();
-    const scoreField = line.slice(firstDelimiter + 2, secondDelimiter).trim();
-    const reason = line.slice(secondDelimiter + 2).trim();
+    const interestField = line.slice(firstDelimiter + 2, secondDelimiter).trim();
+    const consequenceField = line.slice(secondDelimiter + 2, thirdDelimiter).trim();
+    const reason = line.slice(thirdDelimiter + 2).trim();
 
     if (!/^\d+$/.test(idField)) continue;
-    if (!/^-?\d+$/.test(scoreField)) continue;
+    if (!/^-?\d+$/.test(interestField)) continue;
+    if (!/^-?\d+$/.test(consequenceField)) continue;
     if (reason.length === 0) continue;
 
     const id = Number.parseInt(idField, 10);
     if (!expected.has(id) || parsed.has(id)) continue;
 
-    const rawScore = Number.parseInt(scoreField, 10);
-    const score = Math.max(0, Math.min(100, rawScore));
-    parsed.set(id, { id, score, reason });
+    const interest = clampAxis(Number.parseInt(interestField, 10));
+    const consequence = clampAxis(Number.parseInt(consequenceField, 10));
+    parsed.set(id, { id, score: interest + consequence, interest, consequence, reason });
   }
 
   const results = expectedIds.map((id) =>
     parsed.get(id) ?? {
       id,
-      score: 50,
+      score: FAIL_SAFE_SCORE,
+      interest: null,
+      consequence: null,
       reason: "fail-safe: missing/invalid line",
     },
   );
@@ -190,7 +213,9 @@ async function processGroupingBatch(
       );
       return items.map((item) => ({
         id: item.id,
-        score: 50,
+        score: FAIL_SAFE_SCORE,
+        interest: null,
+        consequence: null,
         reason: "fail-safe: batch parse error",
       }));
     }
@@ -213,7 +238,9 @@ async function processGroupingBatch(
     );
     return items.map((item) => ({
       id: item.id,
-      score: 50,
+      score: FAIL_SAFE_SCORE,
+      interest: null,
+      consequence: null,
       reason: "fail-safe: LLM error",
     }));
   }
@@ -352,45 +379,49 @@ export async function runGroupingPass1(
     // 9. Persist results.
     const INSERT_CHUNK = 500;
 
-    // Cluster rows: 5 params each (run_id, cluster_index, source_count, score, reason).
+    // Cluster rows: 7 params each (run_id, cluster_index, source_count, score,
+    // interest, consequence, reason). The axes are nullable — a fail-safed row
+    // has a score but no breakdown.
     for (let i = 0; i < clusterResults.length; i += INSERT_CHUNK) {
       const chunk = clusterResults.slice(i, i + INSERT_CHUNK);
       if (chunk.length === 0) continue;
       const placeholders = chunk
         .map((_, j) => {
-          const base = j * 5;
-          return `($${base + 1}, 'cluster', $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
+          const base = j * 7;
+          return `($${base + 1}, 'cluster', $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
         })
         .join(", ");
-      const params: Array<number | string> = [];
+      const params: Array<number | string | null> = [];
       for (const r of chunk) {
         const sourceCount = clusters[r.id]!.memberIds.length;
-        params.push(runId, r.id, sourceCount, r.score, r.reason);
+        params.push(runId, r.id, sourceCount, r.score, r.interest, r.consequence, r.reason);
       }
       await pool.query(
-        `INSERT INTO grouping_pass1_results (run_id, item_type, cluster_index, source_count, score, reason)
+        `INSERT INTO grouping_pass1_results
+           (run_id, item_type, cluster_index, source_count, score, interest, consequence, reason)
          VALUES ${placeholders}`,
         params,
       );
     }
 
-    // Singleton rows: 4 params each (run_id, preprocessed_item_id, score, reason).
-    // source_count defaults to 1.
+    // Singleton rows: 6 params each (run_id, preprocessed_item_id, score,
+    // interest, consequence, reason). source_count is literal 1.
     for (let i = 0; i < singletonResults.length; i += INSERT_CHUNK) {
       const chunk = singletonResults.slice(i, i + INSERT_CHUNK);
       if (chunk.length === 0) continue;
       const placeholders = chunk
         .map((_, j) => {
-          const base = j * 4;
-          return `($${base + 1}, 'singleton', $${base + 2}, 1, $${base + 3}, $${base + 4})`;
+          const base = j * 6;
+          return `($${base + 1}, 'singleton', $${base + 2}, 1, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
         })
         .join(", ");
-      const params: Array<number | string> = [];
+      const params: Array<number | string | null> = [];
       for (const r of chunk) {
-        params.push(runId, r.id, r.score, r.reason);
+        params.push(runId, r.id, r.score, r.interest, r.consequence, r.reason);
       }
       await pool.query(
-        `INSERT INTO grouping_pass1_results (run_id, item_type, preprocessed_item_id, source_count, score, reason)
+        `INSERT INTO grouping_pass1_results
+           (run_id, item_type, preprocessed_item_id, source_count, score, interest, consequence, reason)
          VALUES ${placeholders}`,
         params,
       );

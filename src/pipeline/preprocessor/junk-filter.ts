@@ -45,6 +45,63 @@ const RULES: Rule[] = [
       );
     },
   },
+  // ── Link-dump digests ──────────────────────────────────────────────────────
+  //
+  // A daily roundup is an index of other people's stories. It is worthless to a
+  // reader whose paper exists to do that job, and it is actively harmful to the
+  // ranking: its body is a dense list of exactly the topics he cares about, so
+  // a relevance scorer reads it as the most relevant thing in the corpus. Run
+  // #109 put Just Security's "Early Edition: August 10, 2026" at rank 9 in the
+  // feature tier with the joint-highest singleton score in the paper.
+  //
+  // The prefilter prompt has said "cut link-dump roundups" since it was written
+  // and did not catch these, so the guarantee lives here instead. Raising
+  // prefilter's body_cap from 50 to 500 characters made the prompt's job harder,
+  // not easier — more of the roundup's keyword-dense body now reaches the model.
+  //
+  // These patterns are drawn from observed run #109 rows, not written
+  // speculatively. Each one targets an item whose *whole purpose* is to list
+  // other articles; none of them can match a story that merely mentions a date
+  // or a newsletter.
+  {
+    // Title is nothing but a date: "August 10, 2026", "10 August 2026".
+    // A real headline says what happened; a date alone is a newsletter edition.
+    reason: "link-dump-digest",
+    test: (title) => {
+      const t = title.trim();
+      return (
+        /^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}$/i.test(t) ||
+        /^\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}$/i.test(t)
+      );
+    },
+  },
+  {
+    // Known recurring digest mastheads, anchored at the start of the title and
+    // required to be followed by a date or edition marker — so "The Download"
+    // as a masthead is cut while an article titled "The download problem"
+    // is not.
+    reason: "link-dump-digest",
+    test: (title) =>
+      /^(early edition|the download|catch-up weekend|daily briefing|morning briefing|evening briefing|the daily brief|what we're reading|links? for|quick hits)\b\s*[:–—-]/i.test(
+        title.trim(),
+      ),
+  },
+  {
+    // Digest boilerplate in the body. These phrases exist to introduce a list of
+    // other people's stories; a report of a single event does not carry them.
+    // Requires the body to be present — a title-only item never matches.
+    reason: "link-dump-digest",
+    test: (_title, body) => {
+      if (!body) return false;
+      const head = body.slice(0, 600);
+      return (
+        /\ba curated (guide|roundup|list) to\b/i.test(head) ||
+        /\bhere('s| is) (today's|this week's|the day's) news\b/i.test(head) ||
+        /\bsign\s?up to receive the .{0,40}\bin your inbox\b/i.test(head) ||
+        /\bcatch up on (today's|this week's|the week's)\b/i.test(head)
+      );
+    },
+  },
 ];
 
 export function classifyItem(item: JunkFilterItem): ClassifyResult {

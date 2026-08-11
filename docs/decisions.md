@@ -20,6 +20,96 @@ Entry format:
 
 ---
 
+## 2026-08-11 — Pass-1 scores two axes; digests cut deterministically
+
+Both changes come from run #49/#109 — the first full-corpus run after the
+excerpt fix, and the first one whose numbers were trustworthy.
+
+### The tie storm was arithmetic, not information
+
+**Decision:** grouping-pass-1 emits `id;;interest;;consequence;;reason`, two
+independent 0–50 axes that software sums into the same 0–100 `score`. Both are
+persisted (migration 033). Nothing downstream changes: the pile cutoff, the
+editor formula, and a thread's `max(member score)` all read `score` as before.
+
+**Context:** The excerpt fix worked on its own terms — pass-1 singletons went
+from a 50-character body to 1000 and started using 43 distinct scores including
+off-round values (57, 61, 63, 64, 66, 67, 76, 79) that had never appeared. But
+the editor barely moved: 38 → 48 distinct combined scores, 127 → 119 tied rows.
+
+Splitting the tie groups by whether the combined value was an integer explained
+why. **115 of the 119 tied rows were singletons tied at an integer.** A
+singleton has one source, so the editor adds `source_weight * ln(1) = 0` and
+`combined == score` exactly; two singletons with the same integer score are
+precisely tied, forever. The other 4 rows were two accidental cluster
+collisions: `58 + 9·ln(5)` and `60 + 9·ln(4)` both equal 72.48, and a thread and
+a cluster both scoring 65 across 6 sources both equal 81.13.
+
+With ~119 singletons landing in an effective band of 57–88 — 32 integers —
+pigeonhole puts at least 87 of them in a tie however good the scorer is. We
+observed 115, so there was scorer headroom, but the ceiling was ~73% ties.
+
+**Rationale:** Make the score finer rather than patch the formula. The prompt
+already said the score "blends two things: how much this reader cares about the
+subject AND how much actually happened" — the two axes were there conceptually
+and were being collapsed inside the model, where they bunched onto round
+attractors. Asking for both and summing in software spreads the distribution at
+no extra call or token cost, and keeps the 0–100 scale every consumer expects.
+
+**Alternatives considered:** A fractional tiebreak term in the editor formula
+(recency, body length) — rejected as arbitrary, and it would launder a scoring
+problem into the ranking arithmetic. A 0–1000 scale — rejected because models
+bunch on round numbers at any scale; 550 and 580 would replace 55 and 58.
+Accepting the ties and leaning on the LLM tie-break — it does work (two runs,
+zero omitted refs) but costs 538s at `xhigh` and leaves tier boundaries decided
+by a call rather than by the score.
+
+**What to check next run:** distinct combined scores, largest tie group, and
+whether ranks 15/16 and 75/76 still share a value. Also worth querying
+`interest`/`consequence` separately now that they are stored — if one axis is
+bunchy and the other is not, the prompt's bands for that axis are the next
+lever.
+
+### Link dumps are cut by pattern, not by prompt
+
+**Decision:** `junk-filter.ts` gains three high-precision link-dump rules
+(date-only titles, digest mastheads anchored to a separator, digest boilerplate
+in the first 600 characters of the body). The prefilter prompt gains a
+shape-based digest section, and the pass-1 consequence axis scores digests 0–4.
+
+**Context:** Run #109 published Just Security's "Early Edition: August 10, 2026"
+at **rank 9, in the feature tier**, with the joint-highest singleton score in
+the paper (88). "Early Edition: August 11" was at rank 17 and a bare
+"August 10, 2026" at rank 93.
+
+This was a regression introduced by raising `prefilter.body_cap` from 50 to 500.
+A roundup's body is a dense list of exactly the topics this reader cares about —
+the captured prompt shows `"IRAN WAR / The secretary of Iran's Supreme National
+Security Council..."` — so feeding the scorer more of it made the item look
+*more* relevant, not less. The fix that improved every other item made this
+class worse.
+
+**Rationale:** The prefilter prompt has said "cut link-dump roundups" since it
+was written and did not catch these, so a stronger sentence is not a guarantee.
+`getClusteringItems` is the sole path into both grouping and pass-1, so a rule
+there cannot be routed around: a matched item reaches the pile as neither a
+cluster member nor a singleton. The prompt changes remain as a second line for
+digests whose wording we have not seen.
+
+The consequence axis is the principled version of the same judgment. High
+interest is the *correct* reading of a roundup; what makes it worthless is that
+nothing happened in the item itself. One number could not say that, which is
+part of why the single-score prompt kept scoring them high.
+
+**Risk accepted:** deterministic title rules can over-cut. Each pattern is drawn
+from an observed run #109 row rather than written speculatively, mastheads must
+be followed by a separator so "The download problem" survives, and
+`tests/junk-filter.test.ts` pins both the cuts and the near-misses that must
+survive — headlines containing dates, articles mentioning newsletters, and
+title-only wire rows.
+
+---
+
 ## 2026-08-11 — Judgment stages read English; every text cap moved to config
 
 Three changes from run #47/#107, all of them things the run made visible for
