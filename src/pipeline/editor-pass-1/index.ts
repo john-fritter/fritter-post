@@ -6,6 +6,7 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMProvider } from "../../llm/index.js";
 import { getClusteringItems } from "../preprocessor/assembler.js";
+import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -254,6 +255,8 @@ export async function runGroupingPass1(
   const stageConfig = modelConfig.editor_pass_1;
   const model = options.modelOverride ?? stageConfig.model;
   const { temperature, max_tokens: maxTokens, batch_size: batchSize, concurrency } = stageConfig;
+  const bodyCap = stageConfig.body_cap;
+  const summaryCap = stageConfig.summary_cap;
   const reasoningEffort = stageConfig.reasoning_effort;
   const provider = stageConfig.provider;
   const timeoutMs = stageConfig.timeout_ms;
@@ -290,7 +293,7 @@ export async function runGroupingPass1(
       source: "cluster",
       type: "cluster",
       title: c.title,
-      body_excerpt: c.summary.slice(0, 300),
+      body_excerpt: excerpt(c.summary, summaryCap),
     }));
 
     const clusterBatches: EditorPass1BatchItem[][] = [];
@@ -313,12 +316,18 @@ export async function runGroupingPass1(
     const clusterResults = clusterBatchResults.flat();
 
     // 8. Score singletons.
+    //
+    // English text, capped by config. Clusters above are scored on a full
+    // describe-pass summary; before body_cap existed singletons got title +
+    // 50 characters, and that asymmetry — real material for one row type, a
+    // headline for the other — is what collapsed singleton scores onto a
+    // handful of values and put 85% of run #47's paper into a tie group.
     const singletonBatchItems: EditorPass1BatchItem[] = singletons.map((item) => ({
       id: Number(item.id),
       source: item.source_name,
       type: item.source_type,
-      title: item.title,
-      body_excerpt: (item.body_text ?? "").slice(0, 50),
+      title: englishTitle(item),
+      body_excerpt: englishBodyExcerpt(item, bodyCap),
     }));
 
     const singletonBatches: EditorPass1BatchItem[][] = [];

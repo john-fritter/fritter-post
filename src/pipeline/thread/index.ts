@@ -6,6 +6,7 @@ import { loadModelConfig, type ThreadStageConfig } from "../../config/models.js"
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
+import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import { buildThreadSystemPrompt, buildThreadUserPrompt } from "./prompt.js";
 
@@ -127,12 +128,16 @@ function formatCandidateBlocks(candidates: ThreadCandidate[]): string {
     .join("\n");
 }
 
-const SUMMARY_CAP = 300;
-
-/** Loads the top-scoring grouping-pass-1 rows, resolved to titles and summaries. */
+/**
+ * Loads the top-scoring grouping-pass-1 rows, resolved to titles and summaries.
+ * Singleton text is the preprocessor's English translation where one exists —
+ * threading asks whether two rows are the same ongoing situation, which is a
+ * judgment, and judgments read English (see src/lib/text.ts).
+ */
 export async function loadThreadCandidates(
   groupingPass1RunId: number,
   candidateTarget: number,
+  summaryCap: number,
 ): Promise<ThreadCandidate[]> {
   const pool = getPool();
 
@@ -164,9 +169,12 @@ export async function loadThreadCandidates(
     source_count: number;
     title: string | null;
     body_text: string | null;
+    english_title: string | null;
+    english_body: string | null;
   }>(
     `SELECT r.item_type, r.cluster_index, r.preprocessed_item_id,
-            r.score, r.source_count, pi.title, pi.body_text
+            r.score, r.source_count, pi.title, pi.body_text,
+            pi.english_title, pi.english_body
      FROM grouping_pass1_results r
      LEFT JOIN preprocessed_items pi ON pi.id = r.preprocessed_item_id
      WHERE r.run_id = $1
@@ -193,7 +201,7 @@ export async function loadThreadCandidates(
         score: row.score,
         sourceCount: row.source_count,
         title: detail.title,
-        summary: detail.summary.slice(0, SUMMARY_CAP),
+        summary: excerpt(detail.summary, summaryCap),
       });
     } else {
       candidates.push({
@@ -203,8 +211,11 @@ export async function loadThreadCandidates(
         preprocessedItemId: Number(row.preprocessed_item_id),
         score: row.score,
         sourceCount: row.source_count,
-        title: row.title ?? `[item ${row.preprocessed_item_id}]`,
-        summary: (row.body_text ?? "").slice(0, SUMMARY_CAP),
+        title:
+          row.title !== null
+            ? englishTitle({ title: row.title, english_title: row.english_title })
+            : `[item ${row.preprocessed_item_id}]`,
+        summary: englishBodyExcerpt(row, summaryCap),
       });
     }
   }
@@ -250,6 +261,7 @@ export async function runThreading(
   const candidates = await loadThreadCandidates(
     groupingPass1RunId,
     config.candidate_target,
+    config.summary_cap,
   );
 
   const { rows: runRows } = await pool.query<{ id: number }>(

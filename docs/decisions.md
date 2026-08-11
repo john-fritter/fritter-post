@@ -20,6 +20,112 @@ Entry format:
 
 ---
 
+## 2026-08-11 — Judgment stages read English; every text cap moved to config
+
+Three changes from run #47/#107, all of them things the run made visible for
+the first time now that the pipeline is stable enough to read its own output.
+
+### Singleton scoring ran on 50 characters
+
+**Decision:** `prefilter.body_cap` (500) and `editor_pass_1.body_cap` (1000)
+replace a hardcoded `slice(0, 50)` in both stages. `editor_pass_1.summary_cap`,
+`thread.summary_cap`, and `editor.tie_break.body_cap` replace hardcoded 300s in
+the same family. All five are required fields in the Zod schema — a stage that
+shows an LLM text now has to say how much.
+
+**Context:** `prefilter/index.ts` and `editor-pass-1/index.ts` both built their
+batch payload with `body_excerpt: (item.body_text ?? "").slice(0, 50)`. Fifty
+characters is about eight words. So the bio-aware relevance floor sorted run
+#47's 1,206 items into cut/news/opinion on a headline plus half a lede, and
+grouping-pass-1 scored all 423 singletons the same way — while scoring
+*clusters* on a full describe-pass summary.
+
+That asymmetry showed up in the editor output as a tie storm. Run #107's 150
+published rows carried only 38 distinct combined scores. **127 of the 150 sat
+in a tie group**, the largest holding 22 items. Both tier boundaries fell
+inside a tie: ranks 15 and 16 were both `combined=78.00`, ranks 75 and 76 both
+`combined=65.00`. So whether a story ran as a feature was decided by the
+tie-break LLM — and for the group where that call dropped 14 refs, by
+`ref.localeCompare`, i.e. alphabetical order of `S46263`-style ids.
+
+**Rationale:** The editor is advertised as a deterministic formula with an LLM
+tie-break at the margins. At 85% ties it was an LLM ranker with a deterministic
+prelude, which is the thing the 2026-06-16 entry deliberately replaced. The
+formula can only separate rows if its relevance input can, and a scorer with
+eight words of body has nothing to separate them *with*, so it falls back to
+coarse title-shaped buckets. Feeding the scorer an opening paragraph is the
+cheap fix to try before touching the formula, the weights, or the tie-break.
+
+Pass-1 gets twice prefilter's budget on purpose: it makes the finer judgment
+(0–100 vs keep/cut) over a third as many items, so the better-fed stage is also
+the cheaper one. Expect prefilter input tokens ~99k → ~250k.
+
+**What to check next run:** the distinct-combined-score count and the size of
+the largest tie group. If ties stay this dense with a full paragraph in hand,
+the input was not the constraint and the next lever is the scoring bands in
+`editor-pass-1/prompt.ts`.
+
+### Only grouping was reading the translations
+
+**Decision:** prefilter, grouping-pass-1, thread, and the editor tie-break now
+select text through `src/lib/text.ts` — `englishTitle` / `englishBodyExcerpt`,
+preferring `english_*` and falling back to the original columns. `inspect --
+editor` displays English titles too.
+
+**Context:** The 2026-06-17 entry introduced per-item translation and said
+"all other stages (display, scoring, the editor, the paper) continue to read
+the original title and body." That was written when the translation existed
+only to put clustering in one embedding space. Since then three more bio-aware
+LLM stages were built, and every one of them inherited the original-language
+default without anyone deciding it. Run #47 published 33+ non-Latin-script rows
+— Russian, Chinese, Korean — each of which had been through the prefilter, the
+scorer, the thread pass, and a tie-break call in its original script, with a
+translation sitting unread in the next column.
+
+**Rationale:** The translation is already bought and paid for: 341 calls and a
+good share of the preprocessor's 279s on this run. Reading it costs nothing.
+The cost of *not* reading it is invisible by construction — a model that
+half-understands a Russian headline still returns a confident integer, so the
+damage looks exactly like a low-relevance story.
+
+The display change is narrower: `inspect -- editor` is the artifact a person
+reads to judge a run, and a third of it was unreadable. This does not decide
+what headline the *paper* shows — the writers stage produces that.
+
+**Supersedes:** the "all other stages read the original" clause of 2026-06-17,
+for judgment stages and for the editor inspection view. The original columns
+remain the source of truth for lineage and for anything reader-facing that the
+writers stage does not itself rewrite.
+
+### 403 is a bot rule, not a refusal
+
+**Decision:** `fetch-feed.ts` retries a 403 once with a browser UA and logs the
+source when that succeeds. Only 403 — 404/410/5xx are not retried.
+
+**Context:** Run #47 lost five of 111 sources: The Baffler, TechCrunch, and
+Inside Climate News to 403, Mail & Guardian to 404, Labor Notes to an XML parse
+error. Seven more succeeded with zero items, including all three Reuters feeds.
+The three 403s are publishers who serve the same feed to any browser.
+
+**Rationale:** The honest UA is the right default and works for 106 sources;
+escalating only after a refusal keeps it that way while costing one extra
+request on the few sources that need it. The log line names them so
+`sources.yaml` can record which sources are in that set.
+
+Not fixed here, and still open: Mail & Guardian's 404 needs a new feed URL, and
+the three Reuters feeds are Google News proxies returning nothing — which
+matters more than it looks, because `sources` is half the editor formula and a
+silently-empty wire suppresses cross-source pickup for real stories. Labor
+Notes now logs the markup around the parse error so the next run says what is
+actually malformed.
+
+**Verification gap:** these were written against the reported status codes, not
+against a reproduction — the development environment's network policy blocks
+those hosts outright, so the UA retry is untested against the real publishers
+and needs confirming on the next production collect.
+
+---
+
 ## 2026-08-09 — Thread budget exhaustion; split floor raised to catch 4-item chains
 
 Two changes from run #40/#105, the first run with per-component cohesion logged.

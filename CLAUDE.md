@@ -119,6 +119,18 @@ feeds decoded as UTF-8 and published mojibake. `collector/charset.ts` resolves
 header → XML declaration → UTF-8, and retries when the decode produces U+FFFD.
 See `docs/decisions.md`, 2026-07-28.
 
+**403 means "not to you", so we ask again as a browser.** Every feed is fetched
+first with the honest `FritterPost/0.1` UA. On a 403 — and only a 403 — the
+fetch retries once with a browser UA and logs the source if that works. Run #47
+lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
+serve the same feed to any browser. 404/410/5xx are never retried: those mean
+the feed is actually gone or broken, and a second request buys nothing.
+
+**Parse failures log their neighbourhood.** A malformed feed throws a sax error
+naming a line and column but not the markup, and by the time anyone reads the
+log the feed body is gone. `parseFeedText` prints the surrounding lines before
+rethrowing (run #47: Labor Notes, "Unexpected close tag, Line 64").
+
 ### preprocessor
 URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
 pattern rules in `junk-filter.ts`), track/group assignment from source config.
@@ -139,7 +151,7 @@ Conservative bias: when unsure, keep as `news`; a low-interest topic becomes a
 keep the moment it carries a substantive angle, and substantive foreign
 coverage clears the floor regardless of an obvious reader tie. Reads
 `docs/bio.md`. Absorbs the junk-removal job that the former standalone LLM
-`filter` stage handled.
+`filter` stage handled. Reads English text, capped at `prefilter.body_cap`.
 
 ### grouping
 The clustering stage. Embedding-based, running on the kept `news` items. Four
@@ -199,7 +211,12 @@ supplies its model and prompt). Two functions:
 
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
 clusters and singletons on the same scale. Clusters are scored on their
-describe-pass title + summary; singletons on their title + body excerpt.
+describe-pass title + summary (capped at `editor_pass_1.summary_cap`);
+singletons on their English title + body excerpt (capped at
+`editor_pass_1.body_cap`). Those two caps are the stage's quality lever: when
+they are far apart the scorer has real material for clusters and a bare
+headline for singletons, and singleton scores collapse onto a handful of
+values — see `docs/decisions.md`, 2026-08-11.
 Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
@@ -307,6 +324,21 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
   `OPENROUTER_API_KEY` (currently used for embeddings only). After changing
   any of these env vars, recreate the app container before running via
   `docker compose exec`.
+- **Judgment stages read English; text caps are config.** Every stage that asks
+  an LLM to judge an item — prefilter, grouping-pass-1, thread, the editor
+  tie-break — selects text through `src/lib/text.ts` (`englishTitle`,
+  `englishBodyExcerpt`), which prefers the preprocessor's `english_*`
+  translation and falls back to the original. Grouping already did this for
+  embeddings; the other four did not, so run #47 scored 33+ non-Latin-script
+  rows in their original scripts. Never `slice()` a body inline: the cap is a
+  named field in `models.yaml` (`body_cap` / `summary_cap`), because it is the
+  single biggest lever on what a judgment stage actually knows. A `body_cap`
+  above 2000 is meaningless for non-English items — see the ceiling note in
+  `src/lib/text.ts`.
+- **Pass the whole stage config to `callLLM`.** `provider`, `timeout_ms`, and
+  `stream` are easy to leave off, and the call still works — on the default
+  provider and the default 360s timeout, silently disagreeing with
+  `models.yaml`. Prefilter did exactly that until 2026-08-11.
 - **Structured outputs preferred** over freeform parsing wherever the schema
   is knowable. Use JSON mode or tool-call shapes when the consumer is
   software; freeform text only when the consumer is the reader.

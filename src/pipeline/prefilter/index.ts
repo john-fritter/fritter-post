@@ -4,8 +4,9 @@ import path from "path";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import { callLLM } from "../../llm/index.js";
+import { callLLM, type LLMProvider } from "../../llm/index.js";
 import { callWithBackoff, type BackoffConfig } from "../../llm/backoff.js";
+import { englishTitle, englishBodyExcerpt } from "../../lib/text.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -53,6 +54,21 @@ interface PreprocessedItemRow {
   source_type: string;
   title: string;
   body_text: string | null;
+  // Preprocessor translations (migration 028). Null for rows written before it;
+  // englishTitle/englishBody fall back to the original columns.
+  english_title: string | null;
+  english_body: string | null;
+}
+
+/**
+ * Per-call settings this stage takes from models.yaml. Bundled rather than
+ * threaded as four more positional arguments through processBatch.
+ */
+interface PrefilterCallOptions {
+  bodyCap: number;
+  provider: LLMProvider | undefined;
+  timeoutMs: number | undefined;
+  stream: boolean | undefined;
 }
 
 export interface PrefilterRun {
@@ -165,13 +181,17 @@ async function processBatch(
   systemPrompt: string,
   reasoningEffort: string | undefined,
   backoff: BackoffConfig,
+  callOpts: PrefilterCallOptions,
 ): Promise<PrefilterItemResult[]> {
+  // English text, capped by config. This stage judges reader relevance, so it
+  // reads the preprocessor's translation rather than the original language —
+  // see src/lib/text.ts.
   const batchPayload: PrefilterBatchItem[] = batch.map((item) => ({
     id: Number(item.id),
     source: item.source_name,
     type: item.source_type,
-    title: item.title,
-    body_excerpt: (item.body_text ?? "").slice(0, 50),
+    title: englishTitle(item),
+    body_excerpt: englishBodyExcerpt(item, callOpts.bodyCap),
   }));
 
   try {
@@ -186,6 +206,13 @@ async function processBatch(
           temperature,
           maxTokens,
           reasoningEffort,
+          // Previously omitted, so the stage silently ran on getClient's
+          // default provider and the 360s default timeout while models.yaml
+          // said nanogpt / 600s. Harmless until body_cap made the prompts
+          // ten times longer.
+          provider: callOpts.provider,
+          timeoutMs: callOpts.timeoutMs,
+          stream: callOpts.stream,
         }),
       backoff,
       "prefilter",
@@ -256,7 +283,8 @@ export async function runPrefilter(
   //    same-parent dedup have already run at preprocess time — this is a
   //    separate, later, reader-relevance judgment over what survives them.
   const { rows: items } = await pool.query<PreprocessedItemRow>(
-    `SELECT id, source_name, source_type, title, body_text
+    `SELECT id, source_name, source_type, title, body_text,
+            english_title, english_body
      FROM preprocessed_items
      WHERE preprocessor_run_id = $1 AND track = 'news'
      ORDER BY id ASC`,
@@ -298,6 +326,12 @@ export async function runPrefilter(
             {
               retry_max_attempts: stageConfig.retry_max_attempts,
               retry_base_ms: stageConfig.retry_base_ms,
+            },
+            {
+              bodyCap: stageConfig.body_cap,
+              provider: stageConfig.provider,
+              timeoutMs: stageConfig.timeout_ms,
+              stream: stageConfig.stream,
             },
           ),
         ),
