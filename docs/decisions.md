@@ -20,6 +20,99 @@ Entry format:
 
 ---
 
+## 2026-08-12 — Band edges moved off multiples of five; transport failures retried
+
+Run #50/#110 corrections. Two of the three findings are fixes to the previous
+entry's own changes.
+
+### The two-axis change made the score grid coarser, not finer
+
+**Decision:** the axis bands in `editor-pass-1/prompt.ts` move off multiples of
+five (44-50, 34-43, 23-33, 13-22, 6-12, 0-5) and the prompt now says outright
+that round numbers and band edges are a failure to discriminate.
+
+**Context:** run #110 came back with 41 distinct combined scores and 121 of 150
+rows tied — worse than run #109's 48 and 119, and the largest tie group grew
+from 19 rows to 31. The axis histograms explain it: **~88% of both axes landed
+on a multiple of five.** Interest concentrated on 5/10/15/…/45, consequence on
+10/15/…/40. Two multiples of five sum to a multiple of five, so the paper's
+combined scores collapsed onto 65/70/75/80/85.
+
+The cause was my own band definitions. The single-score prompt had bands ending
+at 89, 74, 59, 44, 24, 9 — all off-grid — which pushed the model toward values
+like 57, 62, 72, 79. Rewriting them as 45-50, 35-44, 25-34 handed it a
+five-point lattice to anchor on. The axes were a good idea implemented with
+edges that undid the benefit.
+
+**What this does not change:** the tie *distribution* got worse while the ties
+that matter got better. Every large group in run #110 sat entirely inside one
+tier — 65.00×31 and 70.00×27 are all brief, 80.00×17 and 75.00×17 are all
+standard — and both tier boundaries were 2-row ties, down from 4-row and 12-row
+in run #109. Briefs are one-liners and standards share one treatment, so
+intra-tier order is nearly free; boundary ties are the expensive ones. Judge the
+next run on boundary tie size, not on the headline count.
+
+**Caveat on the comparison:** run #110's thread pass failed (below), so its pile
+carried ~36 extra low-scoring singletons that threading would have absorbed,
+concentrated in exactly the bunched 65–70 range. Neither the headline tie count
+nor the largest-group figure is cleanly comparable to run #109.
+
+### A broken stream killed the thread pass
+
+**Decision:** `callWithBackoff` now retries transport failures — `Stream broke`,
+`ECONNRESET`, `socket hang up`, `premature close`, `fetch failed` — alongside
+429/503. Timeouts remain deliberately un-retried.
+
+**Context:** thread run #7 made one call, lost it to `Stream broke at 311715ms
+after 0 bytes … terminated`, and formed zero threads. `isRateLimitError` did not
+match, so the single call that the whole pass depends on was never retried. The
+resulting paper carried three separate wildfire rows in the top ten (ranks 1, 3,
+10) plus two more at 85 and 89 — exactly the repetition threading exists to
+remove, and the same failure run #43 produced before threading existed.
+
+**Rationale:** a dropped socket says nothing about the request, so re-sending it
+is correct. A timeout is different: the call ran to its configured ceiling and
+will probably do so again, and run #40's lesson was to bound those rather than
+repeat them. The thread pass is the most exposed stage in the pipeline — one
+call, no chunking, whole-pass failure — so it is the one that most needed this.
+
+### The digest defence worked; the report's FAIL was a false alarm
+
+**Decision:** no change to the mechanism. One rule widened: the "curated guide"
+pattern now tolerates a qualifier, and a new pattern catches a newsletter
+announcing itself as an edition.
+
+**Context:** run #50's report recorded `FAIL — digest filter upstream` on two
+observations: five digest items were still present in `preprocessed_items`, and
+no `[junk-filter] DROP … link-dump-digest` line appeared in any stdout. Both are
+consistent with the filter working.
+
+The junk filter runs at *read* time inside `getClusteringItems`, not at write
+time, so `preprocessed_items` always contains everything the preprocessor kept —
+its presence there proves nothing. And `getClusteringItems` applies the
+prefilter first and the junk filter only to survivors, so if the prefilter cut
+an item the junk filter never sees it and logs nothing. Prefilter #30 cut 440
+items against #29's 422. The prompt layer caught them; the deterministic layer
+stood ready and idle.
+
+Replaying all five observed titles through `classifyItem` confirms every one is
+matched by the deterministic rules, so the guarantee holds if the prompt ever
+regresses.
+
+**Two real gaps the run did expose:** the two Just Security editions differed by
+a single word — "a curated guide to" versus "a curated **weekday** guide to" —
+and the original pattern would have caught one and missed the other. And STAT's
+"This is the online version of STAT's weekly email newsletter Health Care Inc."
+is a genuine newsletter edition that survived every rule. Both are now covered,
+with the near-misses pinned in tests.
+
+**Not changed:** "5 things to know before Wednesday's vote on Moda Center
+negotiations", flagged as a manual watch item, is listicle-shaped but is one
+story about one vote. Cutting it would be the over-cutting failure the rules are
+written to avoid, and there is now a test asserting it survives.
+
+---
+
 ## 2026-08-11 — Pass-1 scores two axes; digests cut deterministically
 
 Both changes come from run #49/#109 — the first full-corpus run after the

@@ -372,9 +372,15 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
 - **No SDK-level retries.** `callLLM` sets `maxRetries: 0` on the OpenAI
   client. The SDK's default silent retries masked a 903s hang on one run.
   Retry logic lives in application code, not in the HTTP layer.
-- **429/503 backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
+- **Retry backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
   `callLLM` thunk with exponential backoff and jitter, honoring a
-  `Retry-After` hint when the provider sends one. Configured per-stage via
+  `Retry-After` hint when the provider sends one. It retries two classes —
+  rate limits (429/503) and transport failures where the connection died
+  mid-flight (`Stream broke`, `ECONNRESET`, `socket hang up`, …). It
+  deliberately does **not** retry timeouts: a call that ran to its configured
+  ceiling will likely do it again, and the run #40 lesson was to bound those.
+  Run #50's thread pass lost its single call to a broken stream and produced
+  zero threads, which put three separate wildfire rows in the top ten. Configured per-stage via
   optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
   translation, prefilter, and grouping (attach + describe).
   **Any new batched, concurrent stage needs it.** The failure mode is

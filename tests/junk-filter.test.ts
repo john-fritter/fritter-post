@@ -46,6 +46,44 @@ function testDigestBoilerplateBodyIsCut() {
   assertCut("Untitled", "Here's today's news: the Senate voted, the court ruled…", "link-dump-digest");
 }
 
+function testCuratedGuideQualifierVariants() {
+  // Run #50's two Just Security editions differed by exactly one word. A rule
+  // without the optional qualifier catches one and misses the other.
+  assertCut("X", "A curated guide to major news and developments over the weekend", "link-dump-digest");
+  assertCut("Y", "A curated weekday guide to major news and developments over the week", "link-dump-digest");
+}
+
+function testNewsletterEditionBodyIsCut() {
+  // Both observed in run #50. The STAT one survived that run's rules — it is
+  // the near-miss this pattern was added for.
+  assertCut(
+    "The Download: the next big thing in LLMs",
+    "This is today's edition of The Download, our weekday newsletter that provides a daily dose of what's going on in the world of technology.",
+    "link-dump-digest",
+  );
+  assertCut(
+    "STAT+: Ban prior auth? And hospitals cut jobs",
+    "This is the online version of STAT's weekly email newsletter Health Care Inc. Sign up here.",
+    "link-dump-digest",
+  );
+}
+
+function testSingleSubjectListicleSurvives() {
+  // "5 things to know before Wednesday's vote on Moda Center negotiations" is
+  // listicle-shaped but is one story about one vote — not an index of
+  // unrelated stories. Over-cutting these would be worse than the disease.
+  assertKept("5 things to know before Wednesday's vote on Moda Center negotiations");
+  assertKept("Three things the ruling changes for Oregon renters");
+}
+
+function testArticleAboutANewsletterSurvives() {
+  // Mentioning a newsletter is not being one.
+  assertKept(
+    "A newsletter boom is reshaping local news",
+    "Substack's growth has pushed dozens of laid-off reporters into running their own publications.",
+  );
+}
+
 // --- The precision side: these must NOT be cut ---
 
 function testRealStoriesWithDatesSurvive() {
@@ -91,6 +129,10 @@ const tests = [
   testDateOnlyTitleIsCut,
   testDigestMastheadIsCut,
   testDigestBoilerplateBodyIsCut,
+  testCuratedGuideQualifierVariants,
+  testNewsletterEditionBodyIsCut,
+  testSingleSubjectListicleSurvives,
+  testArticleAboutANewsletterSurvives,
   testRealStoriesWithDatesSurvive,
   testMastheadWordsInRealHeadlinesSurvive,
   testNewsletterMentionInABodyDoesNotCut,

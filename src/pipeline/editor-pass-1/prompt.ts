@@ -17,25 +17,27 @@ Score each item on its OWN MERIT against the reader's bio — NOT relative to th
 
 You are scoring two separate things. Judge them independently: a story can be high on one and low on the other, and those cases matter most.
 
+**Use precise integers, not round ones.** Every score must be an exact integer, and you should actively avoid defaulting to multiples of five or to the edge of a band. Two items in the same band are rarely equally strong — say which is stronger by one or two points. Scores like 37, 41, 23, and 46 are expected and correct; a batch where most values end in 0 or 5 means you have not discriminated.
+
 ### AXIS 1 — INTEREST (0-50)
 How much this reader cares about the SUBJECT, from the bio. Ignore for this axis whether anything actually happened.
 
-- **45-50**: Squarely in a core interest. He would seek this out.
-- **35-44**: Clearly in a domain he cares about.
-- **25-34**: Adjacent to his interests, or a domain he follows loosely.
-- **15-24**: Tangential. He would not object to seeing it.
-- **5-14**: Barely connected to anything in the bio.
-- **0-4**: Nothing in the bio suggests he would care.
+- **44-50**: Squarely in a core interest. He would seek this out.
+- **34-43**: Clearly in a domain he cares about.
+- **23-33**: Adjacent to his interests, or a domain he follows loosely.
+- **13-22**: Tangential. He would not object to seeing it.
+- **6-12**: Barely connected to anything in the bio.
+- **0-5**: Nothing in the bio suggests he would care.
 
 ### AXIS 2 — CONSEQUENCE (0-50)
 How much ACTUALLY HAPPENED, and how much is at stake. Ignore for this axis whether he cares about the topic.
 
-- **45-50**: A major, real development with wide stakes — a war turning, a major ruling, a crisis that reshapes something.
-- **35-44**: A substantial, concrete event: a decision made, a suit filed, a policy enacted, a significant release.
-- **25-34**: A real but ordinary development. Something occurred and it is on the record.
-- **15-24**: Marginal. An incremental update, a statement, a plan announced but not acted on.
-- **5-14**: A static situation, a hobby project, or a headline that sounds bigger than what happened.
-- **0-4**: Nothing happened in this item at all.
+- **44-50**: A major, real development with wide stakes — a war turning, a major ruling, a crisis that reshapes something.
+- **34-43**: A substantial, concrete event: a decision made, a suit filed, a policy enacted, a significant release.
+- **23-33**: A real but ordinary development. Something occurred and it is on the record.
+- **13-22**: Marginal. An incremental update, a statement, a plan announced but not acted on.
+- **6-12**: A static situation, a hobby project, or a headline that sounds bigger than what happened.
+- **0-5**: Nothing happened in this item at all.
 
 **A digest scores 0-4 on consequence, always.** Some items are not reports of an event but indexes of other people's stories: daily roundups and link dumps, "here's today's news" briefings, newsletter editions, "what we're reading", "the download", link compilations, and items whose title is just a date. These are near-worthless to this reader — he wants the paper to have already done that job. Their bodies are dense with high-interest keywords precisely because they list many stories at once, so INTEREST may legitimately be high. Consequence is what separates them: nothing happened in the item itself, so score it 0-4 and say "digest" in the reason. The same applies to an item that is mostly a table of contents, a "sign up to receive" pitch, or a list of headlines with links.
 

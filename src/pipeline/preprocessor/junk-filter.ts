@@ -95,10 +95,23 @@ const RULES: Rule[] = [
       if (!body) return false;
       const head = body.slice(0, 600);
       return (
-        /\ba curated (guide|roundup|list) to\b/i.test(head) ||
+        // "A curated guide to…" / "A curated weekday guide to…". The optional
+        // qualifier matters: run #50's two Just Security editions differed by
+        // exactly that word, and a rule without it would have caught one and
+        // missed the other.
+        /\ba curated\b[\w\s-]{0,20}\b(guide|roundup|list|digest)\b/i.test(head) ||
         /\bhere('s| is) (today's|this week's|the day's) news\b/i.test(head) ||
         /\bsign\s?up to receive the .{0,40}\bin your inbox\b/i.test(head) ||
-        /\bcatch up on (today's|this week's|the week's)\b/i.test(head)
+        /\bcatch up on (today's|this week's|the week's)\b/i.test(head) ||
+        // A newsletter announcing itself as an edition. Observed on MIT
+        // Technology Review's The Download ("This is today's edition of The
+        // Download, our weekday newsletter…") and STAT's Health Care Inc.
+        // ("This is the online version of STAT's weekly email newsletter…").
+        // The second of those survived run #50's rules and is the near-miss
+        // this pattern exists for.
+        /\bthis is (today's|the online version of|this week's|the web version of)\b.{0,80}\bnewsletter\b/i.test(
+          head,
+        )
       );
     },
   },
