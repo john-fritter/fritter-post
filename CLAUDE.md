@@ -150,6 +150,12 @@ high-precision and evidence-driven — extend them from audit logs, never
 speculatively, and add a `tests/junk-filter.test.ts` case for both the cut and
 the near-miss that must survive.
 
+**Aggregator title suffixes are stripped.** Google News RSS appends the
+publisher's domain to every headline, and run #112 published nine of them
+("… who had been in custody - apnews.com"). `title.ts` removes a trailing
+separator plus a *bare domain* only — an outlet name is not a domain, so
+"… Goes Rogue? - Willamette Week" keeps its suffix.
+
 ### prefilter
 Bio-aware relevance floor between the preprocessor and the clusterer. Batched,
 concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
