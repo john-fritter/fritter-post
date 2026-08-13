@@ -20,6 +20,54 @@ Entry format:
 
 ---
 
+## 2026-08-12 — Run #51 confirms the scoring work; editor considered done
+
+**Decision:** stop tuning the editor path. The next work is the writers stage.
+
+**Context:** run #51/#111 is the first run where every open item from the
+previous three entries came back green, on a full corpus with cross-run dedup
+off.
+
+| | #107 | #109 | #110 | **#111** |
+|---|---|---|---|---|
+| distinct combined scores | 38 | 48 | 41 | **59** |
+| rows in a tie | 127 | 119 | 121 | **115** |
+| largest tie group | 22 | 19 | 31 | **13** |
+| feature/standard boundary | 5-row tie | 4-row tie | 2-row tie | **no tie** |
+| standard/brief boundary | 8-row tie | 12-row tie | 2-row tie | 5-row tie |
+
+- **Off-grid bands worked.** Multiple-of-five occupancy fell from ~88% on both
+  axes to 4.0% (interest) and 8.4% (consequence). The lattice was the whole
+  problem and moving the band edges dissolved it.
+- **The transport retry worked.** Thread #8 formed 8 threads absorbing 35 rows,
+  `failed_calls=0`, in 98s against run #7's 311s failure.
+- **Zero digests in the paper.** The one surviving STAT+ row is a single
+  reported story on nurses and clinical AI, not a newsletter edition — the
+  distinction the rules were written to make.
+- **Every large tie group is tier-local.** Only the 5-row group at 70.00
+  straddles a boundary, split 3 standard / 2 brief by the tie-break.
+- **The feature tier is all multi-source**: 6 threads + 9 clusters, zero
+  singletons. Every piece that will get long-form treatment is corroborated and
+  carries several member articles' worth of source text.
+
+**Rationale:** the remaining defects are variance, not design. Wildfire coverage
+still fragmented across ranks 2, 6 and 18 — run #49's thread call folded the
+same material into one row, so this is the thread pass being less aggressive on
+one draw, not a rule that is wrong. Three pass-1 fail-safes out of 576 rows land
+below the pile cutoff and vanish quietly. Grouping's recovered 429s are trending
+up (30 → 33 → 41) and are worth watching, but terminal failure counters stayed
+at zero across all three runs.
+
+Each of the last three runs spent most of its value correcting a fault in the
+previous change. The metrics are now the best they have been on every axis, and
+further tuning would be chasing variance.
+
+**Open, deferred deliberately:** the wildfire fragmentation, the 429 trend, and
+whether the standard/brief boundary tie is worth eliminating. Revisit if a later
+run shows them getting worse.
+
+---
+
 ## 2026-08-12 — Band edges moved off multiples of five; transport failures retried
 
 Run #50/#110 corrections. Two of the three findings are fixes to the previous
