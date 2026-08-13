@@ -18,6 +18,7 @@
 
 import type { StoryMaterials, StoryArticle } from "./materials.js";
 import type { EditorTier } from "../editor/index.js";
+import { hostOf } from "../../lib/http.js";
 
 /**
  * Below this many characters an article is a teaser, not a body: roughly a
@@ -113,19 +114,6 @@ function bucketOf(chars: number): string {
     if (chars <= b.max) return b.label;
   }
   return BUCKETS[BUCKETS.length - 1]!.label;
-}
-
-/**
- * Host of a canonical URL, `www.` stripped. The fetcher's politeness unit is the
- * host, not the source: three of our sources can sit behind one publisher's CDN,
- * and one source's articles can span several hosts.
- */
-export function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "(unparseable)";
-  }
 }
 
 function articleStats(articles: StoryArticle[]) {

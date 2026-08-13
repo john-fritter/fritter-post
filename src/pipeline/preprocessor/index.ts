@@ -1,8 +1,8 @@
 import "dotenv/config";
-import { convert, type HtmlToTextOptions } from "html-to-text";
 import { loadSources } from "../../config/sources.js";
 import { loadModelConfig } from "../../config/models.js";
 import { getPool } from "../../db/index.js";
+import { stripHtml } from "../../lib/html.js";
 import { canonicalizeUrl } from "./canonicalize.js";
 import { batchTranslateItems } from "./translation.js";
 import { computeWindowStart } from "./window.js";
@@ -31,23 +31,6 @@ interface RawItemRow {
   body: string | null;
   published_at: string | null;
   fetched_at: string;
-}
-
-const HTML_TO_TEXT_OPTIONS: HtmlToTextOptions = {
-  wordwrap: false,
-  selectors: [
-    { selector: "img", format: "skip" },
-    { selector: "figure", format: "skip" },
-    { selector: "script", format: "skip" },
-    { selector: "style", format: "skip" },
-    { selector: "a", options: { ignoreHref: true } },
-  ],
-};
-
-function stripHtml(raw: string | null): string | null {
-  if (!raw) return null;
-  const text = convert(raw, HTML_TO_TEXT_OPTIONS).trim();
-  return text.length > 0 ? text : null;
 }
 
 export async function runPreprocessor(options: { collectorRunId?: number; skipCrossRunDedup?: boolean } = {}): Promise<PreprocessorRun> {

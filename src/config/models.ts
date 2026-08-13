@@ -167,12 +167,39 @@ const ThreadStageConfigSchema = StageConfigSchema.extend({
   retry_base_ms: z.number().int().optional(),
 });
 
+// Article text fetch for the writers stage. Every threshold here is a policy
+// the audit of a real run set, so none of them are allowed to be implicit.
+const WritersFetchConfigSchema = z.object({
+  enabled: z.boolean(),
+  // Tiers whose pieces get fetched. Briefs are one-liners and stay out.
+  tiers: z.array(z.enum(["feature", "standard", "brief"])),
+  // Fetch only when the feed body is shorter than this.
+  feed_chars_floor: z.number().int().nonnegative(),
+  // Extraction under this is a paywall or a JS shell, not an article.
+  min_extracted_chars: z.number().int().nonnegative(),
+  // Hosts in parallel; each host's URLs are always sequential.
+  concurrency: z.number().int().positive(),
+  per_host_delay_ms: z.number().int().nonnegative(),
+  timeout_ms: z.number().int().positive(),
+  max_bytes: z.number().int().positive(),
+  retention_days: z.number().int().positive(),
+  cooldown: z.object({
+    enabled: z.boolean(),
+    window_days: z.number().int().positive(),
+    min_attempts: z.number().int().positive(),
+  }),
+});
+
+const WritersStageConfigSchema = StageConfigSchema.extend({
+  fetch: WritersFetchConfigSchema,
+});
+
 const ModelsConfigSchema = z.object({
   preprocessor: PreprocessorConfigSchema,
   prefilter: BatchStageConfigSchema,
   editor: EditorStageConfigSchema,
   thread: ThreadStageConfigSchema,
-  writers: StageConfigSchema,
+  writers: WritersStageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
   grouping: GroupingStageConfigSchema,
@@ -186,6 +213,8 @@ export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema
 export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
+export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
+export type WritersStageConfig = z.infer<typeof WritersStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
 export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;

@@ -82,7 +82,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–032)
+├── migrations/                  # numbered SQL migrations (001–034)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -91,8 +91,9 @@ fritter-post/
 ## Pipeline: implemented stages
 
 The pipeline is nine stages (see `docs/concept.md`). The seven below are built
-and production-ready. Writers and publisher are not built — their directories
-are empty.
+and production-ready. The writers stage is partly built — the materials
+resolver and the article-text fetch exist, the writer call does not. The
+publisher is not built; its directory is empty.
 
 The researcher stage was dropped; the editor's tiered output feeds the writers
 directly (see `docs/decisions.md`).
@@ -322,6 +323,43 @@ Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`.
 resilience. `editor.fallback` no longer exists in `models.yaml`. See
 `docs/decisions.md`, 2026-06-16.)
 
+### writers (partly built)
+
+The writer call is not built. Two pieces that feed it are.
+
+**`materials.ts` — the resolver.** Walks a ranked editor story to the articles
+underneath it: thread → `thread_members` → cluster → `grouping_runs.digest` →
+`preprocessed_items`. It does the walk and nothing else — no fetching, capping,
+dedup, or formatting — and returns body text **uncapped**, because the assembler
+owns the budget and a second cap here would be a second place to look for
+missing text. Unresolvable rows are recorded on the story (`unresolved`) with the
+source count the editor ranked it on left intact.
+
+**`fetch-text.ts` + `extract.ts` — article text.** 61% of editor run #112's 305
+underlying articles carried under 800 characters of feed body, and thinness is a
+property of the outlet rather than the story, so the fetch is per item: feature
+and standard tiers, only where the feed body is under
+`writers.fetch.feed_chars_floor`. Extraction is Readability + html-to-text, with
+**no whole-document fallback** — a page with no article is marked `thin` and the
+assembler falls back to the feed text rather than feeding a writer nav soup.
+
+Politeness is per host, not per source: hosts run concurrently, each host's own
+URLs run sequentially with `per_host_delay_ms` between them. The honest UA goes
+first and a browser UA is tried once on a 403 only — the collector's rule, now
+shared via `src/lib/http.ts`.
+
+**Hosts that keep refusing are skipped**, learned from `article_texts` rather
+than configured: a host with `min_attempts` failures and no success inside
+`cooldown.window_days` is left alone, and recovers by itself when those failures
+age out. nytimes.com and oregonlive.com serve a DataDome device check the
+browser UA does not get past.
+
+**`article_texts` (migration 034) is the only table holding third-party full
+text.** It exists to write the paper, is never published — "curate, don't
+reproduce" — and is swept on `writers.fetch.retention_days` by the fetch script.
+Failures and skips are stored too, so a report can say what fraction of the paper
+is running on feed excerpts.
+
 ---
 
 ## Conventions
@@ -450,7 +488,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **034**.
+number is ambiguous. The next migration is **035**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -462,6 +500,8 @@ number is ambiguous. The next migration is **034**.
   score all clusters + singletons on 0–100 bio-relevance scale, run the thread
   pass (`thread.enabled`), assemble pile
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
+- `npm run fetch-text -- --editor-run <n> [--dry-run] [--limit <n>]` — fetch
+  publisher article text for the stories of an editor run
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -470,6 +510,9 @@ number is ambiguous. The next migration is **034**.
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
+- `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
+  much body text each story's underlying articles carry, per tier, per source and
+  per host, plus the fetch scope
 
 **Experiments**
 - `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —

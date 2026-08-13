@@ -90,6 +90,27 @@ export function charsetFromXmlDeclaration(bytes: Uint8Array): string | null {
 }
 
 /**
+ * Extracts the encoding an HTML document declares for itself, from either
+ * `<meta charset>` or the older `<meta http-equiv="Content-Type">`. The article
+ * fetcher needs this for the same reason the collector needs the XML
+ * declaration: a publisher serving windows-1252 under a bare `text/html` header
+ * is common, and decoding it as UTF-8 turns every accented character into
+ * U+FFFD before the text ever reaches a writer.
+ *
+ * The head of an HTML document is ASCII by construction, so reading the leading
+ * bytes as latin1 is safe whatever the real encoding is. 2KB covers the meta
+ * tag in every document that puts it where the standard requires (first 1024
+ * bytes) plus room for a long doctype or comment.
+ */
+export function charsetFromHtmlMeta(bytes: Uint8Array): string | null {
+  const head = Buffer.from(
+    bytes.subarray(0, Math.min(bytes.length, 2048)),
+  ).toString("latin1");
+  const meta = head.match(/<meta[^>]+charset\s*=\s*["']?([\w-]+)/i);
+  return normalizeCharset(meta?.[1]);
+}
+
+/**
  * Resolves the charset for a feed response: Content-Type header, then XML
  * declaration, then UTF-8. The header wins because it describes what was
  * actually transmitted; a stale declaration inside a re-encoded document is the
@@ -164,7 +185,33 @@ export function decodeFeedBytes(
   bytes: Uint8Array,
   contentType: string | null | undefined,
 ): { text: string; charset: string; recovered: boolean } {
-  const charset = resolveCharset(contentType, bytes);
+  return decodeBytes(bytes, contentType, charsetFromXmlDeclaration);
+}
+
+/**
+ * The same decode-and-recover logic for an HTML article page, consulting the
+ * document's `<meta charset>` instead of an XML declaration.
+ */
+export function decodeHtmlBytes(
+  bytes: Uint8Array,
+  contentType: string | null | undefined,
+): { text: string; charset: string; recovered: boolean } {
+  return decodeBytes(bytes, contentType, charsetFromHtmlMeta);
+}
+
+/**
+ * Header first, then whatever the document declares about itself, then UTF-8 —
+ * with the same two guards on the retry either way. The only thing that differs
+ * between a feed and an article page is where the document states its encoding,
+ * so that is the only thing the caller supplies.
+ */
+function decodeBytes(
+  bytes: Uint8Array,
+  contentType: string | null | undefined,
+  declaredCharset: (bytes: Uint8Array) => string | null,
+): { text: string; charset: string; recovered: boolean } {
+  const charset =
+    charsetFromContentType(contentType) ?? declaredCharset(bytes) ?? DEFAULT_CHARSET;
   const text = new TextDecoder(charset).decode(bytes);
 
   if (!looksSystematicallyMisdecoded(text)) {
@@ -172,7 +219,7 @@ export function decodeFeedBytes(
   }
 
   // The transport and the document disagree — prefer what the document says.
-  const declared = charsetFromXmlDeclaration(bytes);
+  const declared = declaredCharset(bytes);
   if (declared && declared !== charset) {
     const retry = new TextDecoder(declared).decode(bytes);
     if (

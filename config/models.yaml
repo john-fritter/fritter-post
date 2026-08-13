@@ -169,11 +169,55 @@ editor:
     # paper.
     body_cap: 300
 
-# Unbuilt placeholder — stage not yet implemented; model id is not real.
+# Writers stage. The writer call itself is not built yet — the model id below is
+# still a placeholder — but the fetch sub-stage that feeds it is.
 writers:
   model: gemini-3-flash-preview  # placeholder
   temperature: 0.6
   max_tokens: 2000
+
+  # Article text fetch. Editor run #112's audit is the source of every number
+  # here: 305 underlying articles, 185 of them (61%) under 800 characters of feed
+  # body and 132 under 300, with thinness concentrated by outlet rather than
+  # spread evenly — AP, Al Jazeera, BBC World, NYT and the Oregonian ran 100%
+  # teasers; Meduza, KTVZ, the Bend Bulletin and OPB ran none.
+  fetch:
+    enabled: true
+    # Briefs are one-liners; a headline and a lede is already enough for one.
+    # This is what keeps the fetch at ~139 requests rather than ~230.
+    tiers: [feature, standard]
+    # Only fetch what the feed left short. Matches THIN_CHARS in the materials
+    # audit, so the audit's "thin" count and the fetch worklist are the same set:
+    # roughly a headline plus a lede, which is what the judgment stages read and
+    # what a writer cannot work from.
+    feed_chars_floor: 800
+    # Below this, extraction did not find an article — a paywall, a consent wall,
+    # or a JavaScript shell. The row is marked thin and the assembler falls back
+    # to the feed text. Set above feed_chars_floor on purpose: a fetch that
+    # barely matches the teaser was not worth making.
+    min_extracted_chars: 1200
+    # Hosts fetched in parallel. Each host's own URLs are always sequential with
+    # per_host_delay_ms between them, so this is a fan-out across publishers, not
+    # pressure on any one of them. Run #112's busiest fetchable host held 15
+    # articles, which at 1.5s apart is well under a minute.
+    concurrency: 6
+    per_host_delay_ms: 1500
+    timeout_ms: 20000
+    # A news page above this is nav, ads and tracking, not article text.
+    max_bytes: 5000000
+    # This is the only table holding third-party full text. It exists to write
+    # the paper, is never published, and is swept on this window.
+    retention_days: 14
+    # Leave alone the hosts that keep refusing. NYT and OregonLive answer with a
+    # DataDome device check that the browser identity does not get past, so
+    # re-requesting them daily is 18 pointless requests. Learned from
+    # article_texts rather than configured as a blocklist: a host with no success
+    # in the window and at least min_attempts failures is skipped, and recovers
+    # by itself once those failures age out.
+    cooldown:
+      enabled: true
+      window_days: 7
+      min_attempts: 3
 
 editor_pass_1:
   model: zai-org/glm-5.2:thinking

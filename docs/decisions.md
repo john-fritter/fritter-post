@@ -20,6 +20,95 @@ Entry format:
 
 ---
 
+## 2026-08-13 — Writers stage: the packet is assembled, not authored; article text is fetched for what the feed left short
+
+Three decisions, taken together because the audit that settled the third also
+justified the first two.
+
+### The writer package is deterministic software, not another LLM stage
+
+**Decision:** the writers work from a packet built by a prompt assembler:
+tier → length target and register, `docs/bio.md` → who it is for, a standing
+memo → voice, and the story's own source material, selected and budgeted by
+software. No LLM writes an "angle", a "voice brief", or "editorial notes".
+
+**Context:** `concept.md` carried this as an open question since 2026-06-16 —
+the writer package was going to be produced by the editor's phase 4 from the
+researcher's article ideas, and neither of those exists now. The question was
+whether the editor grows a package step or the writers work from the digest plus
+tier.
+
+**Rationale:** a package step would be a judgment stage with nothing new to
+judge on. The bio-aware judgment already happened twice, in the prefilter and in
+grouping-pass-1, and the editor stopped being a judgment stage for exactly this
+reason (2026-06-16). What is actually missing before a writer can work is not
+judgment but *material*: the article text, deduplicated and fitted to a budget.
+That is software.
+
+### The materials resolver is its own module, and returns text uncapped
+
+**Decision:** `src/pipeline/writers/materials.ts` walks a ranked story to the
+articles underneath it — thread → `thread_members` → cluster →
+`grouping_runs.digest` → `preprocessed_items` — and does nothing else. No
+fetching, no capping, no dedup, no formatting. Text comes back at full length.
+
+**Rationale:** every other stage excerpts at a configured `body_cap` because it
+is about to hand text to a model. This one hands text to the assembler, which
+owns the budget. A cap here would silently halve the assembler's material and
+leave two places to look for why. Keeping the walk pure also makes the
+three-deep thread case testable from fixtures, which it now is.
+
+Degradation is recorded rather than swallowed: a cluster missing from the digest
+leaves the story in place carrying the source count the editor ranked it on,
+plus a note. On editor run #112 the resolver reported no unresolved rows at all,
+and its thread member/source counts reconciled exactly with SQL.
+
+### Fetch only what the feed left short, and leave refusing hosts alone
+
+**Decision:** an article-text fetcher (`article_texts`, migration 034) runs over
+feature and standard stories, requests only articles whose feed body is under
+800 characters, extracts with Readability, and skips hosts that have failed
+repeatedly with no success inside a 7-day window.
+
+**Context:** the audit of editor run #112 measured the paper's 305 underlying
+articles. 185 (61%) carried under 800 characters of body text and 132 under 300
+— a headline and a lede. That is enough for the judgment stages, which read 500
+by design, and not enough to write 400 words from.
+
+The decisive finding is that **thinness is a property of the outlet, not the
+story**: AP, Al Jazeera, SCMP, BBC World, NYT Politics, the Oregonian, Wired,
+Folha and TechCrunch ran 100% thin; Meduza, KTVZ, the Bend Bulletin, La Nación,
+OPB, ProPublica and Street Roots ran 0%. So the policy is per item. On that
+run's numbers it is 139 requests rather than 228, and the busiest host drops
+from 20 articles to 15.
+
+A 15-URL live probe of the thinnest sources found: most publishers serve their
+article HTML to an honest agent; SCMP, Wired, Folha, LA Times and The Diplomat
+show consent or paywall furniture (whether the prose survives extraction is a
+question only the extractor can answer, and `status='thin'` is how it will
+answer it); and **nytimes.com and oregonlive.com refuse with a DataDome device
+check that the browser-agent retry does not get past**. Hence the cooldown —
+learned from `article_texts` rather than configured as a blocklist, so a host
+that lifts a block recovers by itself once its failures age out of the window.
+
+**No whole-document fallback.** When Readability finds no article the row is
+marked `thin` and the assembler falls back to the feed text. Running
+`html-to-text` over a whole news page returns nav, cookie banner and related-
+stories rail, and to a model that is indistinguishable from reporting.
+
+**Retention.** `article_texts` is the only place this project stores other
+people's full text. It exists to write the paper, is never published, and is
+swept on a rolling window by the fetch script.
+
+**Open, and surfaced to the reader:** the AP Top News feed resolves to
+`news.google.com` redirect pages — 20 articles in run #112, the single biggest
+source in the paper, and the busiest host in the fetch scope. Those URLs are
+Google interstitials, not articles, so nothing can be extracted from them. The
+fix is the feed URL in `sources.yaml`, not the fetcher; the cooldown will stop
+requesting them after one run either way.
+
+---
+
 ## 2026-08-12 — Run #51 confirms the scoring work; editor considered done
 
 **Decision:** stop tuning the editor path. The next work is the writers stage.
