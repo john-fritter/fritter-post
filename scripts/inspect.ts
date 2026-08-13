@@ -573,7 +573,13 @@ async function main() {
                     es.thread_id::text AS thread_id,
                     t.thread_index, t.title AS thread_title,
                     t.source_count AS thread_source_count,
-                    es.tier, es.rank, es.reason, pi.title AS resolved_title
+                    es.tier, es.rank, es.reason,
+                    -- The review artifact reads in English. 33+ of run #47's
+                    -- 150 rows were non-Latin-script headlines, which makes the
+                    -- ranked list hard to scan for the one person who has to
+                    -- judge it. Falls back to the original for rows predating
+                    -- migration 028.
+                    COALESCE(NULLIF(pi.english_title, ''), pi.title) AS resolved_title
              FROM editor_stories es
              LEFT JOIN preprocessed_items pi ON pi.id = es.preprocessed_item_id
              LEFT JOIN threads t ON t.id = es.thread_id

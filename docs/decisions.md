@@ -20,6 +20,343 @@ Entry format:
 
 ---
 
+## 2026-08-12 — Run #51 confirms the scoring work; editor considered done
+
+**Decision:** stop tuning the editor path. The next work is the writers stage.
+
+**Context:** run #51/#111 is the first run where every open item from the
+previous three entries came back green, on a full corpus with cross-run dedup
+off.
+
+| | #107 | #109 | #110 | **#111** |
+|---|---|---|---|---|
+| distinct combined scores | 38 | 48 | 41 | **59** |
+| rows in a tie | 127 | 119 | 121 | **115** |
+| largest tie group | 22 | 19 | 31 | **13** |
+| feature/standard boundary | 5-row tie | 4-row tie | 2-row tie | **no tie** |
+| standard/brief boundary | 8-row tie | 12-row tie | 2-row tie | 5-row tie |
+
+- **Off-grid bands worked.** Multiple-of-five occupancy fell from ~88% on both
+  axes to 4.0% (interest) and 8.4% (consequence). The lattice was the whole
+  problem and moving the band edges dissolved it.
+- **The transport retry worked.** Thread #8 formed 8 threads absorbing 35 rows,
+  `failed_calls=0`, in 98s against run #7's 311s failure.
+- **Zero digests in the paper.** The one surviving STAT+ row is a single
+  reported story on nurses and clinical AI, not a newsletter edition — the
+  distinction the rules were written to make.
+- **Every large tie group is tier-local.** Only the 5-row group at 70.00
+  straddles a boundary, split 3 standard / 2 brief by the tie-break.
+- **The feature tier is all multi-source**: 6 threads + 9 clusters, zero
+  singletons. Every piece that will get long-form treatment is corroborated and
+  carries several member articles' worth of source text.
+
+**Rationale:** the remaining defects are variance, not design. Wildfire coverage
+still fragmented across ranks 2, 6 and 18 — run #49's thread call folded the
+same material into one row, so this is the thread pass being less aggressive on
+one draw, not a rule that is wrong. Three pass-1 fail-safes out of 576 rows land
+below the pile cutoff and vanish quietly. Grouping's recovered 429s are trending
+up (30 → 33 → 41) and are worth watching, but terminal failure counters stayed
+at zero across all three runs.
+
+Each of the last three runs spent most of its value correcting a fault in the
+previous change. The metrics are now the best they have been on every axis, and
+further tuning would be chasing variance.
+
+**Open, deferred deliberately:** the wildfire fragmentation, the 429 trend, and
+whether the standard/brief boundary tie is worth eliminating. Revisit if a later
+run shows them getting worse.
+
+---
+
+## 2026-08-12 — Band edges moved off multiples of five; transport failures retried
+
+Run #50/#110 corrections. Two of the three findings are fixes to the previous
+entry's own changes.
+
+### The two-axis change made the score grid coarser, not finer
+
+**Decision:** the axis bands in `editor-pass-1/prompt.ts` move off multiples of
+five (44-50, 34-43, 23-33, 13-22, 6-12, 0-5) and the prompt now says outright
+that round numbers and band edges are a failure to discriminate.
+
+**Context:** run #110 came back with 41 distinct combined scores and 121 of 150
+rows tied — worse than run #109's 48 and 119, and the largest tie group grew
+from 19 rows to 31. The axis histograms explain it: **~88% of both axes landed
+on a multiple of five.** Interest concentrated on 5/10/15/…/45, consequence on
+10/15/…/40. Two multiples of five sum to a multiple of five, so the paper's
+combined scores collapsed onto 65/70/75/80/85.
+
+The cause was my own band definitions. The single-score prompt had bands ending
+at 89, 74, 59, 44, 24, 9 — all off-grid — which pushed the model toward values
+like 57, 62, 72, 79. Rewriting them as 45-50, 35-44, 25-34 handed it a
+five-point lattice to anchor on. The axes were a good idea implemented with
+edges that undid the benefit.
+
+**What this does not change:** the tie *distribution* got worse while the ties
+that matter got better. Every large group in run #110 sat entirely inside one
+tier — 65.00×31 and 70.00×27 are all brief, 80.00×17 and 75.00×17 are all
+standard — and both tier boundaries were 2-row ties, down from 4-row and 12-row
+in run #109. Briefs are one-liners and standards share one treatment, so
+intra-tier order is nearly free; boundary ties are the expensive ones. Judge the
+next run on boundary tie size, not on the headline count.
+
+**Caveat on the comparison:** run #110's thread pass failed (below), so its pile
+carried ~36 extra low-scoring singletons that threading would have absorbed,
+concentrated in exactly the bunched 65–70 range. Neither the headline tie count
+nor the largest-group figure is cleanly comparable to run #109.
+
+### A broken stream killed the thread pass
+
+**Decision:** `callWithBackoff` now retries transport failures — `Stream broke`,
+`ECONNRESET`, `socket hang up`, `premature close`, `fetch failed` — alongside
+429/503. Timeouts remain deliberately un-retried.
+
+**Context:** thread run #7 made one call, lost it to `Stream broke at 311715ms
+after 0 bytes … terminated`, and formed zero threads. `isRateLimitError` did not
+match, so the single call that the whole pass depends on was never retried. The
+resulting paper carried three separate wildfire rows in the top ten (ranks 1, 3,
+10) plus two more at 85 and 89 — exactly the repetition threading exists to
+remove, and the same failure run #43 produced before threading existed.
+
+**Rationale:** a dropped socket says nothing about the request, so re-sending it
+is correct. A timeout is different: the call ran to its configured ceiling and
+will probably do so again, and run #40's lesson was to bound those rather than
+repeat them. The thread pass is the most exposed stage in the pipeline — one
+call, no chunking, whole-pass failure — so it is the one that most needed this.
+
+### The digest defence worked; the report's FAIL was a false alarm
+
+**Decision:** no change to the mechanism. One rule widened: the "curated guide"
+pattern now tolerates a qualifier, and a new pattern catches a newsletter
+announcing itself as an edition.
+
+**Context:** run #50's report recorded `FAIL — digest filter upstream` on two
+observations: five digest items were still present in `preprocessed_items`, and
+no `[junk-filter] DROP … link-dump-digest` line appeared in any stdout. Both are
+consistent with the filter working.
+
+The junk filter runs at *read* time inside `getClusteringItems`, not at write
+time, so `preprocessed_items` always contains everything the preprocessor kept —
+its presence there proves nothing. And `getClusteringItems` applies the
+prefilter first and the junk filter only to survivors, so if the prefilter cut
+an item the junk filter never sees it and logs nothing. Prefilter #30 cut 440
+items against #29's 422. The prompt layer caught them; the deterministic layer
+stood ready and idle.
+
+Replaying all five observed titles through `classifyItem` confirms every one is
+matched by the deterministic rules, so the guarantee holds if the prompt ever
+regresses.
+
+**Two real gaps the run did expose:** the two Just Security editions differed by
+a single word — "a curated guide to" versus "a curated **weekday** guide to" —
+and the original pattern would have caught one and missed the other. And STAT's
+"This is the online version of STAT's weekly email newsletter Health Care Inc."
+is a genuine newsletter edition that survived every rule. Both are now covered,
+with the near-misses pinned in tests.
+
+**Not changed:** "5 things to know before Wednesday's vote on Moda Center
+negotiations", flagged as a manual watch item, is listicle-shaped but is one
+story about one vote. Cutting it would be the over-cutting failure the rules are
+written to avoid, and there is now a test asserting it survives.
+
+---
+
+## 2026-08-11 — Pass-1 scores two axes; digests cut deterministically
+
+Both changes come from run #49/#109 — the first full-corpus run after the
+excerpt fix, and the first one whose numbers were trustworthy.
+
+### The tie storm was arithmetic, not information
+
+**Decision:** grouping-pass-1 emits `id;;interest;;consequence;;reason`, two
+independent 0–50 axes that software sums into the same 0–100 `score`. Both are
+persisted (migration 033). Nothing downstream changes: the pile cutoff, the
+editor formula, and a thread's `max(member score)` all read `score` as before.
+
+**Context:** The excerpt fix worked on its own terms — pass-1 singletons went
+from a 50-character body to 1000 and started using 43 distinct scores including
+off-round values (57, 61, 63, 64, 66, 67, 76, 79) that had never appeared. But
+the editor barely moved: 38 → 48 distinct combined scores, 127 → 119 tied rows.
+
+Splitting the tie groups by whether the combined value was an integer explained
+why. **115 of the 119 tied rows were singletons tied at an integer.** A
+singleton has one source, so the editor adds `source_weight * ln(1) = 0` and
+`combined == score` exactly; two singletons with the same integer score are
+precisely tied, forever. The other 4 rows were two accidental cluster
+collisions: `58 + 9·ln(5)` and `60 + 9·ln(4)` both equal 72.48, and a thread and
+a cluster both scoring 65 across 6 sources both equal 81.13.
+
+With ~119 singletons landing in an effective band of 57–88 — 32 integers —
+pigeonhole puts at least 87 of them in a tie however good the scorer is. We
+observed 115, so there was scorer headroom, but the ceiling was ~73% ties.
+
+**Rationale:** Make the score finer rather than patch the formula. The prompt
+already said the score "blends two things: how much this reader cares about the
+subject AND how much actually happened" — the two axes were there conceptually
+and were being collapsed inside the model, where they bunched onto round
+attractors. Asking for both and summing in software spreads the distribution at
+no extra call or token cost, and keeps the 0–100 scale every consumer expects.
+
+**Alternatives considered:** A fractional tiebreak term in the editor formula
+(recency, body length) — rejected as arbitrary, and it would launder a scoring
+problem into the ranking arithmetic. A 0–1000 scale — rejected because models
+bunch on round numbers at any scale; 550 and 580 would replace 55 and 58.
+Accepting the ties and leaning on the LLM tie-break — it does work (two runs,
+zero omitted refs) but costs 538s at `xhigh` and leaves tier boundaries decided
+by a call rather than by the score.
+
+**What to check next run:** distinct combined scores, largest tie group, and
+whether ranks 15/16 and 75/76 still share a value. Also worth querying
+`interest`/`consequence` separately now that they are stored — if one axis is
+bunchy and the other is not, the prompt's bands for that axis are the next
+lever.
+
+### Link dumps are cut by pattern, not by prompt
+
+**Decision:** `junk-filter.ts` gains three high-precision link-dump rules
+(date-only titles, digest mastheads anchored to a separator, digest boilerplate
+in the first 600 characters of the body). The prefilter prompt gains a
+shape-based digest section, and the pass-1 consequence axis scores digests 0–4.
+
+**Context:** Run #109 published Just Security's "Early Edition: August 10, 2026"
+at **rank 9, in the feature tier**, with the joint-highest singleton score in
+the paper (88). "Early Edition: August 11" was at rank 17 and a bare
+"August 10, 2026" at rank 93.
+
+This was a regression introduced by raising `prefilter.body_cap` from 50 to 500.
+A roundup's body is a dense list of exactly the topics this reader cares about —
+the captured prompt shows `"IRAN WAR / The secretary of Iran's Supreme National
+Security Council..."` — so feeding the scorer more of it made the item look
+*more* relevant, not less. The fix that improved every other item made this
+class worse.
+
+**Rationale:** The prefilter prompt has said "cut link-dump roundups" since it
+was written and did not catch these, so a stronger sentence is not a guarantee.
+`getClusteringItems` is the sole path into both grouping and pass-1, so a rule
+there cannot be routed around: a matched item reaches the pile as neither a
+cluster member nor a singleton. The prompt changes remain as a second line for
+digests whose wording we have not seen.
+
+The consequence axis is the principled version of the same judgment. High
+interest is the *correct* reading of a roundup; what makes it worthless is that
+nothing happened in the item itself. One number could not say that, which is
+part of why the single-score prompt kept scoring them high.
+
+**Risk accepted:** deterministic title rules can over-cut. Each pattern is drawn
+from an observed run #109 row rather than written speculatively, mastheads must
+be followed by a separator so "The download problem" survives, and
+`tests/junk-filter.test.ts` pins both the cuts and the near-misses that must
+survive — headlines containing dates, articles mentioning newsletters, and
+title-only wire rows.
+
+---
+
+## 2026-08-11 — Judgment stages read English; every text cap moved to config
+
+Three changes from run #47/#107, all of them things the run made visible for
+the first time now that the pipeline is stable enough to read its own output.
+
+### Singleton scoring ran on 50 characters
+
+**Decision:** `prefilter.body_cap` (500) and `editor_pass_1.body_cap` (1000)
+replace a hardcoded `slice(0, 50)` in both stages. `editor_pass_1.summary_cap`,
+`thread.summary_cap`, and `editor.tie_break.body_cap` replace hardcoded 300s in
+the same family. All five are required fields in the Zod schema — a stage that
+shows an LLM text now has to say how much.
+
+**Context:** `prefilter/index.ts` and `editor-pass-1/index.ts` both built their
+batch payload with `body_excerpt: (item.body_text ?? "").slice(0, 50)`. Fifty
+characters is about eight words. So the bio-aware relevance floor sorted run
+#47's 1,206 items into cut/news/opinion on a headline plus half a lede, and
+grouping-pass-1 scored all 423 singletons the same way — while scoring
+*clusters* on a full describe-pass summary.
+
+That asymmetry showed up in the editor output as a tie storm. Run #107's 150
+published rows carried only 38 distinct combined scores. **127 of the 150 sat
+in a tie group**, the largest holding 22 items. Both tier boundaries fell
+inside a tie: ranks 15 and 16 were both `combined=78.00`, ranks 75 and 76 both
+`combined=65.00`. So whether a story ran as a feature was decided by the
+tie-break LLM — and for the group where that call dropped 14 refs, by
+`ref.localeCompare`, i.e. alphabetical order of `S46263`-style ids.
+
+**Rationale:** The editor is advertised as a deterministic formula with an LLM
+tie-break at the margins. At 85% ties it was an LLM ranker with a deterministic
+prelude, which is the thing the 2026-06-16 entry deliberately replaced. The
+formula can only separate rows if its relevance input can, and a scorer with
+eight words of body has nothing to separate them *with*, so it falls back to
+coarse title-shaped buckets. Feeding the scorer an opening paragraph is the
+cheap fix to try before touching the formula, the weights, or the tie-break.
+
+Pass-1 gets twice prefilter's budget on purpose: it makes the finer judgment
+(0–100 vs keep/cut) over a third as many items, so the better-fed stage is also
+the cheaper one. Expect prefilter input tokens ~99k → ~250k.
+
+**What to check next run:** the distinct-combined-score count and the size of
+the largest tie group. If ties stay this dense with a full paragraph in hand,
+the input was not the constraint and the next lever is the scoring bands in
+`editor-pass-1/prompt.ts`.
+
+### Only grouping was reading the translations
+
+**Decision:** prefilter, grouping-pass-1, thread, and the editor tie-break now
+select text through `src/lib/text.ts` — `englishTitle` / `englishBodyExcerpt`,
+preferring `english_*` and falling back to the original columns. `inspect --
+editor` displays English titles too.
+
+**Context:** The 2026-06-17 entry introduced per-item translation and said
+"all other stages (display, scoring, the editor, the paper) continue to read
+the original title and body." That was written when the translation existed
+only to put clustering in one embedding space. Since then three more bio-aware
+LLM stages were built, and every one of them inherited the original-language
+default without anyone deciding it. Run #47 published 33+ non-Latin-script rows
+— Russian, Chinese, Korean — each of which had been through the prefilter, the
+scorer, the thread pass, and a tie-break call in its original script, with a
+translation sitting unread in the next column.
+
+**Rationale:** The translation is already bought and paid for: 341 calls and a
+good share of the preprocessor's 279s on this run. Reading it costs nothing.
+The cost of *not* reading it is invisible by construction — a model that
+half-understands a Russian headline still returns a confident integer, so the
+damage looks exactly like a low-relevance story.
+
+The display change is narrower: `inspect -- editor` is the artifact a person
+reads to judge a run, and a third of it was unreadable. This does not decide
+what headline the *paper* shows — the writers stage produces that.
+
+**Supersedes:** the "all other stages read the original" clause of 2026-06-17,
+for judgment stages and for the editor inspection view. The original columns
+remain the source of truth for lineage and for anything reader-facing that the
+writers stage does not itself rewrite.
+
+### 403 is a bot rule, not a refusal
+
+**Decision:** `fetch-feed.ts` retries a 403 once with a browser UA and logs the
+source when that succeeds. Only 403 — 404/410/5xx are not retried.
+
+**Context:** Run #47 lost five of 111 sources: The Baffler, TechCrunch, and
+Inside Climate News to 403, Mail & Guardian to 404, Labor Notes to an XML parse
+error. Seven more succeeded with zero items, including all three Reuters feeds.
+The three 403s are publishers who serve the same feed to any browser.
+
+**Rationale:** The honest UA is the right default and works for 106 sources;
+escalating only after a refusal keeps it that way while costing one extra
+request on the few sources that need it. The log line names them so
+`sources.yaml` can record which sources are in that set.
+
+Not fixed here, and still open: Mail & Guardian's 404 needs a new feed URL, and
+the three Reuters feeds are Google News proxies returning nothing — which
+matters more than it looks, because `sources` is half the editor formula and a
+silently-empty wire suppresses cross-source pickup for real stories. Labor
+Notes now logs the markup around the parse error so the next run says what is
+actually malformed.
+
+**Verification gap:** these were written against the reported status codes, not
+against a reproduction — the development environment's network policy blocks
+those hosts outright, so the UA retry is untested against the real publishers
+and needs confirming on the next production collect.
+
+---
+
 ## 2026-08-09 — Thread budget exhaustion; split floor raised to catch 4-item chains
 
 Two changes from run #40/#105, the first run with per-component cohesion logged.

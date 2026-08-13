@@ -119,6 +119,18 @@ feeds decoded as UTF-8 and published mojibake. `collector/charset.ts` resolves
 header → XML declaration → UTF-8, and retries when the decode produces U+FFFD.
 See `docs/decisions.md`, 2026-07-28.
 
+**403 means "not to you", so we ask again as a browser.** Every feed is fetched
+first with the honest `FritterPost/0.1` UA. On a 403 — and only a 403 — the
+fetch retries once with a browser UA and logs the source if that works. Run #47
+lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
+serve the same feed to any browser. 404/410/5xx are never retried: those mean
+the feed is actually gone or broken, and a second request buys nothing.
+
+**Parse failures log their neighbourhood.** A malformed feed throws a sax error
+naming a line and column but not the markup, and by the time anyone reads the
+log the feed body is gone. `parseFeedText` prints the surrounding lines before
+rethrowing (run #47: Labor Notes, "Unexpected close tag, Line 64").
+
 ### preprocessor
 URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
 pattern rules in `junk-filter.ts`), track/group assignment from source config.
@@ -126,12 +138,27 @@ Writes `preprocessed_items`. The assembler (`assembler.ts`) queries the kept set
 for downstream stages, composing prefilter and junk-filter results by
 simple set intersection.
 
+**The junk filter is the hard gate, and it is the only one.** `getClusteringItems`
+is the sole path into both grouping and grouping-pass-1, so an item it drops
+cannot reach the pile as a cluster member or as a singleton. That is why the
+link-dump rules live there rather than in a prompt: the prefilter prompt had
+said "cut link-dump roundups" since it was written and still let Just
+Security's daily "Early Edition" reach the feature tier in run #109. Rules are
+high-precision and evidence-driven — extend them from audit logs, never
+speculatively, and add a `tests/junk-filter.test.ts` case for both the cut and
+the near-miss that must survive.
+
 ### prefilter
 Bio-aware relevance floor between the preprocessor and the clusterer. Batched,
 concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
 - `cut` — obvious noise this reader has no interest in (routine sports scores,
   celebrity tabloid, market-movement wire filler) plus non-article material
-  (event calendars, horoscopes, photo galleries, house ads, link-dump roundups)
+  (event calendars, horoscopes, photo galleries, house ads) and **every digest**
+  — roundups, link dumps, newsletter editions, date-only titles. A digest is
+  judged on shape, not topic: its body lists many unrelated stories, so it reads
+  as more relevant than any single article. That density is the tell. The
+  deterministic junk filter is the actual guarantee here; the prompt is the
+  second line.
 - `news` — flows into clustering (grouping) and grouping-pass-1 scoring
 - `opinion` — kept but routed out of clustering; pools with `track=analysis`
   items for a future Longer Reads section
@@ -139,7 +166,7 @@ Conservative bias: when unsure, keep as `news`; a low-interest topic becomes a
 keep the moment it carries a substantive angle, and substantive foreign
 coverage clears the floor regardless of an obvious reader tie. Reads
 `docs/bio.md`. Absorbs the junk-removal job that the former standalone LLM
-`filter` stage handled.
+`filter` stage handled. Reads English text, capped at `prefilter.body_cap`.
 
 ### grouping
 The clustering stage. Embedding-based, running on the kept `news` items. Four
@@ -198,8 +225,23 @@ Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
 supplies its model and prompt). Two functions:
 
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
-clusters and singletons on the same scale. Clusters are scored on their
-describe-pass title + summary; singletons on their title + body excerpt.
+clusters and singletons on the same scale. **The model emits two axes, not one**
+(`id;;interest;;consequence;;reason`, each 0–50); software sums them into
+`score`, and both axes are persisted (migration 033). One integer collapsed the
+distribution onto round attractors — 55, 58, 60, 62, 65, 68, 70, 72 — and since
+a singleton's editor lift is `ln(1) = 0`, its combined score *is* its relevance
+score, so equal integers are exact ties. Run #109 put 115 of 119 tied rows in
+that shape. Two axes also give the pipeline its principled defence against
+digests: a link roundup is legitimately high **interest** and near-zero
+**consequence**, which one number could not express. See `docs/decisions.md`,
+2026-08-11.
+Clusters are scored on their
+describe-pass title + summary (capped at `editor_pass_1.summary_cap`);
+singletons on their English title + body excerpt (capped at
+`editor_pass_1.body_cap`). Those two caps are the stage's quality lever: when
+they are far apart the scorer has real material for clusters and a bare
+headline for singletons, and singleton scores collapse onto a handful of
+values — see `docs/decisions.md`, 2026-08-11.
 Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
@@ -307,6 +349,21 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
   `OPENROUTER_API_KEY` (currently used for embeddings only). After changing
   any of these env vars, recreate the app container before running via
   `docker compose exec`.
+- **Judgment stages read English; text caps are config.** Every stage that asks
+  an LLM to judge an item — prefilter, grouping-pass-1, thread, the editor
+  tie-break — selects text through `src/lib/text.ts` (`englishTitle`,
+  `englishBodyExcerpt`), which prefers the preprocessor's `english_*`
+  translation and falls back to the original. Grouping already did this for
+  embeddings; the other four did not, so run #47 scored 33+ non-Latin-script
+  rows in their original scripts. Never `slice()` a body inline: the cap is a
+  named field in `models.yaml` (`body_cap` / `summary_cap`), because it is the
+  single biggest lever on what a judgment stage actually knows. A `body_cap`
+  above 2000 is meaningless for non-English items — see the ceiling note in
+  `src/lib/text.ts`.
+- **Pass the whole stage config to `callLLM`.** `provider`, `timeout_ms`, and
+  `stream` are easy to leave off, and the call still works — on the default
+  provider and the default 360s timeout, silently disagreeing with
+  `models.yaml`. Prefilter did exactly that until 2026-08-11.
 - **Structured outputs preferred** over freeform parsing wherever the schema
   is knowable. Use JSON mode or tool-call shapes when the consumer is
   software; freeform text only when the consumer is the reader.
@@ -315,9 +372,15 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
 - **No SDK-level retries.** `callLLM` sets `maxRetries: 0` on the OpenAI
   client. The SDK's default silent retries masked a 903s hang on one run.
   Retry logic lives in application code, not in the HTTP layer.
-- **429/503 backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
+- **Retry backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
   `callLLM` thunk with exponential backoff and jitter, honoring a
-  `Retry-After` hint when the provider sends one. Configured per-stage via
+  `Retry-After` hint when the provider sends one. It retries two classes —
+  rate limits (429/503) and transport failures where the connection died
+  mid-flight (`Stream broke`, `ECONNRESET`, `socket hang up`, …). It
+  deliberately does **not** retry timeouts: a call that ran to its configured
+  ceiling will likely do it again, and the run #40 lesson was to bound those.
+  Run #50's thread pass lost its single call to a broken stream and produced
+  zero threads, which put three separate wildfire rows in the top ten. Configured per-stage via
   optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
   translation, prefilter, and grouping (attach + describe).
   **Any new batched, concurrent stage needs it.** The failure mode is
@@ -387,7 +450,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **033**.
+number is ambiguous. The next migration is **034**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

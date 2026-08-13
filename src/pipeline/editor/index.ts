@@ -6,6 +6,7 @@ import { getPool } from "../../db/index.js";
 import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { normalizeRef } from "../../lib/refs.js";
+import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
@@ -42,7 +43,7 @@ interface EditorPileItem {
   bodyText: string;    // cluster/thread summary or singleton body excerpt, for tie-break prompt
 }
 
-const BODY_CAP = 300;
+// Text caps come from editor.tie_break.body_cap in models.yaml.
 
 /**
  * combined = relevance + W * ln(sources)
@@ -239,8 +240,17 @@ export async function runEditor(
   }));
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
-  // 4. Load in-pile items. Singleton query joins preprocessed_items for title
-  //    and body_text — both are needed for the tie-break prompt.
+  // 4. Load formula config. Needed before the item list is built because the
+  //    tie-break text cap comes from it.
+  const { editor: cfg } = loadModelConfig();
+  const W = cfg.source_weight;
+  const featureCount = cfg.tiers.feature;
+  const standardCount = cfg.tiers.standard;
+  const bodyCap = cfg.tie_break.body_cap;
+
+  // 5. Load in-pile items. The singleton query joins preprocessed_items for the
+  //    title and body the tie-break prompt needs, in both the original and the
+  //    preprocessor's English translation.
   const { rows: clusterPileRows } = await pool.query<{
     cluster_index: number;
     score: number;
@@ -255,15 +265,18 @@ export async function runEditor(
     score: number;
     title: string;
     body_text: string | null;
+    english_title: string | null;
+    english_body: string | null;
   }>(
-    `SELECT epi.preprocessed_item_id, epi.score, pi.title, pi.body_text
+    `SELECT epi.preprocessed_item_id, epi.score, pi.title, pi.body_text,
+            pi.english_title, pi.english_body
      FROM editor_pile_items epi
      JOIN preprocessed_items pi ON pi.id = epi.preprocessed_item_id
      WHERE epi.pile_id = $1 AND epi.item_type = 'singleton' AND epi.in_pile = true`,
     [pileId],
   );
 
-  // 5. Build combined item list.
+  // 6. Build combined item list.
   const clusterItems: EditorPileItem[] = clusterPileRows
     .map((row): EditorPileItem | null => {
       const detail = clusterByIndex.get(row.cluster_index);
@@ -282,11 +295,14 @@ export async function runEditor(
         score: row.score,
         sourceCount: detail.itemCount,
         title: detail.title,
-        bodyText: detail.summary.slice(0, BODY_CAP),
+        bodyText: excerpt(detail.summary, bodyCap),
       };
     })
     .filter((c): c is EditorPileItem => c !== null);
 
+  // The tie-break is a bio-aware judgment, so it reads the English translation
+  // where the preprocessor made one. Run #47 asked this call to rank Russian
+  // and Chinese headlines against English ones in their original scripts.
   const singletonItems: EditorPileItem[] = singletonPileRows.map((row) => ({
     ref: `S${row.preprocessed_item_id}`,
     itemType: "singleton" as const,
@@ -295,8 +311,8 @@ export async function runEditor(
     threadId: null,
     score: row.score,
     sourceCount: 1,
-    title: row.title,
-    bodyText: (row.body_text ?? "").slice(0, BODY_CAP),
+    title: englishTitle(row),
+    bodyText: englishBodyExcerpt(row, bodyCap),
   }));
 
   // Threads carry their own title, summary, score and source count — the thread
@@ -326,7 +342,7 @@ export async function runEditor(
     score: row.score,
     sourceCount: row.source_count,
     title: row.title,
-    bodyText: (row.summary ?? "").slice(0, BODY_CAP),
+    bodyText: excerpt(row.summary, bodyCap),
   }));
 
   const pileItems: EditorPileItem[] = [...threadItems, ...clusterItems, ...singletonItems];
@@ -334,12 +350,6 @@ export async function runEditor(
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
   }
-
-  // 6. Load formula config.
-  const { editor: cfg } = loadModelConfig();
-  const W = cfg.source_weight;
-  const featureCount = cfg.tiers.feature;
-  const standardCount = cfg.tiers.standard;
 
   // 7. Compute combined scores and identify tied groups (2+ items with the
   //    same combined score).

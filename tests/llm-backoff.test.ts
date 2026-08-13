@@ -125,6 +125,66 @@ async function testHonorsRetryAfterHint() {
   );
 }
 
+async function testRetriesBrokenStream() {
+  // The exact message that killed run #50's thread pass. A dropped connection
+  // says nothing about the request, so it must be re-sent.
+  let calls = 0;
+  const result = await callWithBackoff(
+    async () => {
+      calls++;
+      if (calls === 1) {
+        throw new Error(
+          "LLM call failed: Stream broke at 311715ms after 0 bytes — stage=thread model=zai-org/glm-5.2:thinking: terminated",
+        );
+      }
+      return "ok";
+    },
+    { retry_max_attempts: 3, retry_base_ms: 1 },
+    "test",
+  );
+  assert.equal(result, "ok");
+  assert.equal(calls, 2);
+}
+
+async function testRecognizesTransportVariants() {
+  for (const msg of [
+    "socket hang up",
+    "read ECONNRESET",
+    "Premature close",
+    "TypeError: fetch failed",
+    "connection reset by peer",
+  ]) {
+    let calls = 0;
+    await callWithBackoff(
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error(msg);
+        return "ok";
+      },
+      { retry_max_attempts: 2, retry_base_ms: 1 },
+      "test",
+    );
+    assert.equal(calls, 2, `expected retry for transport error: ${msg}`);
+  }
+}
+
+async function testTimeoutIsNotRetried() {
+  // Deliberate: a call that ran to its configured ceiling will probably do it
+  // again, and the run #40 lesson was to bound those rather than repeat them.
+  let calls = 0;
+  await assert.rejects(() =>
+    callWithBackoff(
+      async () => {
+        calls++;
+        throw new Error("Request timed out.");
+      },
+      { retry_max_attempts: 3, retry_base_ms: 1 },
+      "test",
+    ),
+  );
+  assert.equal(calls, 1);
+}
+
 async function main() {
   await testSucceedsFirstTry();
   await testRetriesRateLimitThenSucceeds();
@@ -132,6 +192,9 @@ async function main() {
   await testNonRateLimitErrorIsNotRetried();
   await testRecognizesRateLimitVariants();
   await testHonorsRetryAfterHint();
+  await testRetriesBrokenStream();
+  await testRecognizesTransportVariants();
+  await testTimeoutIsNotRetried();
   console.log("llm backoff tests passed");
 }
 

@@ -46,12 +46,21 @@ const StageConfigSchema = z.object({
 const BatchStageConfigSchema = StageConfigSchema.extend({
   batch_size: z.number().int(),
   concurrency: z.number().int(),
+  // Characters of item body shown to the model per item. Not optional: this is
+  // the knob that decides how much a per-item judgment stage actually knows,
+  // and leaving it implicit is how prefilter and grouping-pass-1 spent months
+  // judging items on 50 characters.
+  body_cap: z.number().int().nonnegative(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
 });
 
 const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
+  // Characters of cluster describe-summary shown when scoring a cluster.
+  // Separate from body_cap: a cluster's summary is already distilled, a
+  // singleton's body is raw article text, and they want different budgets.
+  summary_cap: z.number().int().nonnegative(),
 });
 
 const EditorTieBreakConfigSchema = z.object({
@@ -63,6 +72,8 @@ const EditorTieBreakConfigSchema = z.object({
   reasoning_effort: z.string().optional(),
   stream: z.boolean().optional(),
   timeout_ms: z.number().int().optional(),
+  // Characters of body/summary shown per item in a tie-break group.
+  body_cap: z.number().int().nonnegative(),
 });
 
 const EditorStageConfigSchema = z.object({
@@ -149,6 +160,9 @@ const ThreadStageConfigSchema = StageConfigSchema.extend({
   // Top-scoring grouping-pass-1 rows offered to the pass. Bounded by what one
   // LLM call can hold, not by cost — see runThreading on why it is one call.
   candidate_target: z.number().int(),
+  // Characters of cluster summary / singleton body shown per candidate. One
+  // call holds the whole candidate set, so this multiplies by candidate_target.
+  summary_cap: z.number().int().nonnegative(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
 });
