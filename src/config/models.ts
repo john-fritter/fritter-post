@@ -201,12 +201,16 @@ const WritersTierPacketConfigSchema = z.object({
   // a 12-member thread shows every member instead of three at full length.
   floor_chars: z.number().int().nonnegative(),
   target_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  // Judged per tier: the same 1,000 characters is thin for a feature and
+  // adequate for a standard piece.
+  thin_material_chars: z.number().int().nonnegative(),
+  full_material_chars: z.number().int().nonnegative(),
 });
 
 const WritersPacketConfigSchema = z.object({
   min_dedup_paragraph_chars: z.number().int().nonnegative(),
-  thin_material_chars: z.number().int().nonnegative(),
-  full_material_chars: z.number().int().nonnegative(),
+  // Sources with less usable text than this are left out of the packet.
+  min_article_chars: z.number().int().nonnegative(),
   tiers: z.object({
     feature: WritersTierPacketConfigSchema,
     standard: WritersTierPacketConfigSchema,

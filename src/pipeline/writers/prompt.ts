@@ -83,12 +83,23 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   );
   if (packet.summary.length > 0) {
     parts.push(`What upstream clustering called it: ${packet.title} — ${packet.summary}`);
+    // The label is generated from every article in the cluster, including the
+    // ones the budget left out, so it routinely names events the sources below
+    // do not cover. Run #112's T3 summary listed a refinery strike, an
+    // assassination, a body exchange and a border-control change; the twelve
+    // included sources supported some of that and not the rest. A writer who
+    // treats the label as reporting will write unsupported claims in the
+    // paper's own voice, which is the one failure mode nothing downstream can
+    // catch.
+    parts.push(
+      "That title and summary are machine-generated labels used for ranking. They are " +
+        "NOT source material and NOT evidence: they may name events no source below " +
+        "reports. Write your own headline, and take every fact from the sources.",
+    );
   } else {
     parts.push(`Working title from the source: ${packet.title}`);
+    parts.push("That title is the source's own. Write your own headline.");
   }
-  parts.push(
-    "That title and summary are machine-generated labels for ranking. Write your own headline.",
-  );
 
   if (packet.notes.length > 0) {
     parts.push("", "NOTES ON THE MATERIAL");

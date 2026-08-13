@@ -365,11 +365,26 @@ distributing the remainder, so a 12-member thread shows every member rather than
 three sources at full length, and trimming lands on a paragraph or sentence
 boundary. Config is `writers.packet.*`.
 
-A packet records what it could not supply: `materialLevel` is measured on
-available material rather than the trimmed total, and a headline-only story
-carries a note telling the writer to write short and invent nothing. Voice comes
-from `docs/voice.md` (the standing memo), read like `docs/bio.md` with a
-fallback.
+**`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
+Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
+"appeared first on" footer, a `READ ALSO` list or Le Monde's live-blog comment box
+are not sentences. Rules are whole-paragraph, high-precision, and each names the
+run and source it came from; `tests/writer-boilerplate.test.ts` pins both the cut
+and the near-miss prose that must survive. Sources whose body only repeats the
+headline (`isHeadlineEcho` — the Google News shape) lose their packet slot, but a
+packet is never emptied.
+
+A packet records what it could not supply: `materialLevel` is judged against the
+tier's own thresholds — the same 1,000 characters is thin for a feature and
+adequate for a standard piece — and a headline-only story carries a note telling
+the writer to write short and invent nothing. Voice comes from `docs/voice.md`
+(the standing memo), read like `docs/bio.md` with a fallback.
+
+**The cluster label is not evidence and the prompt says so.** A describe-pass
+title and summary are generated from every article in the cluster, including the
+ones the budget left out, so they routinely name events no included source
+reports. A writer treating the label as reporting produces unsupported claims in
+the paper's own voice — the one failure nothing downstream can catch.
 
 **`article_texts` (migration 034) is the only table holding third-party full
 text.** It exists to write the paper, is never published — "curate, don't

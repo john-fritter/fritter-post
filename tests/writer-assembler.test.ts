@@ -22,8 +22,7 @@ import type { WritersPacketConfig } from "../src/config/models.js";
 
 const CFG: WritersPacketConfig = {
   min_dedup_paragraph_chars: 120,
-  thin_material_chars: 1200,
-  full_material_chars: 6000,
+  min_article_chars: 60,
   tiers: {
     feature: {
       max_articles: 12,
@@ -31,6 +30,8 @@ const CFG: WritersPacketConfig = {
       per_article_chars: 6000,
       floor_chars: 800,
       target_words: [400, 600],
+      thin_material_chars: 3000,
+      full_material_chars: 12000,
     },
     standard: {
       max_articles: 6,
@@ -38,6 +39,8 @@ const CFG: WritersPacketConfig = {
       per_article_chars: 3000,
       floor_chars: 500,
       target_words: [120, 200],
+      thin_material_chars: 900,
+      full_material_chars: 3000,
     },
     brief: {
       max_articles: 3,
@@ -45,6 +48,8 @@ const CFG: WritersPacketConfig = {
       per_article_chars: 1200,
       floor_chars: 400,
       target_words: [25, 45],
+      thin_material_chars: 300,
+      full_material_chars: 900,
     },
   },
 };
@@ -240,8 +245,10 @@ function testBlockedSourcesProduceAHeadlineOnlyPacketThatSaysSo() {
 }
 
 function testFullMaterialCarriesNoWarning() {
+  // Feature tier wants 12,000 characters before it calls material full — a
+  // 400–600 word piece with room for a second and third source.
   const texts = new Map<number, ResolvedText>([
-    [1, { text: "z".repeat(8000), origin: "fetched" }],
+    [1, { text: "z".repeat(14000), origin: "fetched" }],
   ]);
   const packet = assembleWriterPacket(story("feature", [article(1, { chars: 200 })]), texts, CFG);
   assert.equal(packet.materialLevel, "full");
@@ -256,6 +263,64 @@ function testPacketKeepsTheEditorsSourceCountNotTheArticleCount() {
   assert.equal(packet.sourceCount, 27);
   assert.equal(packet.articles.length, 12);
   assert.equal(packet.omitted.length, 15);
+}
+
+function testHeadlineEchoStubsAreLeftOut() {
+  // The Google News stub from run #112 rank 3, next to a short but real summary.
+  const stub = article(1, {
+    title: "Poland says it thwarted a Russian plot to kill an American citizen in Warsaw - apnews.com",
+    feedText:
+      "Poland says it thwarted a Russian plot to kill an American citizen in Warsaw  apnews.com",
+    feedTextChars: 87,
+  });
+  const real = article(2, {
+    title: "Ukraine attacks key Russian grain terminal on Black Sea port",
+    feedText:
+      "Ukraine has damaged Russia’s grain export terminals in an attack on the Novorossiysk port.",
+    feedTextChars: 89,
+  });
+  const packet = assembleWriterPacket(story("feature", [stub, real]), new Map(), CFG);
+  assert.deepEqual(
+    packet.articles.map((a) => a.preprocessedItemId),
+    [2],
+  );
+  assert.match(packet.omitted[0]!.reason, /repeats the headline/);
+}
+
+function testAPacketIsNeverEmptied() {
+  // Every source a stub: the best one stays rather than handing a writer nothing.
+  const stub = article(1, {
+    title: "Something happened somewhere today",
+    feedText: "Something happened somewhere today",
+    feedTextChars: 34,
+  });
+  const packet = assembleWriterPacket(story("brief", [stub]), new Map(), CFG);
+  assert.equal(packet.articles.length, 1);
+  assert.equal(packet.materialLevel, "headline-only");
+}
+
+function testPublisherFurnitureNeverReachesThePacket() {
+  const body = [
+    "A bomb attack in Crimea killed a former Ukrainian submarine commander.",
+    "The-CNN-Wire",
+    "\u2122 & \u00a9 2026 Cable News Network, Inc., a Warner Bros. Discovery Company. All rights reserved.",
+    "The post Crimea bomb attack reportedly kills former commander appeared first on KTVZ.",
+  ].join("\n\n");
+  const withDebris = article(1, { feedText: body, feedTextChars: body.length });
+  const packet = assembleWriterPacket(story("standard", [withDebris]), new Map(), CFG);
+  assert.ok(packet.articles[0]!.text.includes("submarine commander"));
+  assert.ok(!/CNN-Wire|All rights reserved|appeared first on/.test(packet.articles[0]!.text));
+  assert.equal(packet.articles[0]!.boilerplateParagraphs, 3);
+}
+
+function testMaterialLevelIsJudgedPerTier() {
+  // The Guardian standard story from run #112: ~1,000 characters of teaser is
+  // thin for a feature and adequate for a 120–200 word standard piece.
+  const guardian = article(1, { chars: 1000 });
+  const asStandard = assembleWriterPacket(story("standard", [guardian]), new Map(), CFG);
+  const asFeature = assembleWriterPacket(story("feature", [guardian]), new Map(), CFG);
+  assert.equal(asStandard.materialLevel, "partial");
+  assert.equal(asFeature.materialLevel, "headline-only");
 }
 
 function testUntranslatedSourceIsFlaggedToTheWriter() {
@@ -300,8 +365,11 @@ function testUserPromptCarriesBioMaterialAndSources() {
   assert.ok(prompt.includes("400–600 words"));
   assert.ok(prompt.includes("rank 3"));
   assert.ok(prompt.includes("Sources behind this story: 27"));
-  // The upstream title is a machine label, and the prompt says so.
+  // The upstream title is a machine label, and the prompt says so — including
+  // that it is not evidence, because a cluster label routinely names events the
+  // included sources do not cover.
   assert.ok(/Write your own headline/.test(prompt));
+  assert.ok(/NOT source material and NOT evidence/.test(prompt));
 }
 
 function testSystemPromptCarriesTheVoiceDocument() {
@@ -345,6 +413,10 @@ testFetchedTextIsPreferredButNeverShorterThanTheFeed();
 testBlockedSourcesProduceAHeadlineOnlyPacketThatSaysSo();
 testFullMaterialCarriesNoWarning();
 testPacketKeepsTheEditorsSourceCountNotTheArticleCount();
+testHeadlineEchoStubsAreLeftOut();
+testAPacketIsNeverEmptied();
+testPublisherFurnitureNeverReachesThePacket();
+testMaterialLevelIsJudgedPerTier();
 testUntranslatedSourceIsFlaggedToTheWriter();
 testUnresolvedSourcesAreDisclosed();
 testBriefTierStaysSmall();

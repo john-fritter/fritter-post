@@ -235,29 +235,38 @@ writers:
     # across outlets is not the redundancy we are removing, and cutting it would
     # reshape a lede.
     min_dedup_paragraph_chars: 120
-    # Material thresholds, measured on the assembled packet. Below thin, the
-    # piece is written to the short end of its target and told to say only what
-    # the sources say — the honest handling of a story whose publishers all
-    # blocked us. Run #112 had nine such articles across two hosts.
-    thin_material_chars: 1200
-    full_material_chars: 6000
+    # Floor for a body to be worth a packet slot at all, after furniture removal.
+    # Deliberately low: run #112's Al Jazeera summary was 89 characters and
+    # carried a real fact, while the Google News stub next to it was the headline
+    # repeated. Length catches the empties; the headline-echo rule in
+    # boilerplate.ts catches the stubs. Never empties a packet — if every source
+    # is a stub, the best one stays.
+    min_article_chars: 60
     tiers:
       # 48k chars is roughly 12k tokens of source text — large, and deliberately
       # so: T3 in run #112 had 27 articles under it and the feature tier is where
       # the paper earns its keep. floor_chars is what guarantees a 12-member
       # thread still shows every member rather than three sources at full length.
+      # thin/full material thresholds are per tier because the same 1,000
+      # characters is thin for a 600-word feature and adequate for a 150-word
+      # standard. A single global pair labelled a Guardian standard story
+      # "headline-only" in run #112 while it carried four usable facts.
       feature:
         max_articles: 12
         total_chars: 48000
         per_article_chars: 6000
         floor_chars: 800
         target_words: [400, 600]
+        thin_material_chars: 3000
+        full_material_chars: 12000
       standard:
         max_articles: 6
         total_chars: 12000
         per_article_chars: 3000
         floor_chars: 500
         target_words: [120, 200]
+        thin_material_chars: 900
+        full_material_chars: 3000
       # A brief is a line or two. It gets the top sources and nothing more; the
       # fetcher does not even fetch for this tier.
       brief:
@@ -266,6 +275,8 @@ writers:
         per_article_chars: 1200
         floor_chars: 400
         target_words: [25, 45]
+        thin_material_chars: 300
+        full_material_chars: 900
 
 editor_pass_1:
   model: zai-org/glm-5.2:thinking

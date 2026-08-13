@@ -40,6 +40,7 @@
 
 import type { WritersPacketConfig, WritersTierPacketConfig } from "../../config/models.js";
 import type { StoryMaterials, StoryArticle } from "./materials.js";
+import { stripBoilerplate, isHeadlineEcho } from "./boilerplate.js";
 
 /** Best available text for one article, and where it came from. */
 export interface ResolvedText {
@@ -64,6 +65,8 @@ export interface PacketArticle {
   origin: "fetched" | "feed";
   /** Paragraphs dropped because an earlier article in this packet said them. */
   duplicateParagraphs: number;
+  /** Paragraphs removed as publisher furniture before anything else ran. */
+  boilerplateParagraphs: number;
   translationFailed: boolean;
 }
 
@@ -244,7 +247,14 @@ export function allocateBudget(
   return allocations;
 }
 
-function materialLevelOf(chars: number, cfg: WritersPacketConfig): MaterialLevel {
+/**
+ * Material level is judged against the tier's own thresholds, not one global
+ * pair. A standard piece is 120–200 words and a feature is 400–600, so the same
+ * 1,000 characters of source is thin for one and adequate for the other — and
+ * with a single threshold, run #112 labelled a Guardian standard story
+ * "headline-only" while it carried four usable facts.
+ */
+function materialLevelOf(chars: number, cfg: WritersTierPacketConfig): MaterialLevel {
   if (chars >= cfg.full_material_chars) return "full";
   if (chars >= cfg.thin_material_chars) return "partial";
   return "headline-only";
@@ -264,16 +274,47 @@ export function assembleWriterPacket(
 
   const { selected, omitted } = selectArticles(story.articles, tierCfg.max_articles);
 
-  const resolved = selected.map((article) => {
+  const resolvedAll = selected.map((article) => {
     const fetched = textsById.get(article.preprocessedItemId);
     // The longer of the two, not simply the fetched one: a `thin` extraction can
     // come back shorter than the feed teaser, and then the teaser is the better
     // material. The fetcher records the status; the packet just takes the best.
-    if (fetched && fetched.text.length > article.feedText.length) {
-      return { article, text: fetched.text, origin: fetched.origin };
-    }
-    return { article, text: article.feedText, origin: "feed" as const };
+    const best =
+      fetched && fetched.text.length > article.feedText.length
+        ? { text: fetched.text, origin: fetched.origin }
+        : { text: article.feedText, origin: "feed" as const };
+    // Furniture comes off before anything measures the text, so a source is not
+    // judged usable on the strength of a copyright line.
+    const stripped = stripBoilerplate(best.text);
+    return { article, text: stripped.text, origin: best.origin, boilerplate: stripped.dropped };
   });
+
+  // A source whose body says nothing the headline did not adds a slot and no
+  // information. Run #112's rank 3 spent one of its twelve on a Google News stub
+  // reading `Poland says it thwarted a Russian plot … apnews.com` — the headline
+  // and the domain. Length alone cannot make this call: a 90-character Al
+  // Jazeera summary in the same packet carries a real fact, so the test is
+  // whether the body echoes the headline, plus a floor for the empties.
+  //
+  // The story's source count is the editor's and is unaffected — this is about
+  // what the writer reads. And the packet is never emptied: if every article is
+  // a stub the best one stays, and the material level says what it is.
+  const usable = resolvedAll.filter(
+    (r) => r.text.length >= cfg.min_article_chars && !isHeadlineEcho(r.article.title, r.text),
+  );
+  const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
+  for (const r of resolvedAll) {
+    if (resolved.includes(r)) continue;
+    omitted.push({
+      preprocessedItemId: r.article.preprocessedItemId,
+      sourceName: r.article.sourceName,
+      title: r.article.title,
+      reason:
+        r.text.length < cfg.min_article_chars
+          ? `no usable body text (${r.text.length} chars after cleanup)`
+          : "body text only repeats the headline",
+    });
+  }
 
   const { texts: deduped, dropped } = dedupeParagraphs(
     resolved.map((r) => r.text),
@@ -302,6 +343,7 @@ export function assembleWriterPacket(
       truncated: text.length < full.length,
       origin: r.origin,
       duplicateParagraphs: dropped[i]!,
+      boilerplateParagraphs: r.boilerplate,
       translationFailed: r.article.translationFailed,
     };
   });
@@ -312,7 +354,7 @@ export function assembleWriterPacket(
   // every brief "partial" and attach a warning about thin sourcing to stories
   // that are merely short by design.
   const availableChars = articles.reduce((sum, a) => sum + a.availableChars, 0);
-  const materialLevel = materialLevelOf(availableChars, cfg);
+  const materialLevel = materialLevelOf(availableChars, tierCfg);
 
   const notes: string[] = [];
   if (materialLevel === "headline-only") {

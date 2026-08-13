@@ -20,6 +20,62 @@ Entry format:
 
 ---
 
+## 2026-08-13 — First assembled packets: furniture, stubs, per-tier material, and the label that is not evidence
+
+**Decision:** four changes to the assembler, all from reading the first real
+packets for editor run #112 rather than from reasoning about them.
+
+**Context:** the packets were assembled and read end-to-end. They were
+structurally sound — selection visible, fetched vs feed distinguished, counts
+explicit, budgets bounded — and carried four concrete defects.
+
+1. **Publisher furniture survived extraction.** Rank 3 contained
+   `The-CNN-Wire`, a Cable News Network copyright line, `The post … appeared
+   first on KTVZ.`, `READ ALSO` followed by a list of other stories, NPR's
+   `(Image credit: …)`, Guardian's `Continue reading...`, and Le Monde's
+   live-blog chrome (`Posez votre question à la rédaction`, `Réagissez`,
+   `Votre pseudo...`, the most-read list). Readability keeps the article and
+   drops the page; it cannot know these are not sentences.
+   `boilerplate.ts` removes them with whole-paragraph, high-precision rules,
+   each naming the run and source that produced it — the junk filter's contract,
+   including a test for the near-miss prose that must survive.
+
+2. **A stub took a source slot.** Rank 3 spent one of twelve on a Google News
+   item whose entire body was `Poland says it thwarted a Russian plot … 
+   apnews.com` — the headline and the domain. **Length cannot make this call**:
+   an 89-character Al Jazeera summary in the same packet carried a real fact.
+   The test is whether the body echoes the headline (`isHeadlineEcho`), with a
+   60-character floor for the empties. A packet is never emptied by this rule.
+
+3. **Material thresholds are per tier.** One global pair labelled a Guardian
+   standard story `headline-only` while it carried four usable facts, because
+   1,000 characters is thin for a 600-word feature and adequate for a 150-word
+   standard piece. Thresholds moved into each tier's config block.
+
+4. **The cluster label is not evidence, and now says so.** The sharpest finding:
+   T3's describe-pass summary named a refinery strike, a Sevastopol
+   assassination, a body exchange, a border-control change and an armoured-
+   brigade exercise, and the twelve included sources supported some of that and
+   not the rest. The summary is generated from every article in the cluster,
+   including the ones the budget omitted. The prompt had said "write your own
+   headline", which addresses the headline and not the facts; it now says
+   plainly that the label is not source material and not evidence. A writer
+   treating it as reporting produces unsupported claims in the paper's own
+   voice, which is the one failure mode nothing downstream can catch.
+
+**Rationale:** all four are cases of the assembler passing along something it
+had no business treating as reporting. The stage's whole job is to hand a writer
+material it can trust; anything in the packet that is not reporting is a
+liability, because to the model it is indistinguishable from reporting.
+
+**Still open after this pass:** 64 of 150 packets are `headline-only` and 113
+carry no fetched article at all — most of them briefs, which are never fetched
+by design, but the feature/standard share of that is the real limit on how much
+of the paper can be written from substance. The AP feed pointing at
+`news.google.com` is a meaningful part of it and is a `sources.yaml` fix.
+
+---
+
 ## 2026-08-13 — Packet dedup is verbatim paragraphs, not embedding similarity
 
 **Decision:** the assembler removes paragraphs one article repeats from another,
