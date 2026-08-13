@@ -181,6 +181,8 @@ const WritersFetchConfigSchema = z.object({
   concurrency: z.number().int().positive(),
   per_host_delay_ms: z.number().int().nonnegative(),
   timeout_ms: z.number().int().positive(),
+  // Do not re-request an article attempted inside this window.
+  refetch_after_hours: z.number().int().nonnegative(),
   max_bytes: z.number().int().positive(),
   retention_days: z.number().int().positive(),
   cooldown: z.object({

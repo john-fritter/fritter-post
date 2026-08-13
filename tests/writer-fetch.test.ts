@@ -4,6 +4,7 @@ import {
   groupTargetsByHost,
   hostsInCooldown,
   classifyResponse,
+  isTransportError,
   type FetchStatus,
 } from "../src/pipeline/writers/fetch-text.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
@@ -24,6 +25,7 @@ const CFG: WritersFetchConfig = {
   concurrency: 6,
   per_host_delay_ms: 1500,
   timeout_ms: 20000,
+  refetch_after_hours: 20,
   max_bytes: 5000000,
   retention_days: 14,
   cooldown: { enabled: true, window_days: 7, min_attempts: 3 },
@@ -145,6 +147,60 @@ function testAnItemInTwoStoriesIsPlannedOnce() {
   );
   assert.equal(plan.targets.length, 1);
   assert.equal(plan.targets[0]!.items.length, 1);
+}
+
+function testRecentlyAttemptedArticlesAreNotRequestedAgain() {
+  // Run #112's full fetch re-requested the 20 URLs its own capped run had just
+  // retrieved: the plan consulted the cooldown but never the cache.
+  const plan = planFetch(
+    [storyOf("feature", [article(1, 100), article(2, 100)])],
+    CFG,
+    new Set(),
+    new Set([1]),
+  );
+  assert.deepEqual(
+    plan.targets.flatMap((t) => t.items.map((i) => i.preprocessedItemId)),
+    [2],
+  );
+  assert.match(plan.skips[0]!.detail, /already attempted/);
+}
+
+function testCooldownSkipsPreserveTheAttemptThatCausedThem() {
+  // The self-defeating case: if a cooldown skip overwrites the blocked rows that
+  // produced the cooldown, the next run sees no failures, lifts the cooldown,
+  // and re-requests every URL. Only cooldown skips carry the flag — a
+  // fat-feed skip has no attempt to protect.
+  const plan = planFetch(
+    [
+      storyOf("feature", [
+        article(1, 100, "https://nytimes.com/a"),
+        article(2, 4000, "https://opb.org/b"),
+      ]),
+    ],
+    CFG,
+    new Set(["nytimes.com"]),
+  );
+  const cooldownSkip = plan.skips.find((s) => s.host === "nytimes.com")!;
+  const fatSkip = plan.skips.find((s) => s.host === "opb.org")!;
+  assert.equal(cooldownSkip.preservesAttempt, true);
+  assert.notEqual(fatSkip.preservesAttempt, true);
+}
+
+function testTransportFailuresRetryButTimeoutsDoNot() {
+  // Same rule callWithBackoff applies to LLM calls: a dead socket says nothing
+  // about the request, a timeout ran to its ceiling and would do it again.
+  assert.equal(isTransportError(new Error("fetch failed")), true);
+  assert.equal(isTransportError(new Error("socket hang up")), true);
+  assert.equal(isTransportError(new Error("read ECONNRESET")), true);
+  // npr.org, which failed both the manual probe and the run.
+  assert.equal(
+    isTransportError(new Error("HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR")),
+    true,
+  );
+  const timeout = new Error("The operation was aborted due to timeout");
+  timeout.name = "TimeoutError";
+  assert.equal(isTransportError(timeout), false);
+  assert.equal(isTransportError(new Error("Request timed out")), false);
 }
 
 function testHostGroupingIsBusiestFirst() {
@@ -279,6 +335,9 @@ testBriefTierIsOutOfScope();
 testCoolingHostsAreSkippedNotRequested();
 testOneRequestPerUrlEvenWhenItemsShareIt();
 testAnItemInTwoStoriesIsPlannedOnce();
+testRecentlyAttemptedArticlesAreNotRequestedAgain();
+testCooldownSkipsPreserveTheAttemptThatCausedThem();
+testTransportFailuresRetryButTimeoutsDoNot();
 testHostGroupingIsBusiestFirst();
 testHostWithRepeatedFailuresAndNoSuccessCools();
 testOneSuccessKeepsAHostOutOfCooldown();

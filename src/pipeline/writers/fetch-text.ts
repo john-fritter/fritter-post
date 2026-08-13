@@ -57,6 +57,17 @@ export interface FetchSkip {
   host: string;
   feedChars: number;
   detail: string;
+  /**
+   * True when this skip must not overwrite an existing attempt row.
+   *
+   * A cooldown skip is *caused* by earlier failures on the host, so recording it
+   * over those failures erases the evidence that produced it. Run #112 ended
+   * with every nytimes.com and news.google.com row marked `skipped` — and since
+   * a skip means "never attempted", the next run would have found no failures,
+   * lifted the cooldown, and re-requested all 36. The cooldown has to remember
+   * why it exists.
+   */
+  preservesAttempt?: boolean;
 }
 
 export interface FetchPlan {
@@ -98,6 +109,7 @@ export function planFetch(
   stories: StoryMaterials[],
   cfg: WritersFetchConfig,
   cooldownHosts: Set<string>,
+  recentlyAttempted: Set<number> = new Set(),
 ): FetchPlan {
   const byUrl = new Map<string, FetchTarget>();
   const skips: FetchSkip[] = [];
@@ -125,8 +137,20 @@ export function planFetch(
         skips.push({ ...base, detail: `feed body already ${article.feedTextChars} chars` });
         continue;
       }
+      // Already asked this publisher recently. Run #112's fetch re-requested the
+      // 20 URLs its own capped run had just retrieved, because the plan consulted
+      // the cooldown but never the cache. Re-running a stage should cost nothing
+      // it has already paid for.
+      if (recentlyAttempted.has(article.preprocessedItemId)) {
+        skips.push({ ...base, detail: `already attempted within refetch_after_hours` });
+        continue;
+      }
       if (cooldownHosts.has(host)) {
-        skips.push({ ...base, detail: `host in cooldown after repeated failures` });
+        skips.push({
+          ...base,
+          detail: `host in cooldown after repeated failures`,
+          preservesAttempt: true,
+        });
         continue;
       }
 
@@ -211,6 +235,38 @@ function requestOnce(
   });
 }
 
+/** A timeout is the ceiling doing its job; a dropped socket says nothing. */
+export function isTransportError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : "";
+  if (name === "TimeoutError" || /timed? ?out/i.test(msg)) return false;
+  return /ECONNRESET|socket hang up|premature close|fetch failed|network|EPIPE|ENOTFOUND|other side closed|INTERNAL_ERROR/i.test(
+    msg,
+  );
+}
+
+/**
+ * One honest request, retried once if the connection itself failed.
+ *
+ * Same reasoning `callWithBackoff` applies to LLM calls: re-sending a request
+ * whose socket died is correct, because the failure said nothing about the
+ * request, while a timeout ran to its configured ceiling and would likely do it
+ * again. Run #112 lost 7 of 128 fetches this way, npr.org among them — the same
+ * host that failed the manual probe with an HTTP/2 INTERNAL_ERROR.
+ */
+async function requestWithTransportRetry(
+  url: string,
+  cfg: WritersFetchConfig,
+): Promise<Response> {
+  try {
+    return await requestOnce(url, HONEST_USER_AGENT, cfg.timeout_ms);
+  } catch (err) {
+    if (!isTransportError(err)) throw err;
+    await new Promise((r) => setTimeout(r, cfg.per_host_delay_ms));
+    return await requestOnce(url, HONEST_USER_AGENT, cfg.timeout_ms);
+  }
+}
+
 /** One article: honest request, one browser retry on 403 only, decode, extract. */
 export async function fetchArticleText(
   url: string,
@@ -219,7 +275,7 @@ export async function fetchArticleText(
   const empty = { text: "", textChars: 0, extractor: null };
   let res: Response;
   try {
-    res = await requestOnce(url, HONEST_USER_AGENT, cfg.timeout_ms);
+    res = await requestWithTransportRetry(url, cfg);
     if (res.status === 403) {
       const retry = await requestOnce(url, BROWSER_USER_AGENT, cfg.timeout_ms, true);
       if (retry.ok) res = retry;
@@ -321,6 +377,11 @@ async function upsert(
     feedChars: number;
     detail: string | null;
   },
+  /**
+   * When set, an existing row is only replaced if it is itself a skip. Used for
+   * cooldown skips, which must not overwrite the failures that caused them.
+   */
+  onlyOverwriteSkips = false,
 ): Promise<void> {
   await pool.query(
     `INSERT INTO article_texts
@@ -337,7 +398,8 @@ async function upsert(
        text_chars    = EXCLUDED.text_chars,
        feed_chars    = EXCLUDED.feed_chars,
        detail        = EXCLUDED.detail,
-       fetched_at    = NOW()`,
+       fetched_at    = NOW()
+     WHERE NOT $11::boolean OR article_texts.status = 'skipped'`,
     [
       row.preprocessedItemId,
       row.canonicalUrl,
@@ -349,6 +411,7 @@ async function upsert(
       row.textChars,
       row.feedChars,
       row.detail,
+      onlyOverwriteSkips,
     ],
   );
 }
@@ -398,7 +461,18 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
     console.log(`[fetch-text] cooldown: skipping ${[...cooldownHosts].join(", ")}`);
   }
 
-  const plan = planFetch(stories, cfg, cooldownHosts);
+  // Items already requested inside the refetch window, whatever the outcome.
+  // Skips are excluded: not asking is not the same as having asked.
+  const { rows: recentRows } = await pool.query<{ preprocessed_item_id: string }>(
+    `SELECT preprocessed_item_id::text AS preprocessed_item_id
+     FROM article_texts
+     WHERE status <> 'skipped'
+       AND fetched_at >= NOW() - ($1::int || ' hours')::interval`,
+    [cfg.refetch_after_hours],
+  );
+  const recentlyAttempted = new Set(recentRows.map((r) => Number(r.preprocessed_item_id)));
+
+  const plan = planFetch(stories, cfg, cooldownHosts, recentlyAttempted);
   const targets = limit !== undefined ? plan.targets.slice(0, limit) : plan.targets;
   const byHost = groupTargetsByHost(targets);
 
@@ -433,18 +507,22 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
   }
 
   for (const skip of plan.skips) {
-    await upsert(pool, {
-      preprocessedItemId: skip.preprocessedItemId,
-      canonicalUrl: skip.canonicalUrl,
-      host: skip.host,
-      status: "skipped",
-      httpStatus: null,
-      extractor: null,
-      text: null,
-      textChars: 0,
-      feedChars: skip.feedChars,
-      detail: skip.detail,
-    });
+    await upsert(
+      pool,
+      {
+        preprocessedItemId: skip.preprocessedItemId,
+        canonicalUrl: skip.canonicalUrl,
+        host: skip.host,
+        status: "skipped",
+        httpStatus: null,
+        extractor: null,
+        text: null,
+        textChars: 0,
+        feedChars: skip.feedChars,
+        detail: skip.detail,
+      },
+      skip.preservesAttempt === true,
+    );
   }
 
   // Hosts run concurrently; each host's own URLs run one at a time with a pause

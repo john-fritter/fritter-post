@@ -203,6 +203,12 @@ writers:
     concurrency: 6
     per_host_delay_ms: 1500
     timeout_ms: 20000
+    # Do not re-request an article attempted inside this window, whatever the
+    # outcome. Run #112's full fetch re-requested the 20 URLs its own capped run
+    # had just retrieved: the plan consulted the cooldown but never the cache.
+    # 20 hours means a same-day re-run costs nothing and tomorrow's paper starts
+    # clean.
+    refetch_after_hours: 20
     # A news page above this is nav, ads and tracking, not article text.
     max_bytes: 5000000
     # This is the only table holding third-party full text. It exists to write
