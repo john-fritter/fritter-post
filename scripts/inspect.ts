@@ -12,10 +12,17 @@
  *   npm run inspect -- preprocessor --id 1
  *   npm run inspect -- prefilter
  *   npm run inspect -- prefilter --id 1
+ *   npm run inspect -- editor --id 112
+ *   npm run inspect -- materials --editor-run 112
  */
 
 import "dotenv/config";
 import { Pool } from "pg";
+import { loadEditorRunMaterials } from "../src/pipeline/writers/materials.js";
+import {
+  summarizeMaterials,
+  formatMaterialsReport,
+} from "../src/pipeline/writers/materials-report.js";
 
 interface RawItemRow {
   id: string;
@@ -693,6 +700,23 @@ async function main() {
         break;
       }
 
+      // Writer materials audit: resolves an editor run's stories to the
+      // articles underneath them and reports how much body text each carries.
+      // Uses the shared pool from src/db rather than this script's, since the
+      // resolver is stage code — both are closed by the process exit below.
+      case "materials": {
+        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        if (runId === undefined || Number.isNaN(runId)) {
+          console.log("Usage: npm run inspect -- materials --editor-run <n> [--sources <n>]");
+          break;
+        }
+        const stories = await loadEditorRunMaterials(runId);
+        const report = summarizeMaterials(runId, stories);
+        const sourceLimit = flags["sources"] ? parseInt(flags["sources"], 10) : undefined;
+        console.log(formatMaterialsReport(report, sourceLimit));
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -707,11 +731,16 @@ Commands:
   prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
   editor                   List recent editor runs
   editor --id <n>          Show ranked/tiered list with resolved titles and fail-safe flags
+  materials --editor-run <n>
+                           Writer materials audit: per-tier and per-source body
+                           text available under each story, and the fetch scope
 
 Options:
   --source <name>          Filter by source name (exact match)
   --limit <n>              Max rows returned (default varies by command)
   --id <n>                 Run id for detail view
+  --editor-run <n>         Editor run id (materials)
+  --sources <n>            Rows in the per-source table (materials, default 40)
 `);
         process.exit(1);
     }
