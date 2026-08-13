@@ -23,6 +23,7 @@ import {
   summarizeMaterials,
   formatMaterialsReport,
 } from "../src/pipeline/writers/materials-report.js";
+import { buildEditorRunPackets } from "../src/pipeline/writers/packets.js";
 
 interface RawItemRow {
   id: string;
@@ -717,6 +718,49 @@ async function main() {
         break;
       }
 
+      // Writer packets: the assembled prompt for one story, or a size summary
+      // for the whole run. This is the writers stage's feedback loop — the
+      // prompt is the product, so it has to be readable before any model sees it.
+      case "packet": {
+        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        if (runId === undefined || Number.isNaN(runId)) {
+          console.log("Usage: npm run inspect -- packet --editor-run <n> [--rank <n>]");
+          break;
+        }
+        const packets = await buildEditorRunPackets(runId);
+
+        if (flags["rank"]) {
+          const rank = parseInt(flags["rank"], 10);
+          const found = packets.find((p) => p.packet.rank === rank);
+          if (!found) {
+            console.log(`No story at rank ${rank} in editor run #${runId}`);
+            break;
+          }
+          console.log(`=== SYSTEM PROMPT (${found.systemPrompt.length} chars) ===\n`);
+          console.log(found.systemPrompt);
+          console.log(`\n=== USER PROMPT (${found.userPrompt.length} chars) ===\n`);
+          console.log(found.userPrompt);
+          break;
+        }
+
+        console.log(`Writer packets — editor run #${runId} (${packets.length} stories)`);
+        const totalChars = packets.reduce((sum, p) => sum + p.promptChars, 0);
+        console.log(`  Total prompt characters: ${totalChars}`);
+        console.log(`  Largest packet:          ${Math.max(...packets.map((p) => p.promptChars))}`);
+        console.log("");
+        console.log("  rank tier      ref     arts  omit  material       chars  fetched/feed");
+        for (const { packet, promptChars } of packets) {
+          const fetched = packet.articles.filter((a) => a.origin === "fetched").length;
+          console.log(
+            `  ${String(packet.rank).padStart(4)} ${packet.tier.padEnd(9)} ${packet.ref.padEnd(7)} ` +
+              `${String(packet.articles.length).padStart(4)}  ${String(packet.omitted.length).padStart(4)}  ` +
+              `${packet.materialLevel.padEnd(13)} ${String(promptChars).padStart(6)}  ` +
+              `${fetched}/${packet.articles.length - fetched}`,
+          );
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -734,6 +778,9 @@ Commands:
   materials --editor-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
+  packet --editor-run <n>  Writer packet sizes for every story of an editor run
+  packet --editor-run <n> --rank <n>
+                           Print the full assembled prompt for one story
 
 Options:
   --source <name>          Filter by source name (exact match)
@@ -741,6 +788,7 @@ Options:
   --id <n>                 Run id for detail view
   --editor-run <n>         Editor run id (materials)
   --sources <n>            Rows in the per-source table (materials, default 40)
+  --rank <n>               Story rank (packet)
 `);
         process.exit(1);
     }

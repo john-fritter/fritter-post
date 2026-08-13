@@ -61,7 +61,8 @@ fritter-post/
 ├── docs/
 │   ├── concept.md               # the vision document
 │   ├── decisions.md             # decision log, append-only
-│   └── bio.md                   # the reader (written)
+│   ├── bio.md                   # the reader (written)
+│   └── voice.md                 # the standing memo — voice, read by the writers
 ├── config/
 │   ├── sources.yaml             # feed list
 │   └── models.yaml              # per-stage LLM model and budget config
@@ -74,7 +75,7 @@ fritter-post/
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
 │   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
-│   │   ├── writers/             # (not built — empty)
+│   │   ├── writers/             # materials + fetch + prompt assembler (writer call not built)
 │   │   └── publisher/           # (not built — empty)
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
@@ -354,6 +355,22 @@ than configured: a host with `min_attempts` failures and no success inside
 age out. nytimes.com and oregonlive.com serve a DataDome device check the
 browser UA does not get past.
 
+**`assembler.ts` + `prompt.ts` — the packet.** Pure functions: select, dedupe,
+budget. Selection takes one article per parent outlet before a second from the
+same one, capped per tier. Deduplication is **verbatim paragraph** removal across
+the packet — not embedding similarity, which would delete the corroboration a
+cluster exists to provide, since every member of a cluster is the same event by
+construction. The budget reserves `floor_chars` for every selected article before
+distributing the remainder, so a 12-member thread shows every member rather than
+three sources at full length, and trimming lands on a paragraph or sentence
+boundary. Config is `writers.packet.*`.
+
+A packet records what it could not supply: `materialLevel` is measured on
+available material rather than the trimmed total, and a headline-only story
+carries a note telling the writer to write short and invent nothing. Voice comes
+from `docs/voice.md` (the standing memo), read like `docs/bio.md` with a
+fallback.
+
 **`article_texts` (migration 034) is the only table holding third-party full
 text.** It exists to write the paper, is never published — "curate, don't
 reproduce" — and is swept on `writers.fetch.retention_days` by the fetch script.
@@ -513,6 +530,8 @@ number is ambiguous. The next migration is **035**.
 - `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
   much body text each story's underlying articles carry, per tier, per source and
   per host, plus the fetch scope
+- `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
+  packets: sizes for every story, or the full prompt for one
 
 **Experiments**
 - `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
@@ -582,6 +601,7 @@ discussion first.
 
 - `docs/concept.md` — vision, principles, pipeline architecture
 - `docs/decisions.md` — why specific choices were made (append-only)
-- `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, and editor
+- `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, editor, writers
+- `docs/voice.md` — the standing memo; read verbatim into every writer prompt
 - `config/sources.yaml` — current feed list
 - `config/models.yaml` — per-stage model, provider, budget, stream config

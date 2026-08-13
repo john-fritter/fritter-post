@@ -192,8 +192,31 @@ const WritersFetchConfigSchema = z.object({
   }),
 });
 
+// Per-tier material budget for one writer packet.
+const WritersTierPacketConfigSchema = z.object({
+  max_articles: z.number().int().positive(),
+  total_chars: z.number().int().positive(),
+  per_article_chars: z.number().int().positive(),
+  // Reserved for every selected article before the remainder is distributed, so
+  // a 12-member thread shows every member instead of three at full length.
+  floor_chars: z.number().int().nonnegative(),
+  target_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+});
+
+const WritersPacketConfigSchema = z.object({
+  min_dedup_paragraph_chars: z.number().int().nonnegative(),
+  thin_material_chars: z.number().int().nonnegative(),
+  full_material_chars: z.number().int().nonnegative(),
+  tiers: z.object({
+    feature: WritersTierPacketConfigSchema,
+    standard: WritersTierPacketConfigSchema,
+    brief: WritersTierPacketConfigSchema,
+  }),
+});
+
 const WritersStageConfigSchema = StageConfigSchema.extend({
   fetch: WritersFetchConfigSchema,
+  packet: WritersPacketConfigSchema,
 });
 
 const ModelsConfigSchema = z.object({
@@ -216,6 +239,8 @@ export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
 export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
+export type WritersTierPacketConfig = z.infer<typeof WritersTierPacketConfigSchema>;
+export type WritersPacketConfig = z.infer<typeof WritersPacketConfigSchema>;
 export type WritersStageConfig = z.infer<typeof WritersStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;

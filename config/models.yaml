@@ -225,6 +225,48 @@ writers:
       window_days: 7
       min_attempts: 3
 
+  # Prompt assembly: how much material each tier's writer sees, and how it is cut
+  # down to that. Every number here is a budget, not a judgment — the judgment
+  # happened in the prefilter and grouping-pass-1, and the editor's tier is what
+  # carries it into this stage.
+  packet:
+    # A paragraph shorter than this is exempt from duplicate removal. A dateline,
+    # a one-line attribution, or "Reuters contributed to this report" repeating
+    # across outlets is not the redundancy we are removing, and cutting it would
+    # reshape a lede.
+    min_dedup_paragraph_chars: 120
+    # Material thresholds, measured on the assembled packet. Below thin, the
+    # piece is written to the short end of its target and told to say only what
+    # the sources say — the honest handling of a story whose publishers all
+    # blocked us. Run #112 had nine such articles across two hosts.
+    thin_material_chars: 1200
+    full_material_chars: 6000
+    tiers:
+      # 48k chars is roughly 12k tokens of source text — large, and deliberately
+      # so: T3 in run #112 had 27 articles under it and the feature tier is where
+      # the paper earns its keep. floor_chars is what guarantees a 12-member
+      # thread still shows every member rather than three sources at full length.
+      feature:
+        max_articles: 12
+        total_chars: 48000
+        per_article_chars: 6000
+        floor_chars: 800
+        target_words: [400, 600]
+      standard:
+        max_articles: 6
+        total_chars: 12000
+        per_article_chars: 3000
+        floor_chars: 500
+        target_words: [120, 200]
+      # A brief is a line or two. It gets the top sources and nothing more; the
+      # fetcher does not even fetch for this tier.
+      brief:
+        max_articles: 3
+        total_chars: 2500
+        per_article_chars: 1200
+        floor_chars: 400
+        target_words: [25, 45]
+
 editor_pass_1:
   model: zai-org/glm-5.2:thinking
   provider: nanogpt

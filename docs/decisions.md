@@ -20,6 +20,31 @@ Entry format:
 
 ---
 
+## 2026-08-13 — Packet dedup is verbatim paragraphs, not embedding similarity
+
+**Decision:** the assembler removes paragraphs one article repeats from another,
+verbatim. It does **not** suppress near-duplicate articles by embedding cosine.
+
+**Supersedes:** the dedup design sketched when this stage was proposed, which had
+three levels: selection cap, embedding-cosine near-duplicate suppression using
+the vectors `item_embeddings` already stores, and paragraph dedup. The middle
+level is wrong and is dropped.
+
+**Rationale:** every member of a cluster is the same event *by construction* —
+high cosine is precisely why grouping put them together — so a cosine threshold
+inside a packet would delete the corroboration the packet exists to provide. The
+27 articles under T3 are not 27 copies of one story; they are 27 vantage points
+on one situation, which is what lets a writer say where sources agree and where
+they diverge. What a writer genuinely does not need is the same AP paragraph
+three times under three ledes, and that is verbatim repetition, which a hash
+catches exactly and cheaply.
+
+Short paragraphs are exempt (`min_dedup_paragraph_chars`): a dateline or a
+one-line attribution repeating across outlets is not redundancy, and cutting it
+would reshape a lede.
+
+---
+
 ## 2026-08-13 — Writers stage: the packet is assembled, not authored; article text is fetched for what the feed left short
 
 Three decisions, taken together because the audit that settled the third also
