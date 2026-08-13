@@ -59,6 +59,12 @@ export interface TierStats {
   emptyCount: number;
 }
 
+export interface HostStats {
+  host: string;
+  articles: number;
+  thinCount: number;
+}
+
 export interface BigStoryStats {
   rank: number;
   tier: string;
@@ -83,7 +89,15 @@ export interface MaterialsReport {
   buckets: Array<{ label: string; count: number }>;
   sources: SourceTextStats[];
   biggestStories: BigStoryStats[];
-  fetchScope: { tiers: string[]; articles: number; uniqueUrls: number; thinCount: number };
+  /** Hosts in fetch scope, busiest first — the fetcher serializes per host. */
+  hosts: HostStats[];
+  fetchScope: {
+    tiers: string[];
+    articles: number;
+    uniqueUrls: number;
+    thinCount: number;
+    hosts: number;
+  };
   unresolved: Array<{ ref: string; rank: number; notes: string[] }>;
 }
 
@@ -99,6 +113,19 @@ function bucketOf(chars: number): string {
     if (chars <= b.max) return b.label;
   }
   return BUCKETS[BUCKETS.length - 1]!.label;
+}
+
+/**
+ * Host of a canonical URL, `www.` stripped. The fetcher's politeness unit is the
+ * host, not the source: three of our sources can sit behind one publisher's CDN,
+ * and one source's articles can span several hosts.
+ */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "(unparseable)";
+  }
 }
 
 function articleStats(articles: StoryArticle[]) {
@@ -185,6 +212,21 @@ export function summarizeMaterials(
     .flatMap((s) => s.articles);
   const fetchStats = articleStats(fetchArticles);
 
+  const byHost = new Map<string, StoryArticle[]>();
+  for (const a of fetchArticles) {
+    const host = hostOf(a.canonicalUrl);
+    const list = byHost.get(host) ?? [];
+    list.push(a);
+    byHost.set(host, list);
+  }
+  const hosts: HostStats[] = [...byHost.entries()]
+    .map(([host, list]) => ({
+      host,
+      articles: list.length,
+      thinCount: list.filter((a) => a.feedTextChars < THIN_CHARS).length,
+    }))
+    .sort((a, b) => b.articles - a.articles || a.host.localeCompare(b.host));
+
   return {
     editorRunId,
     stories: stories.length,
@@ -198,11 +240,13 @@ export function summarizeMaterials(
     buckets: BUCKETS.map((b) => ({ label: b.label, count: bucketCounts.get(b.label) ?? 0 })),
     sources,
     biggestStories,
+    hosts,
     fetchScope: {
       tiers: FETCH_TIERS,
       articles: fetchArticles.length,
       uniqueUrls: fetchStats.uniqueUrls,
       thinCount: fetchStats.thinCount,
+      hosts: hosts.length,
     },
     unresolved: stories
       .filter((s) => s.unresolved.length > 0)
@@ -286,6 +330,14 @@ export function formatMaterialsReport(report: MaterialsReport, sourceLimit = 40)
     `  Of those thin:  ${report.fetchScope.thinCount} ` +
       `(${pct(report.fetchScope.thinCount, report.fetchScope.articles)})`,
   );
+  lines.push(`  Hosts:          ${report.fetchScope.hosts}`);
+  lines.push("  Busiest hosts (per-host serialization sizes the run):");
+  for (const h of report.hosts.slice(0, 12)) {
+    lines.push(
+      `    ${h.host.slice(0, 40).padEnd(40)} ${String(h.articles).padStart(4)} articles, ` +
+        `${h.thinCount} thin`,
+    );
+  }
 
   lines.push("");
   if (report.unresolved.length === 0) {

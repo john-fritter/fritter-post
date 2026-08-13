@@ -411,6 +411,32 @@ function testReportCountsUniqueUrlsNotArticles() {
   assert.equal(report.fetchScope.uniqueUrls, 1);
 }
 
+function testReportGroupsFetchScopeByHost() {
+  // Politeness is per host, not per source: two sources can share a publisher's
+  // CDN, and www. is not a distinct host.
+  const stories = buildStoryMaterials(
+    inputs({
+      stories: [
+        story({ item_type: "cluster", cluster_index: 1, tier: "feature", rank: 1 }),
+        story({ preprocessed_item_id: "9", tier: "brief", rank: 2 }),
+      ],
+      clustersByIndex: new Map([[1, cluster(1, [1, 2, 3])]]),
+      itemsById: new Map([
+        [1, item(1, { canonical_url: "https://www.oregonlive.com/a" })],
+        [2, item(2, { canonical_url: "https://oregonlive.com/b" })],
+        [3, item(3, { canonical_url: "https://apnews.com/c" })],
+        // Brief tier: out of scope, so its host must not appear.
+        [9, item(9, { canonical_url: "https://bbc.co.uk/d" })],
+      ]),
+    }),
+  );
+  const report = summarizeMaterials(112, stories);
+  assert.equal(report.fetchScope.hosts, 2);
+  assert.equal(report.hosts[0]!.host, "oregonlive.com");
+  assert.equal(report.hosts[0]!.articles, 2);
+  assert.ok(!report.hosts.some((h) => h.host === "bbc.co.uk"));
+}
+
 function testReportSurfacesUnresolvedStories() {
   const stories = buildStoryMaterials(
     inputs({
@@ -437,5 +463,6 @@ testNullBodyBecomesEmptyString();
 testParentOutletIsAttached();
 testReportCountsThinArticlesAndScopesTheFetch();
 testReportCountsUniqueUrlsNotArticles();
+testReportGroupsFetchScopeByHost();
 testReportSurfacesUnresolvedStories();
 console.log("writer materials tests passed");
