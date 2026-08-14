@@ -20,6 +20,70 @@ Entry format:
 
 ---
 
+## 2026-08-14 — AP has no reachable feed; the Google News proxy stays, with its costs named
+
+**Decision:** keep the Google News search proxies for AP Top News and AP
+Politics. Do not replace them. Record what that costs in `sources.yaml` rather
+than leaving it to be rediscovered.
+
+**Context:** the AP entries are Google News RSS searches, so every item's link is
+an interstitial rather than an article — 20 stories in run #112 with no fetchable
+text, and `news.google.com` as the busiest host in the fetch scope. Seven
+candidate direct AP endpoints were probed from the production host on
+2026-08-14: `apnews.com/index.rss` returned 401, four `/hub/*.rss` paths returned
+404 HTML, and `feeds.apnews.com` does not resolve at all.
+
+**Rationale:** losing AP's article bodies is bad; losing AP entirely to a 404
+would be worse. AP items still earn their place through the editor's prominence
+formula — cross-source pickup is signal whether or not we can read the body.
+
+**What makes this tolerable now, and it is worth being precise about:** the two
+defects the proxy caused are handled at the points where they actually hurt. The
+`- apnews.com` suffix is stripped from headlines by the preprocessor, so it no
+longer reaches embeddings, prompts, or the reader. And the assembler's
+headline-echo rule keeps a body that is only its own headline out of writer
+packets, so an AP item contributes prominence without occupying a source slot
+with nothing in it.
+
+**Revisit if:** AP publishes a public feed again, or the paper starts wanting AP
+as a *writing* source rather than a corroboration signal.
+
+---
+
+## 2026-08-14 — Furniture rules match lines, not paragraphs; live blogs rank last
+
+**Decision:** `stripBoilerplate` matches per line within a paragraph. Live blogs
+are pushed behind real articles in packet selection, never deleted.
+
+**Context:** the second packet read found `The-CNN-Wire` and the CNN copyright
+line still in rank 3 after the furniture rules shipped. The cause is visible in
+the raw packet: KTVZ emits them as two lines of one paragraph, separated by a
+single newline, and the rules split on blank lines and anchored end-to-end — so
+neither could ever match. The rule set was right and the granularity was wrong.
+
+The same read flagged Le Monde's Ukraine live blog for the second time. A live
+blog is not an article: it is one page carrying a day of entries about many
+stories, wrapped in comment boxes and pointers to other coverage, and it took
+5,954 characters of rank 3's feature budget.
+
+**Rationale:** matching per line keeps the precision that matters — a line is
+still matched end-to-end, so a sentence of reporting that mentions CNN is
+untouched — while catching furniture that shares a block with other furniture.
+
+For live blogs, ordering rather than deletion is the honest fix. On a
+27-candidate thread the live blog falls out of the packet on its own; on a story
+where it is the only source, it is still the source. Detection is from the title,
+which live blogs announce plainly, and the near-miss tests pin headlines like
+"Live music returns to the Old Mill District".
+
+**Alternative rejected:** cutting live blogs upstream in the junk filter. They
+are digest-shaped, which is the junk filter's remit, but they also carry real
+reporting that legitimately clusters — the train strike, the Warsaw arrest, the
+body exchange all came from that page. Losing the item entirely would cost the
+cluster a source; losing it from the packet costs nothing.
+
+---
+
 ## 2026-08-13 — First assembled packets: furniture, stubs, per-tier material, and the label that is not evidence
 
 **Decision:** four changes to the assembler, all from reading the first real

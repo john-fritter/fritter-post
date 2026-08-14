@@ -17,6 +17,40 @@ function testCnnWireFooterIsRemoved() {
   assert.equal(cleaned, "A bomb attack in Crimea has reportedly killed a former Ukrainian submarine commander.");
 }
 
+function testFurnitureInsideOneParagraphIsRemoved() {
+  // KTVZ emits these as two lines of a single paragraph. The first version of
+  // the rules matched whole paragraphs and missed exactly this, which is how
+  // both lines reached the rank 3 packet after the first fix.
+  const text = [
+    "Five other people were killed in a separate explosion in Sevastopol.",
+    "The-CNN-Wire\n\u2122 & \u00a9 2026 Cable News Network, Inc., a Warner Bros. Discovery Company. All rights reserved.",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 2);
+  assert.equal(cleaned, "Five other people were killed in a separate explosion in Sevastopol.");
+}
+
+function testALineOfProseSharingAParagraphWithFurnitureSurvives() {
+  const text = "The agency confirmed the strike.\nThe-CNN-Wire";
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+  assert.equal(cleaned, "The agency confirmed the strike.");
+}
+
+function testLireAussiIsDroppedWithoutCuttingTheDocument() {
+  // Le Monde's live blog repeats this between real entries; a tail cut here
+  // would throw away most of the reporting.
+  const text = [
+    "Deux personnes ont \u00e9t\u00e9 bless\u00e9es \u00e0 la suite d\u2019une frappe russe.",
+    "Lire aussi :",
+    "L\u2019Ukraine et la Russie ont proc\u00e9d\u00e9 \u00e0 de nouveaux \u00e9changes de d\u00e9pouilles.",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+  assert.ok(cleaned.includes("Deux personnes"));
+  assert.ok(cleaned.includes("nouveaux \u00e9changes"));
+}
+
 function testReadAlsoCutsTheTail() {
   const text = [
     "The KSK grain terminal in Novorossiysk has suspended operations.",
@@ -114,6 +148,9 @@ function testEmptyBodyIsAnEcho() {
 }
 
 testCnnWireFooterIsRemoved();
+testFurnitureInsideOneParagraphIsRemoved();
+testALineOfProseSharingAParagraphWithFurnitureSurvives();
+testLireAussiIsDroppedWithoutCuttingTheDocument();
 testReadAlsoCutsTheTail();
 testGuardianTeaserMarkerIsRemoved();
 testLeMondeLiveChromeIsRemoved();

@@ -6,6 +6,7 @@ import {
   allocateBudget,
   trimToBoundary,
   normalizeParagraph,
+  isLiveBlog,
   type ResolvedText,
 } from "../src/pipeline/writers/assembler.js";
 import {
@@ -130,6 +131,42 @@ function testSecondsFillRemainingSlotsInOrder() {
     [1, 3, 2],
   );
   assert.equal(omitted.length, 0);
+}
+
+function testLiveBlogsAreRankedBehindRealArticles() {
+  // Le Monde's Ukraine live blog took 5,954 characters of rank 3's feature
+  // budget in run #112. It is one page covering a day of many stories, so it is
+  // a source of last resort — pushed behind articles, never deleted.
+  const articles = [
+    article(1, {
+      parentSource: "Le Monde",
+      title: "LIVE: Ukraine war: Russia claims it has not received a formal proposal",
+    }),
+    article(2, { parentSource: "BBC" }),
+    article(3, { parentSource: "Meduza" }),
+  ];
+  const { selected } = selectArticles(articles, 2);
+  assert.deepEqual(
+    selected.map((a) => a.preprocessedItemId),
+    [2, 3],
+  );
+}
+
+function testALiveBlogIsStillUsedWhenItIsAllThereIs() {
+  const only = article(1, { title: "Live updates: the fire near Bend" });
+  const { selected, omitted } = selectArticles([only], 3);
+  assert.equal(selected.length, 1);
+  assert.equal(omitted.length, 0);
+}
+
+function testLiveBlogDetection() {
+  assert.equal(isLiveBlog("LIVE: Ukraine war: Russia claims it has not received"), true);
+  assert.equal(isLiveBlog("EN DIRECT : guerre en Ukraine"), true);
+  assert.equal(isLiveBlog("Live updates: Oregon wildfires"), true);
+  // Near-misses: ordinary headlines that merely contain the word.
+  assert.equal(isLiveBlog("Live music returns to the Old Mill District"), false);
+  assert.equal(isLiveBlog("They live in fear of the next eviction notice"), false);
+  assert.equal(isLiveBlog("Ukraine strikes Russian grain terminals"), false);
 }
 
 function testArticlesBeyondTheCapAreRecordedNotLost() {
@@ -399,6 +436,9 @@ function testWriterOutputParsing() {
 
 testOneArticlePerOutletBeforeSeconds();
 testSecondsFillRemainingSlotsInOrder();
+testLiveBlogsAreRankedBehindRealArticles();
+testALiveBlogIsStillUsedWhenItIsAllThereIs();
+testLiveBlogDetection();
 testArticlesBeyondTheCapAreRecordedNotLost();
 testVerbatimParagraphsAcrossSourcesAreDroppedOnce();
 testShortParagraphsAreExemptFromDedup();

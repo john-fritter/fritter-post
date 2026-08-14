@@ -57,6 +57,11 @@ const LINE_RULES: Array<{ pattern: RegExp; note: string }> = [
   // The most-read list items themselves: "1. Article réservé aux abonnés …".
   { pattern: /^\d+\.\s*article réservé aux abonnés\b/i, note: "Le Monde most-read item" },
   { pattern: /^article réservé aux abonnés$/i, note: "Le Monde paywall marker" },
+  // Le Monde's inline "read also" pointer. A line rule rather than a tail cut:
+  // in a live blog it appears many times between real entries, so cutting the
+  // document at the first one would throw away most of the reporting.
+  { pattern: /^lire aussi\s*:?$/i, note: "Le Monde inline read-also" },
+  { pattern: /^(?:lire aussi|voir aussi)\s*:\s*.{0,120}$/i, note: "Le Monde inline read-also" },
 ];
 
 /** Characters of new content beyond the headline that make a body worth reading. */
@@ -99,10 +104,18 @@ export interface StripResult {
 }
 
 /**
- * Removes known publisher furniture. Operates on paragraphs, never on
- * substrings, so a rule can only ever delete a whole block that matches it
- * end-to-end — a sentence of reporting that happens to contain one of these
- * phrases is untouched.
+ * Removes known publisher furniture.
+ *
+ * Matching is **per line, not per paragraph**. The first version of this
+ * matched whole paragraphs and missed the case it was written for: KTVZ emits
+ *
+ *     The-CNN-Wire
+ *     ™ & © 2026 Cable News Network, Inc. … All rights reserved.
+ *
+ * as two lines of a *single* paragraph, so neither anchored rule could fire and
+ * both survived into the rank 3 packet. Lines are still matched end-to-end, so a
+ * rule can only ever delete a line that is nothing but furniture — a sentence of
+ * reporting that happens to mention CNN is untouched.
  */
 export function stripBoilerplate(text: string): StripResult {
   if (text.length === 0) return { text, dropped: 0 };
@@ -111,24 +124,32 @@ export function stripBoilerplate(text: string): StripResult {
   const kept: string[] = [];
   let dropped = 0;
 
-  for (let i = 0; i < paragraphs.length; i++) {
-    const para = paragraphs[i]!.trim();
-    if (para.length === 0) continue;
+  outer: for (let i = 0; i < paragraphs.length; i++) {
+    const para = paragraphs[i]!;
+    if (para.trim().length === 0) continue;
 
-    if (TAIL_MARKERS.some((re) => re.test(para))) {
-      // Everything from here on is a list of other articles. Counted by index
-      // rather than by searching for the paragraph, which would find the wrong
-      // one when a document repeats a line.
-      dropped += paragraphs.length - i;
-      break;
+    const keptLines: string[] = [];
+    for (const rawLine of para.split(/\n/)) {
+      const line = rawLine.trim();
+      if (line.length === 0) continue;
+
+      if (TAIL_MARKERS.some((re) => re.test(line))) {
+        // Everything from here on is a list of other articles. Whatever was kept
+        // from this paragraph stays; the rest of the document goes.
+        if (keptLines.length > 0) kept.push(keptLines.join("\n"));
+        dropped += paragraphs.length - i;
+        break outer;
+      }
+
+      if (LINE_RULES.some((rule) => rule.pattern.test(line))) {
+        dropped++;
+        continue;
+      }
+
+      keptLines.push(line);
     }
 
-    if (LINE_RULES.some((rule) => rule.pattern.test(para))) {
-      dropped++;
-      continue;
-    }
-
-    kept.push(para);
+    if (keptLines.length > 0) kept.push(keptLines.join("\n"));
   }
 
   return { text: kept.join("\n\n"), dropped };

@@ -49,10 +49,17 @@
   type: wire
   group: wire
   notes: >
-    Google News RSS proxy for AP content. Direct AP endpoints return HTML or 404
-    to curl from this server; this query returned valid RSS with current AP items.
-    Body field contains only a Google News link wrapper; researcher will need to
-    follow links for full content.
+    Google News RSS proxy for AP content, and a known compromise. Re-probed
+    2026-08-14: apnews.com/index.rss returns 401, four /hub/*.rss paths return
+    404 HTML, and feeds.apnews.com does not resolve. AP has no working public
+    feed we can find, so this stays.
+    What it costs: item links are news.google.com interstitials, not articles,
+    so nothing here is fetchable — run #112 carried 20 AP items with no body
+    text. The bodies are the headline repeated plus the domain, which the
+    packet assembler now detects (isHeadlineEcho) and leaves out of writer
+    prompts. The items still count as sources for the editor's prominence
+    formula, which is the reason to keep them.
+    Title suffixes ("- apnews.com") are stripped by the preprocessor.
   parent: "AP"
 
 - name: AP Politics
@@ -60,9 +67,10 @@
   type: wire
   group: wire
   notes: >
-    Google News RSS proxy scoped to AP politics. Direct AP politics feed returns
-    HTML/404 from this server; this query returned valid RSS with current AP
-    politics items. Body field contains only a link wrapper.
+    Google News RSS proxy scoped to AP politics. Same compromise and the same
+    2026-08-14 probe evidence as AP Top News above: no working direct AP feed
+    exists that we can reach, links are interstitials, bodies are headline
+    echoes that never reach a writer prompt.
   parent: "AP"
 
 - name: Reuters Top News

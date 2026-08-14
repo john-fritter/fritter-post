@@ -740,6 +740,16 @@ async function main() {
           console.log(found.systemPrompt);
           console.log(`\n=== USER PROMPT (${found.userPrompt.length} chars) ===\n`);
           console.log(found.userPrompt);
+          // The prompt deliberately does not name omitted sources — the writer
+          // must not refer to material it cannot read — but an audit has to see
+          // which sources were dropped and why.
+          if (found.packet.omitted.length > 0) {
+            console.log(`\n=== OMITTED SOURCES (${found.packet.omitted.length}) ===\n`);
+            for (const o of found.packet.omitted) {
+              console.log(`  [${o.preprocessedItemId}] ${o.sourceName} — ${o.reason}`);
+              console.log(`      ${o.title.slice(0, 110)}`);
+            }
+          }
           break;
         }
 

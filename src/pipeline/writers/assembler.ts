@@ -149,12 +149,31 @@ export function dedupeParagraphs(
 }
 
 /**
+ * A live blog is not an article. It is one page carrying a day of entries about
+ * many stories, wrapped in comment boxes and pointers to other coverage, and its
+ * extracted text is mostly not about the story it was clustered into. Run #112's
+ * rank 3 spent 5,954 characters of feature budget on Le Monde's Ukraine live
+ * blog, and the reviewer flagged it twice.
+ *
+ * Detected from the title, which live blogs announce plainly, and used only to
+ * push them behind real articles in selection — never to delete them. On a
+ * 27-candidate thread the live blog falls out of the packet; on a story where it
+ * is the only source, it is still the source.
+ */
+export function isLiveBlog(title: string): boolean {
+  return /^\s*(?:live|en direct|direct)\b\s*[::-]|^\s*live blog\b|\blive updates?\b/i.test(
+    title,
+  );
+}
+
+/**
  * Selects which articles reach the packet: one per parent outlet first, then
  * seconds and thirds in the same order, up to the tier's cap.
  *
  * Members arrive score-ordered and their articles chronological, so the first
- * pass takes the best source from each outlet in editorial order. Everything
- * beyond the cap is recorded as an omission rather than silently dropped.
+ * pass takes the best source from each outlet in editorial order. Live blogs go
+ * last within each pass. Everything beyond the cap is recorded as an omission
+ * rather than silently dropped.
  */
 export function selectArticles(
   articles: StoryArticle[],
@@ -164,8 +183,15 @@ export function selectArticles(
   const takenIds = new Set<number>();
   const seenParents = new Set<string>();
 
+  // Stable: real articles keep their editorial order, live blogs keep theirs,
+  // and the second group only ever fills slots the first did not want.
+  const ordered = [
+    ...articles.filter((a) => !isLiveBlog(a.title)),
+    ...articles.filter((a) => isLiveBlog(a.title)),
+  ];
+
   // First pass: one article per parent outlet, in order.
-  for (const article of articles) {
+  for (const article of ordered) {
     if (selected.length >= maxArticles) break;
     if (seenParents.has(article.parentSource)) continue;
     seenParents.add(article.parentSource);
@@ -174,20 +200,22 @@ export function selectArticles(
   }
 
   // Second pass: fill remaining slots with the rest, still in order.
-  for (const article of articles) {
+  for (const article of ordered) {
     if (selected.length >= maxArticles) break;
     if (takenIds.has(article.preprocessedItemId)) continue;
     selected.push(article);
     takenIds.add(article.preprocessedItemId);
   }
 
-  const omitted: PacketOmission[] = articles
+  const omitted: PacketOmission[] = ordered
     .filter((a) => !takenIds.has(a.preprocessedItemId))
     .map((a) => ({
       preprocessedItemId: a.preprocessedItemId,
       sourceName: a.sourceName,
       title: a.title,
-      reason: `beyond the ${maxArticles}-article cap for this tier`,
+      reason: isLiveBlog(a.title)
+        ? `live blog, ranked behind articles (cap ${maxArticles})`
+        : `beyond the ${maxArticles}-article cap for this tier`,
     }));
 
   return { selected, omitted };
