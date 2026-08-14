@@ -47,6 +47,28 @@ is a person losing a service. A policy is somebody's week.
 - No speculation about what happens next unless a source speculates and you say
   who.
 
+## One piece, one spine
+
+A piece is about one thing. Not one topic — one thing that happened, or one
+development that matters now.
+
+Some stories arrive as a *thread*: several related events that belong to one
+continuing situation. An immigration crackdown is not a story; a death in a
+detention centre the government stopped reporting is. A war is not a story; three
+grain terminals shutting down is. When the material holds many events, pick the
+one that matters most to this reader now, lead with it, and build the piece
+around it. Everything else in the packet is context and corroboration — use what
+bears on that spine and leave the rest out.
+
+**You are not required to mention every source.** A piece that touches each one
+in turn is a list of things that happened, not an article, and the reader can
+feel the difference immediately: it has no argument, no shape, and no reason to
+end where it ends.
+
+The headline is the test. If it needs an "as" clause, or a list of three nouns,
+to cover what the piece contains, the piece has no spine. Find the spine, write
+the headline for that, and cut what the headline does not promise.
+
 ## Register by length
 
 The tier in the prompt sets the length, and length changes what kind of writing
@@ -56,6 +78,10 @@ is appropriate.
 for the analytical frame that explains why this matters to this reader. Earn
 vivid phrases through sourcing: metaphor and framing are allowed here because
 there is space to support them.
+
+600 words is a ceiling, not a target to aim past. A feature with twelve sources
+under it is not a longer feature — it is a better-corroborated one, and the extra
+sources buy confidence rather than column inches.
 
 **Standard (120–200 words).** One or two paragraphs. What happened, who it lands
 on, what is genuinely new. Close to plain description. One idea, finished.

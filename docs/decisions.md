@@ -20,6 +20,48 @@ Entry format:
 
 ---
 
+## 2026-08-14 — First writer run: the prose is sound, the editing is not
+
+**Decision:** the fix for sprawling features is a focus instruction, not a
+shorter word target or fewer sources. `docs/voice.md` grows a "One piece, one
+spine" section, and the prompt tells a thread to lead with one development.
+
+**Context:** writer run #1 wrote the top three features. All three came back
+accurate — correct attribution throughout ("Zelensky said", "Russia has not
+confirmed", "the Prospect reported"), no invented number, name, date or quote,
+no cross-story contamination. The reviewer checked specifically for the failure
+that matters and found none.
+
+What it did find was length and shape: 716, 534 and 661 words against a 400–600
+target, with the two long ones reading as roundups rather than articles.
+
+**The diagnosis is in the numbers.** The piece that held together — T6, 534
+words, the only one inside its band — had **four** members. The two that sprawled
+had **twelve** each. T1's twelve covered deportation statistics, a medical
+neglect case, a warrantless raid, surveillance of nonprofits, a death in
+detention, shock gloves, a no-bid legal-services contract and an Oregon facility
+protest. A writer given twelve distinct events and 500 words will tour them,
+because nothing told it not to.
+
+**Rationale:** the alternatives are worse. Cutting `max_articles` would starve
+the corroboration the packet exists to provide — the sources are not the problem,
+the absence of an editorial instruction is. Lowering the word target treats the
+symptom and would make a *focused* feature too short. And the deeper cause —
+that "immigration crackdown" is closer to a topic than a situation — is a
+threading question, not one the writers stage should paper over.
+
+So the writer is told what a human editor would tell it: pick the development
+that matters now, lead with it, use the rest as corroboration, and leave out
+what the headline does not promise. The headline is the test — an "as" clause or
+a list of three nouns means the piece has no spine, which is exactly the shape
+both long headlines took.
+
+**Not done, deliberately:** no automatic re-call on an over-length piece. That
+doubles the cost of every overrun to fix something a prompt may fix for free.
+Revisit if the instruction does not move the numbers.
+
+---
+
 ## 2026-08-14 — AP has no reachable feed; the Google News proxy stays, with its costs named
 
 **Decision:** keep the Google News search proxies for AP Top News and AP

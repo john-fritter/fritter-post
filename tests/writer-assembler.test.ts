@@ -410,6 +410,37 @@ function testUserPromptCarriesBioMaterialAndSources() {
   assert.ok(/NOT source material and NOT evidence/.test(prompt));
 }
 
+function testThreadPromptTellsTheWriterToFindASpine() {
+  // Run #1's two sprawling features were both 12-member threads; the tight one
+  // had four members. Sprawl tracks the number of distinct events, so a thread
+  // is told to lead with one development rather than tour all of them.
+  const packet = assembleWriterPacket(
+    story("feature", [article(1, { chars: 3000 }), article(2, { chars: 3000 })]),
+    new Map(),
+    CFG,
+  );
+  const prompt = buildWriterUserPrompt("bio", packet);
+  assert.ok(prompt.includes("FOCUS"));
+  assert.ok(/several related events/.test(prompt));
+  assert.ok(/not required to use every source|leave out what does not/.test(prompt));
+  assert.ok(/ceiling, not a/.test(prompt));
+}
+
+function testASingleSourceStoryGetsNoFocusBlock() {
+  const single = story("standard", [article(1, { chars: 900 })]);
+  single.itemType = "singleton";
+  const prompt = buildWriterUserPrompt("bio", assembleWriterPacket(single, new Map(), CFG));
+  assert.ok(!prompt.includes("FOCUS"));
+}
+
+function testAMultiSourceClusterIsToldItIsOneEvent() {
+  const cluster = story("standard", [article(1, { chars: 900 }), article(2, { chars: 900 })]);
+  cluster.itemType = "cluster";
+  const prompt = buildWriterUserPrompt("bio", assembleWriterPacket(cluster, new Map(), CFG));
+  assert.ok(/cover one event/.test(prompt));
+  assert.ok(!/several related events/.test(prompt));
+}
+
 function testSystemPromptCarriesTheVoiceDocument() {
   const prompt = buildWriterSystemPrompt("VOICE MEMO CONTENTS");
   assert.ok(prompt.includes("VOICE MEMO CONTENTS"));
@@ -462,6 +493,9 @@ testUntranslatedSourceIsFlaggedToTheWriter();
 testUnresolvedSourcesAreDisclosed();
 testBriefTierStaysSmall();
 testUserPromptCarriesBioMaterialAndSources();
+testThreadPromptTellsTheWriterToFindASpine();
+testASingleSourceStoryGetsNoFocusBlock();
+testAMultiSourceClusterIsToldItIsOneEvent();
 testSystemPromptCarriesTheVoiceDocument();
 testWriterOutputParsing();
 console.log("writer assembler tests passed");

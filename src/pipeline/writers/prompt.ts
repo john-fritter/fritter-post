@@ -38,6 +38,7 @@ The source articles below are the only material you have. Everything you write m
 - Where a claim is unconventional and a mainstream source supports it, cite that source — it pre-empts a framing fight.
 - You are not reproducing these articles. Read them, then write the paper's own account.
 - If the material is thin, write less. A short accurate piece is the correct outcome of thin material; padding is not.
+- You are not required to use every source. Sources that do not bear on the piece's central development are corroboration you may leave out; more sources mean more confidence, not more words.
 
 OUTPUT FORMAT
 
@@ -47,7 +48,7 @@ HEADLINE: <one line, plain and direct, saying what happened>
 
 <the body, plain prose, paragraphs separated by a blank line>
 
-The headline states what happened. No questions, no teasing, no "what you need to know", no colon-and-label constructions.`;
+The headline states what happened, in one clause. If it needs an "as" clause or a list of three nouns to cover the piece, the piece has no focus — find the focus first, then write the headline for that. No questions, no teasing, no "what you need to know", no colon-and-label constructions.`;
 }
 
 function formatArticle(article: WriterPacket["articles"][number], index: number): string {
@@ -65,6 +66,35 @@ function formatArticle(article: WriterPacket["articles"][number], index: number)
     "",
     article.text.length > 0 ? article.text : "(no body text available for this source)",
   ].join("\n");
+}
+
+/**
+ * What to do with a packet holding more than one event.
+ *
+ * A thread is several events in one continuing situation, and the honest way to
+ * write 500 words about it is to lead with the development that matters now
+ * rather than to tour all twelve. A cluster is one event seen by several
+ * outlets, which is a different instruction: use the range to establish what
+ * happened and say where accounts differ. A singleton needs neither.
+ */
+function focusInstruction(packet: WriterPacket): string | null {
+  if (packet.itemType === "thread") {
+    return (
+      "This story is a thread: several related events that belong to one continuing " +
+      "situation. Pick the development that matters most to this reader now, lead with it, " +
+      "and build the piece around it. The other sources are context and corroboration — use " +
+      "what bears on that spine and leave out what does not. A piece that touches every " +
+      "source in turn is a list of things that happened, not an article."
+    );
+  }
+  if (packet.articles.length > 1) {
+    return (
+      "These sources cover one event. Use the range of them to establish what happened and " +
+      "to say plainly where accounts differ — that is what several sources buy you. It does " +
+      "not mean the piece should be longer than one event's worth."
+    );
+  }
+  return null;
 }
 
 export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string {
@@ -102,6 +132,16 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
     parts.push("That title is the source's own. Write your own headline.");
   }
 
+  // Run #1's first three features came back at 716, 534 and 661 words against a
+  // 400-600 target, and the two long ones read as roundups. The shortest and
+  // best had four members; the two that sprawled had twelve. Sprawl tracks the
+  // number of distinct events in the packet, so the instruction to find a spine
+  // belongs where that number is known.
+  const focus = focusInstruction(packet);
+  if (focus !== null) {
+    parts.push("", "FOCUS", focus);
+  }
+
   if (packet.notes.length > 0) {
     parts.push("", "NOTES ON THE MATERIAL");
     for (const note of packet.notes) parts.push(`- ${note}`);
@@ -120,7 +160,13 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
     parts.push(formatArticle(article, i), "");
   });
 
-  parts.push("---", "", `Write the piece. ${minWords}–${maxWords} words.`);
+  parts.push(
+    "---",
+    "",
+    `Write the piece. ${minWords}–${maxWords} words — ${maxWords} is a ceiling, not a ` +
+      "target. If the material will not fit, cut what the headline does not promise rather " +
+      "than writing longer.",
+  );
 
   return parts.join("\n");
 }
