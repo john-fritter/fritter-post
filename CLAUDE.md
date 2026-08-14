@@ -83,7 +83,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–034)
+├── migrations/                  # numbered SQL migrations (001–035)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -91,10 +91,8 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The pipeline is nine stages (see `docs/concept.md`). The seven below are built
-and production-ready. The writers stage is partly built — the materials
-resolver and the article-text fetch exist, the writer call does not. The
-publisher is not built; its directory is empty.
+The pipeline is nine stages (see `docs/concept.md`). The eight below are built.
+Only the publisher is not built; its directory is empty.
 
 The researcher stage was dropped; the editor's tiered output feeds the writers
 directly (see `docs/decisions.md`).
@@ -105,7 +103,7 @@ grouping proved out; see `docs/decisions.md`.)
 
 ```
 collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-           →  thread  →  editor
+           →  thread  →  editor  →  writers
 ```
 
 ### collector
@@ -330,9 +328,10 @@ Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`.
 resilience. `editor.fallback` no longer exists in `models.yaml`. See
 `docs/decisions.md`, 2026-06-16.)
 
-### writers (partly built)
+### writers
 
-The writer call is not built. Two pieces that feed it are.
+Three pieces: the materials resolver, the article-text fetch, and the prompt
+assembler, then the writer calls themselves.
 
 **`materials.ts` — the resolver.** Walks a ranked editor story to the articles
 underneath it: thread → `thread_members` → cluster → `grouping_runs.digest` →
@@ -385,6 +384,24 @@ tier's own thresholds — the same 1,000 characters is thin for a feature and
 adequate for a standard piece — and a headline-only story carries a note telling
 the writer to write short and invent nothing. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
+
+**`index.ts` — the writer calls.** One call per feature and standard piece;
+briefs go in batches of `brief_batch_size`, because 75 separate calls would each
+re-send the bio and the standing memo and the scaffolding would outweigh the
+writing. Batched briefs come back as `ref;;headline;;body` lines, keyed on ref so
+a brief cannot be written against the wrong story, and a ref missing from the
+output becomes a failed piece rather than a silent gap.
+
+**A failed call is a row, not an exception.** The paper has a deadline; one call
+that times out must cost one piece, not the edition. Failures are stored as
+`status='failed'` pieces with the reason, and `writer_runs.failed_calls` says how
+much of the paper is missing without anyone reading stdout. Every call goes
+through `callWithBackoff`.
+
+Writes `writer_runs` / `writer_pieces` (migration 035). `editor_story_id` anchors
+each piece to the ranked story, and from there the existing keys reach the
+thread, cluster, preprocessed items and raw items; `generation_log_id` reaches
+the exact prompt that produced it.
 
 **The cluster label is not evidence and the prompt says so.** A describe-pass
 title and summary are generated from every article in the cluster, including the
@@ -526,7 +543,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **035**.
+number is ambiguous. The next migration is **036**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -540,6 +557,8 @@ number is ambiguous. The next migration is **035**.
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 - `npm run fetch-text -- --editor-run <n> [--dry-run] [--limit <n>]` — fetch
   publisher article text for the stories of an editor run
+- `npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]` — write the
+  paper's pieces
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -553,6 +572,8 @@ number is ambiguous. The next migration is **035**.
   per host, plus the fetch scope
 - `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
   packets: sizes for every story, or the full prompt for one
+- `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
+  written piece; `--full` prints the bodies
 
 **Experiments**
 - `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —

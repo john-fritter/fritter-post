@@ -172,9 +172,26 @@ editor:
 # Writers stage. The writer call itself is not built yet — the model id below is
 # still a placeholder — but the fetch sub-stage that feeds it is.
 writers:
-  model: gemini-3-flash-preview  # placeholder
+  # GLM for prose, as concept.md called for, and the same family the judgment
+  # stages run on. Non-thinking: writing 400 words from twelve sources in front
+  # of you is composition, not inference, and run #40's lesson was that a
+  # thinking model can spend its whole budget reasoning and emit nothing.
+  model: zai-org/glm-5.2
+  provider: nanogpt
+  # Higher than every other stage. The judgment stages want repeatability; this
+  # one wants prose that does not read like a form letter.
   temperature: 0.6
-  max_tokens: 2000
+  # A feature is 400-600 words, roughly 900 tokens. The headroom is for a batch
+  # of ten briefs plus whatever reasoning_effort "low" spends.
+  max_tokens: 8000
+  reasoning_effort: "low"
+  stream: true
+  timeout_ms: 300000
+  # 15 features + 60 standards = 75 individual calls, plus 8 brief batches.
+  concurrency: 4
+  brief_batch_size: 10
+  retry_max_attempts: 5
+  retry_base_ms: 2000
 
   # Article text fetch. Editor run #112's audit is the source of every number
   # here: 305 underlying articles, 185 of them (61%) under 800 characters of feed

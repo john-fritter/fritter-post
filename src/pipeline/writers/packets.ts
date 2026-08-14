@@ -49,6 +49,18 @@ export async function loadFetchedTexts(itemIds: number[]): Promise<Map<number, R
   );
 }
 
+/**
+ * The two standing documents, loaded once. Exported so the writers stage reads
+ * the same bio the prompts were rendered with, rather than recovering it by
+ * slicing a prompt back apart.
+ */
+export function loadWriterDocs(): { bio: string; voice: string } {
+  return {
+    bio: loadDoc("bio.md", BIO_FALLBACK),
+    voice: loadDoc("voice.md", VOICE_FALLBACK),
+  };
+}
+
 export interface RenderedPacket {
   packet: WriterPacket;
   systemPrompt: string;
@@ -64,8 +76,7 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
   const itemIds = [...new Set(stories.flatMap((s) => s.articles.map((a) => a.preprocessedItemId)))];
   const textsById = await loadFetchedTexts(itemIds);
 
-  const bio = loadDoc("bio.md", BIO_FALLBACK);
-  const voice = loadDoc("voice.md", VOICE_FALLBACK);
+  const { bio, voice } = loadWriterDocs();
 
   return stories.map((story) => {
     const packet = assembleWriterPacket(story, textsById, cfg);

@@ -14,6 +14,7 @@
  */
 
 import type { WriterPacket } from "./assembler.js";
+import { normalizeRef } from "../../lib/refs.js";
 
 export const VOICE_FALLBACK =
   "(The standing memo is missing. Write plainly and directly: say what happened, " +
@@ -122,6 +123,93 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   parts.push("---", "", `Write the piece. ${minWords}–${maxWords} words.`);
 
   return parts.join("\n");
+}
+
+// --- briefs, written in batches ---
+
+/**
+ * Briefs are 25–45 words each and the paper carries 75 of them. One call per
+ * brief would be 75 calls that each re-send the bio and the standing memo — the
+ * scaffolding would outweigh the writing several times over. A batch sends the
+ * documents once and the material for `n` briefs after them.
+ *
+ * The output is the pipeline's usual flat line format, `ref;;headline;;body`,
+ * with the body last so a `;;` inside it cannot shift a column.
+ */
+export function buildBriefBatchUserPrompt(bio: string, packets: WriterPacket[]): string {
+  const parts: string[] = ["THE READER", "", bio, "", "---", ""];
+
+  parts.push(
+    `BRIEFS TO WRITE (${packets.length})`,
+    "",
+    "Each item below is one brief. They are unrelated to each other — do not " +
+      "connect them, and do not let one brief's subject colour another's.",
+    "",
+  );
+
+  for (const packet of packets) {
+    const [minWords, maxWords] = packet.targetWords;
+    parts.push(`=== ${packet.ref} — rank ${packet.rank}, ${minWords}–${maxWords} words`);
+    if (packet.notes.length > 0) {
+      for (const note of packet.notes) parts.push(`Note: ${note}`);
+    }
+    packet.articles.forEach((article, i) => {
+      parts.push(formatArticle(article, i));
+    });
+    parts.push("");
+  }
+
+  parts.push(
+    "---",
+    "",
+    "Output one line per brief, in this exact format, and nothing else:",
+    "",
+    "ref;;headline;;body",
+    "",
+    "The ref is the identifier above (for example " + (packets[0]?.ref ?? "S12345") + "). " +
+      "Two semicolons separate the fields. The body is plain prose on one line, " +
+      "no line breaks. Write every brief listed, once each, in the order given.",
+  );
+
+  return parts.join("\n");
+}
+
+export interface ParsedBrief {
+  ref: string;
+  headline: string;
+  body: string;
+}
+
+/**
+ * Parses a brief batch: one `ref;;headline;;body` line each. Unknown refs are
+ * dropped (a model occasionally invents one) and the first line for a ref wins.
+ * Missing refs are the caller's problem to record — a brief that did not come
+ * back is a failed piece, not a silent gap.
+ */
+export function parseBriefBatchOutput(text: string, validRefs: string[]): Map<string, ParsedBrief> {
+  const valid = new Set(validRefs.map((r) => r.toUpperCase()));
+  const out = new Map<string, ParsedBrief>();
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+
+    const first = line.indexOf(";;");
+    if (first === -1) continue;
+    const second = line.indexOf(";;", first + 2);
+    if (second === -1) continue;
+
+    const ref = normalizeRef(line.slice(0, first));
+    if (ref === null || !valid.has(ref) || out.has(ref)) continue;
+
+    const headline = line.slice(first + 2, second).trim();
+    const body = line.slice(second + 2).trim();
+    if (headline.length === 0 || body.length === 0) continue;
+
+    out.set(ref, { ref, headline, body });
+  }
+
+  return out;
 }
 
 export interface ParsedWriterOutput {

@@ -78,6 +78,8 @@ export interface StoryMember {
 
 /** One published story, resolved to everything it is made of. */
 export interface StoryMaterials {
+  /** editor_stories.id — the lineage anchor a written piece points back to. */
+  storyId: number | null;
   rank: number;
   tier: EditorTier;
   ref: string;
@@ -103,6 +105,7 @@ export interface StoryMaterials {
 // --- row shapes, exported so tests can build fixtures without a database ---
 
 export interface EditorStoryRow {
+  id?: string;
   item_type: string;
   cluster_index: number | null;
   preprocessed_item_id: string | null;
@@ -309,6 +312,7 @@ export function buildStoryMaterials(inputs: MaterialsInputs): StoryMaterials[] {
         );
 
       materials = {
+        storyId: story.id !== undefined ? Number(story.id) : null,
         rank: story.rank,
         tier,
         ref: `T${thread?.thread_index ?? "?"}`,
@@ -331,6 +335,7 @@ export function buildStoryMaterials(inputs: MaterialsInputs): StoryMaterials[] {
         unresolved,
       );
       materials = {
+        storyId: story.id !== undefined ? Number(story.id) : null,
         rank: story.rank,
         tier,
         ref,
@@ -356,6 +361,7 @@ export function buildStoryMaterials(inputs: MaterialsInputs): StoryMaterials[] {
         unresolved,
       );
       materials = {
+        storyId: story.id !== undefined ? Number(story.id) : null,
         rank: story.rank,
         tier,
         ref,
@@ -372,6 +378,7 @@ export function buildStoryMaterials(inputs: MaterialsInputs): StoryMaterials[] {
     } else {
       unresolved.push(`rank ${story.rank}: story names neither a thread, cluster, nor item`);
       materials = {
+        storyId: story.id !== undefined ? Number(story.id) : null,
         rank: story.rank,
         tier,
         ref: "(unresolved)",
@@ -440,7 +447,7 @@ export async function loadEditorRunMaterials(editorRunId: number): Promise<Story
   );
 
   const { rows: stories } = await pool.query<EditorStoryRow>(
-    `SELECT item_type, cluster_index,
+    `SELECT id::text AS id, item_type, cluster_index,
             preprocessed_item_id::text AS preprocessed_item_id,
             thread_id::text AS thread_id,
             tier, rank

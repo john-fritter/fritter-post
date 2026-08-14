@@ -86,6 +86,7 @@ function article(
 
 function story(tier: string, articles: StoryArticle[]): StoryMaterials {
   return {
+    storyId: 1,
     rank: 3,
     tier: tier as StoryMaterials["tier"],
     ref: "T3",

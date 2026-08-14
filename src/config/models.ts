@@ -219,6 +219,14 @@ const WritersPacketConfigSchema = z.object({
 });
 
 const WritersStageConfigSchema = StageConfigSchema.extend({
+  // In-flight writer calls. Each one is a whole piece of prose, so this is the
+  // knob that decides how long the stage takes and how hard the provider is hit.
+  concurrency: z.number().int().positive(),
+  // Briefs per batched call. 75 separate calls would each re-send the bio and
+  // the standing memo.
+  brief_batch_size: z.number().int().positive(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
   fetch: WritersFetchConfigSchema,
   packet: WritersPacketConfigSchema,
 });

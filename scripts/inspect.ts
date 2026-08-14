@@ -771,6 +771,84 @@ async function main() {
         break;
       }
 
+      // Written pieces: the paper as the reader will see it.
+      case "writers": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<{
+            id: number; started_at: string; completed_at: string | null;
+            editor_run_id: number; model_used: string; pieces_in: number;
+            pieces_written: number; pieces_failed: number; calls: number;
+            failed_calls: number; input_tokens: number | null; output_tokens: number | null;
+          }>("SELECT * FROM writer_runs WHERE id = $1", [runId]);
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No writer run with id ${runId}`);
+            break;
+          }
+          console.log(`Writer run #${run.id}`);
+          console.log(`  Editor run: #${run.editor_run_id}`);
+          console.log(`  Model:      ${run.model_used}`);
+          console.log(`  Pieces:     ${run.pieces_written} written, ${run.pieces_failed} failed of ${run.pieces_in}`);
+          console.log(`  Calls:      ${run.calls} (${run.failed_calls} failed)`);
+          console.log(`  Tokens:     ${run.input_tokens ?? 0} in, ${run.output_tokens ?? 0} out`);
+
+          const { rows: pieces } = await pool.query<{
+            rank: number; tier: string; ref: string; headline: string | null;
+            body: string | null; word_count: number; material_level: string | null;
+            source_count: number; articles_used: number; status: string; detail: string | null;
+          }>(
+            `SELECT rank, tier, ref, headline, body, word_count, material_level,
+                    source_count, articles_used, status, detail
+             FROM writer_pieces WHERE run_id = $1 ORDER BY rank ASC`,
+            [runId],
+          );
+
+          const full = flags["full"] === "true";
+          console.log(`\n── PIECES (${pieces.length})`);
+          for (const p of pieces) {
+            if (p.status !== "ok") {
+              console.log(`  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}] ${p.ref.padEnd(7)} FAILED — ${p.detail ?? ""}`);
+              continue;
+            }
+            console.log(
+              `  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}] ${p.ref.padEnd(7)} ` +
+                `${String(p.word_count).padStart(3)}w  ${(p.material_level ?? "").padEnd(13)} ` +
+                `src=${p.source_count}/${p.articles_used}`,
+            );
+            console.log(`       ${p.headline ?? ""}`);
+            if (full && p.body) {
+              for (const line of p.body.split("\n")) console.log(`       ${line}`);
+              console.log("");
+            }
+          }
+          break;
+        }
+
+        const { rows } = await pool.query<{
+          id: number; started_at: string; editor_run_id: number; model_used: string;
+          pieces_in: number; pieces_written: number; pieces_failed: number; failed_calls: number;
+        }>(
+          `SELECT id, started_at, editor_run_id, model_used, pieces_in,
+                  pieces_written, pieces_failed, failed_calls
+           FROM writer_runs ORDER BY started_at DESC LIMIT 20`,
+        );
+        if (rows.length === 0) {
+          console.log("No writer runs yet.");
+          break;
+        }
+        console.log("id     started              editor  model                in    ok    fail  bad-calls");
+        for (const r of rows) {
+          console.log(
+            `${String(r.id).padEnd(6)} ${new Date(r.started_at).toISOString().slice(0, 19)}  ` +
+              `#${String(r.editor_run_id).padEnd(6)} ${r.model_used.slice(0, 20).padEnd(20)} ` +
+              `${String(r.pieces_in).padEnd(5)} ${String(r.pieces_written).padEnd(5)} ` +
+              `${String(r.pieces_failed).padEnd(5)} ${r.failed_calls}`,
+          );
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -791,6 +869,8 @@ Commands:
   packet --editor-run <n>  Writer packet sizes for every story of an editor run
   packet --editor-run <n> --rank <n>
                            Print the full assembled prompt for one story
+  writers                  List recent writer runs
+  writers --id <n>         Show every written piece; add --full for bodies
 
 Options:
   --source <name>          Filter by source name (exact match)
@@ -799,6 +879,7 @@ Options:
   --editor-run <n>         Editor run id (materials)
   --sources <n>            Rows in the per-source table (materials, default 40)
   --rank <n>               Story rank (packet)
+  --full                   Print piece bodies (writers --id)
 `);
         process.exit(1);
     }

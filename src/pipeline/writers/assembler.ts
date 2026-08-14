@@ -84,6 +84,8 @@ export interface PacketOmission {
 export type MaterialLevel = "full" | "partial" | "headline-only";
 
 export interface WriterPacket {
+  /** editor_stories.id, carried through for the written piece's lineage. */
+  storyId: number | null;
   rank: number;
   tier: string;
   ref: string;
@@ -416,6 +418,7 @@ export function assembleWriterPacket(
   }
 
   return {
+    storyId: story.storyId,
     rank: story.rank,
     tier: story.tier,
     ref: story.ref,

@@ -20,6 +20,7 @@
     "grouping": "tsx scripts/grouping.ts",
     "grouping-pass1": "tsx scripts/grouping-pass1.ts",
     "fetch-text": "tsx scripts/fetch-article-text.ts",
+    "write": "tsx scripts/write.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts"
   },
   "dependencies": {

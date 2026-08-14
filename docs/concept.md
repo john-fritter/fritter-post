@@ -48,7 +48,7 @@ The paper is produced by a daily cron running nine stages.
 9. Publisher (software)
 ```
 
-Stages 1–7 are built. The writers stage is partly built (materials resolver and article-text fetch; the writer call is not). The publisher is not built.
+Stages 1–8 are built. Only the publisher is not.
 
 **This section has been reconciled with what was actually built.** The
 original conception had seven stages including an agentic *Researcher*
@@ -130,7 +130,7 @@ The stage is three pieces, of which the first two are built:
 
 1. **Materials resolver** — walks a ranked story back to the articles underneath it, across threads, clusters and singletons.
 2. **Article-text fetch** — most feeds carry a teaser rather than a body (61% of run #112's articles were under 800 characters), so the articles the feed left short are fetched from the publisher and extracted. The text is used to write the paper and never published.
-3. **Prompt assembler** — selects, deduplicates and budgets that material into one prompt per piece. Not built.
+3. **Prompt assembler** — selects, deduplicates and budgets that material into one prompt per piece, then makes the calls: one per feature and standard piece, briefs in batches. A failed call costs one piece, never the edition.
 
 ### Stage 9: Publisher (software)
 
