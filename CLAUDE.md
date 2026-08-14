@@ -75,7 +75,7 @@ fritter-post/
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
 │   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
-│   │   ├── writers/             # materials + fetch + prompt assembler (writer call not built)
+│   │   ├── writers/             # materials + fetch + assembler + the writer calls
 │   │   └── publisher/           # (not built — empty)
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
