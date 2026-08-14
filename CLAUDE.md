@@ -392,6 +392,16 @@ writing. Batched briefs come back as `ref;;headline;;body` lines, keyed on ref s
 a brief cannot be written against the wrong story, and a ref missing from the
 output becomes a failed piece rather than a silent gap.
 
+**Reading the output is forgiving; producing it is not retried.** Run #3 lost two
+pieces to a parser that demanded a labelled headline on the first line — the
+calls had succeeded. `parseWriterOutput` now scans the opening lines for a label,
+ignores code fences, and falls back to a short unlabelled first line, while still
+refusing a first line that is plainly prose. A brief missing from a batch gets
+one follow-up call for the stragglers.
+
+**`npm run write -- --repair <run>`** re-writes only the failed pieces of a run,
+in place. A paper is one run: filling three holes must not cost 150 calls.
+
 **A failed call is a row, not an exception.** The paper has a deadline; one call
 that times out must cost one piece, not the edition. Failures are stored as
 `status='failed'` pieces with the reason, and `writer_runs.failed_calls` says how
@@ -559,6 +569,8 @@ number is ambiguous. The next migration is **036**.
   publisher article text for the stories of an editor run
 - `npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]` — write the
   paper's pieces
+- `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
+  pieces, in place
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`

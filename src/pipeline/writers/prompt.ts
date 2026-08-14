@@ -39,6 +39,7 @@ The source articles below are the only material you have. Everything you write m
 - You are not reproducing these articles. Read them, then write the paper's own account.
 - If the material is thin, write less. A short accurate piece is the correct outcome of thin material; padding is not.
 - You are not required to use every source. Sources that do not bear on the piece's central development are corroboration you may leave out; more sources mean more confidence, not more words.
+- A characterization is a claim, not a description. "Resettled after the war" is reporting; "from countries the U.S. destabilized" is an argument. Causes, motives, and histories all need a source standing behind them, or the fact that supports them stated plainly instead.
 
 OUTPUT FORMAT
 
@@ -264,32 +265,58 @@ export interface ParsedWriterOutput {
 }
 
 /**
- * Parses the writer's output. Recognition-based rather than strict: models
- * decorate a labelled line with bold markers, quotes, or a stray heading hash,
- * and losing a whole piece to that would be absurd. A response with no
- * recognizable headline line yields null, and the caller decides what a missing
- * piece means for the paper.
+ * Parses the writer's output: a headline line, then the body.
+ *
+ * Recognition-based, and deliberately forgiving. Run #3 lost two whole pieces to
+ * "unparseable output" — calls that succeeded, cost their tokens, and produced
+ * prose that never reached the paper because the first line was not exactly what
+ * the contract asked for. A model that opens with "Here is the piece:", wraps the
+ * answer in a code fence, or writes the headline with no label at all has done
+ * the job; refusing to read it is the parser's failure, not the writer's.
+ *
+ * So: look for a labelled headline in the first few lines, and if there is none,
+ * treat a short first line as the headline. A first line that is clearly prose —
+ * long, or with no body after it — still yields null, because publishing a
+ * paragraph as a headline is worse than recording a failed piece.
  */
 export function parseWriterOutput(text: string): ParsedWriterOutput | null {
-  const lines = text.split(/\r?\n/);
-  let headline: string | null = null;
-  let bodyStart = 0;
+  const lines = text
+    .split(/\r?\n/)
+    // Code fences and preamble scaffolding are not content.
+    .filter((line) => !/^\s*```/.test(line));
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (line.length === 0) continue;
-    const match = line.match(/^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*(.+)$/i);
-    if (match) {
-      headline = match[1]!.trim().replace(/^\**|\**$/g, "").replace(/^["'“]|["'”]$/g, "").trim();
-      bodyStart = i + 1;
-    }
-    break; // the headline is the first non-empty line or it is absent
+  const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstContentIndex === -1) return null;
+
+  const clean = (value: string): string =>
+    value
+      .trim()
+      .replace(/^\**|\**$/g, "")
+      .replace(/^["'“”]|["'“”]$/g, "")
+      .trim();
+
+  // A labelled headline anywhere in the opening lines, past any preamble.
+  const LOOKAHEAD = 5;
+  for (let i = firstContentIndex; i < Math.min(lines.length, firstContentIndex + LOOKAHEAD); i++) {
+    const match = lines[i]!.trim().match(/^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*(.+)$/i);
+    if (!match) continue;
+    const headline = clean(match[1]!);
+    const body = lines.slice(i + 1).join("\n").trim();
+    if (headline.length === 0 || body.length === 0) return null;
+    return { headline, body };
   }
 
-  if (headline === null || headline.length === 0) return null;
+  // No label. A short first line followed by a body is a headline.
+  const MAX_UNLABELLED_HEADLINE_CHARS = 160;
+  const candidate = clean(lines[firstContentIndex]!.replace(/^#{1,3}\s*/, ""));
+  const body = lines.slice(firstContentIndex + 1).join("\n").trim();
+  if (
+    candidate.length > 0 &&
+    candidate.length <= MAX_UNLABELLED_HEADLINE_CHARS &&
+    body.length > 0
+  ) {
+    return { headline: candidate, body };
+  }
 
-  const body = lines.slice(bodyStart).join("\n").trim();
-  if (body.length === 0) return null;
-
-  return { headline, body };
+  return null;
 }

@@ -20,6 +20,66 @@ Entry format:
 
 ---
 
+## 2026-08-14 — The paper writes: 147 of 150, and three defects worth the run
+
+**Decision:** the spine instruction stays; the parser gets more forgiving; a
+dropped brief is re-asked once; a failed piece can be repaired without
+re-writing the paper; and characterization joins the list of things that need a
+source.
+
+**Context:** the focus change worked. The same three features went 716 → 534,
+661 → 572, 534 → 503, every headline single-clause, and the reviewer's read was
+that T3 "correctly dropped the Crimea assassination, Warsaw plot, body exchange
+and other peripheral developments" — the largest editorial improvement of the
+run. The full paper then wrote in 264 seconds: 147 pieces, 83 calls, **zero
+failed provider calls**, features averaging 512 words, standards 157, briefs 35.
+
+Three defects, and two of them are mine rather than the model's.
+
+### An unforgiving parser cost two whole pieces
+
+`parseWriterOutput` required a labelled headline on the *first* non-empty line.
+Two pieces came back "unparseable": the call succeeded, the tokens were spent,
+and prose that was probably fine never reached the paper because of a preamble
+line or a missing label. The parser now looks for a label in the opening few
+lines, ignores code fences, and falls back to treating a short first line as the
+headline — while still refusing a first line that is plainly a paragraph, since
+publishing prose as a headline is worse than recording a failure.
+
+The pipeline's own precedent was already there: the editor's output parser was
+made recognition-based in June for exactly this reason.
+
+### A dropped brief is now re-asked once
+
+One brief of ten went missing from a batch — the call succeeded and returned
+nine. The batch now makes one bounded follow-up call for the stragglers. Only
+one: if the model will not write it twice, that is an answer.
+
+### A paper is one run, so repair belongs inside it
+
+Filling three holes should not cost 150 calls, and publishing the holes is not
+an option either. `npm run write -- --repair <run>` re-writes only the failed
+pieces of an existing run and updates them in place, so the run stays one paper
+and the cost is proportional to the damage. Repaired briefs are written
+individually rather than batched, which removes the batch's failure mode from
+the repair path.
+
+### Characterization is a claim
+
+The reviewer flagged a factual overstatement in the lead feature. The class it
+belongs to is not invented facts — the run had none — but invented *frames*: a
+source says refugees were resettled after a war, and the piece says they came
+from "countries the U.S. had destabilized". Both may be true; only one is
+sourced. `voice.md` and the writer prompt now say that causes, motives and
+histories need a source standing behind them, or the supporting fact stated
+plainly instead.
+
+**What this run establishes:** the stage is sound. Zero provider failures, one
+paper in four and a half minutes, ~320k input tokens, and the failures that did
+occur were all in reading the output rather than producing it.
+
+---
+
 ## 2026-08-14 — First writer run: the prose is sound, the editing is not
 
 **Decision:** the fix for sprawling features is a focus instruction, not a

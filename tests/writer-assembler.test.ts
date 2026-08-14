@@ -12,7 +12,6 @@ import {
 import {
   buildWriterUserPrompt,
   buildWriterSystemPrompt,
-  parseWriterOutput,
 } from "../src/pipeline/writers/prompt.js";
 import type { StoryMaterials, StoryArticle } from "../src/pipeline/writers/materials.js";
 import type { WritersPacketConfig } from "../src/config/models.js";
@@ -447,25 +446,6 @@ function testSystemPromptCarriesTheVoiceDocument() {
   assert.ok(prompt.includes("HEADLINE:"));
 }
 
-function testWriterOutputParsing() {
-  const parsed = parseWriterOutput("HEADLINE: Third person dies in ICE custody\n\nA man died...");
-  assert.equal(parsed!.headline, "Third person dies in ICE custody");
-  assert.equal(parsed!.body, "A man died...");
-
-  // Models decorate the label; losing a whole piece to a bold marker would be absurd.
-  assert.equal(
-    parseWriterOutput("**Headline:** A plain headline\n\nBody text here.")!.headline,
-    "A plain headline",
-  );
-  assert.equal(
-    parseWriterOutput("## HEADLINE: Quoted one\n\nBody.")!.headline,
-    "Quoted one",
-  );
-
-  assert.equal(parseWriterOutput("Just some prose with no headline line."), null);
-  assert.equal(parseWriterOutput("HEADLINE: no body follows"), null);
-}
-
 testOneArticlePerOutletBeforeSeconds();
 testSecondsFillRemainingSlotsInOrder();
 testLiveBlogsAreRankedBehindRealArticles();
@@ -497,5 +477,4 @@ testThreadPromptTellsTheWriterToFindASpine();
 testASingleSourceStoryGetsNoFocusBlock();
 testAMultiSourceClusterIsToldItIsOneEvent();
 testSystemPromptCarriesTheVoiceDocument();
-testWriterOutputParsing();
 console.log("writer assembler tests passed");

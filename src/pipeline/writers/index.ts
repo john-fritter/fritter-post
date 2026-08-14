@@ -179,11 +179,49 @@ async function writeBriefBatch(
     );
 
     const parsed = parseBriefBatchOutput(result.text, refs);
-    const missing = refs.filter((r) => !parsed.has(r));
+    let missing = refs.filter((r) => !parsed.has(r));
+    let inputTokens = result.inputTokens ?? 0;
+    let outputTokens = result.outputTokens ?? 0;
+
+    // One bounded second pass for whatever the batch dropped. Run #3 lost a
+    // brief this way — the call succeeded and nine of ten briefs came back — and
+    // re-asking for the stragglers alone costs one small call rather than a hole
+    // in the paper. Only once: if the model will not write it twice, that is an
+    // answer.
     if (missing.length > 0) {
       console.warn(
-        `[writers] brief batch ${batchIndex}: ${missing.length} of ${refs.length} brief(s) missing from output`,
+        `[writers] brief batch ${batchIndex}: ${missing.length} of ${refs.length} brief(s) missing — re-asking for those`,
       );
+      const stragglers = packets.filter((p) => missing.includes(p.ref));
+      try {
+        const retry = await callWithBackoff(
+          () =>
+            callLLM({
+              stage: "writers-briefs",
+              stageRunId: runId,
+              model: cfg.model,
+              systemPrompt,
+              userPrompt: buildBriefBatchUserPrompt(bio, stragglers),
+              temperature: cfg.temperature,
+              maxTokens: cfg.max_tokens,
+              reasoningEffort: cfg.reasoning_effort,
+              provider: cfg.provider,
+              timeoutMs: cfg.timeout_ms,
+              stream: cfg.stream,
+            }),
+          { retry_max_attempts: cfg.retry_max_attempts, retry_base_ms: cfg.retry_base_ms },
+          `writers briefs ${batchIndex} straggler`,
+        );
+        inputTokens += retry.inputTokens ?? 0;
+        outputTokens += retry.outputTokens ?? 0;
+        for (const [ref, brief] of parseBriefBatchOutput(retry.text, missing)) {
+          parsed.set(ref, brief);
+        }
+        missing = refs.filter((r) => !parsed.has(r));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[writers] brief batch ${batchIndex}: straggler call failed — ${msg}`);
+      }
     }
 
     const pieces = batch.map(({ rendered, storyId }) => {
@@ -213,12 +251,7 @@ async function writeBriefBatch(
       };
     });
 
-    return {
-      pieces,
-      inputTokens: result.inputTokens ?? 0,
-      outputTokens: result.outputTokens ?? 0,
-      failed: false,
-    };
+    return { pieces, inputTokens, outputTokens, failed: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[writers] brief batch ${batchIndex}: call failed — ${msg}`);
@@ -242,6 +275,136 @@ export interface WriterRunSummary {
   failedCalls: number;
   inputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * Re-writes only the failed pieces of an existing run, updating them in place.
+ *
+ * A paper is one run. Run #3 finished with 147 of 150 pieces and three holes,
+ * and the choice was between publishing the holes or re-writing 150 pieces to
+ * fill three. Neither is right for a daily artifact, so a repair pass re-asks
+ * for exactly what is missing and updates those rows — the run stays one paper,
+ * and the cost is proportional to the damage.
+ */
+export async function repairWriterRun(runId: number): Promise<WriterRunSummary> {
+  const pool = getPool();
+  const cfg = loadModelConfig().writers;
+
+  const { rows: runRows } = await pool.query<{ editor_run_id: number; pieces_in: number }>(
+    "SELECT editor_run_id, pieces_in FROM writer_runs WHERE id = $1",
+    [runId],
+  );
+  const run = runRows[0];
+  if (!run) throw new Error(`Writer run #${runId} not found`);
+
+  const { rows: failedRows } = await pool.query<{ rank: number; ref: string }>(
+    "SELECT rank, ref FROM writer_pieces WHERE run_id = $1 AND status = 'failed' ORDER BY rank",
+    [runId],
+  );
+  if (failedRows.length === 0) {
+    console.log(`[writers] run #${runId}: nothing to repair`);
+    return fetchRunSummary(pool, runId);
+  }
+
+  const failedRefs = new Set(failedRows.map((r) => r.ref));
+  const all = await buildEditorRunPackets(run.editor_run_id);
+  const targets = all.filter((p) => failedRefs.has(p.packet.ref));
+
+  console.log(
+    `[writers] repairing run #${runId}: ${targets.length} of ${failedRows.length} failed piece(s) resolved to packets`,
+  );
+
+  const { bio } = loadWriterDocs();
+  const limiter = pLimit(cfg.concurrency);
+
+  // Briefs are re-asked individually here rather than in a batch: a repair is a
+  // handful of pieces, and one call each removes the batch's own failure mode.
+  const results = await Promise.all(
+    targets.map((rendered) =>
+      limiter(async () => {
+        if (rendered.packet.tier !== "brief") {
+          return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg);
+        }
+        const batch = [{ rendered, storyId: rendered.packet.storyId ?? null }];
+        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg);
+        return {
+          piece: batchResult.pieces[0]!,
+          inputTokens: batchResult.inputTokens,
+          outputTokens: batchResult.outputTokens,
+          failed: batchResult.failed,
+        };
+      }),
+    ),
+  );
+
+  let repaired = 0;
+  for (const { piece } of results) {
+    if (piece.status !== "ok") {
+      console.warn(`[writers] repair ${piece.ref}: still failing — ${piece.detail ?? ""}`);
+      continue;
+    }
+    await pool.query(
+      `UPDATE writer_pieces
+       SET headline = $1, body = $2, word_count = $3, status = 'ok', detail = NULL,
+           generation_log_id = $4
+       WHERE run_id = $5 AND ref = $6`,
+      [
+        piece.headline,
+        piece.body,
+        piece.wordCount,
+        piece.generationLogId !== null ? piece.generationLogId.toString() : null,
+        runId,
+        piece.ref,
+      ],
+    );
+    repaired++;
+  }
+
+  const { rows: counts } = await pool.query<{ ok: string; failed: string }>(
+    `SELECT count(*) FILTER (WHERE status = 'ok') AS ok,
+            count(*) FILTER (WHERE status = 'failed') AS failed
+     FROM writer_pieces WHERE run_id = $1`,
+    [runId],
+  );
+  await pool.query(
+    `UPDATE writer_runs SET pieces_written = $1, pieces_failed = $2 WHERE id = $3`,
+    [Number(counts[0]!.ok), Number(counts[0]!.failed), runId],
+  );
+
+  console.log(
+    `[writers] repair of run #${runId}: ${repaired} piece(s) recovered, ${counts[0]!.failed} still missing`,
+  );
+
+  return fetchRunSummary(pool, runId);
+}
+
+async function fetchRunSummary(
+  pool: import("pg").Pool,
+  runId: number,
+): Promise<WriterRunSummary> {
+  const { rows } = await pool.query<{
+    id: number;
+    editor_run_id: number;
+    pieces_in: number;
+    pieces_written: number;
+    pieces_failed: number;
+    calls: number;
+    failed_calls: number;
+    input_tokens: number | null;
+    output_tokens: number | null;
+  }>("SELECT * FROM writer_runs WHERE id = $1", [runId]);
+  const r = rows[0]!;
+  return {
+    runId: r.id,
+    editorRunId: r.editor_run_id,
+    piecesIn: r.pieces_in,
+    piecesWritten: r.pieces_written,
+    piecesFailed: r.pieces_failed,
+    calls: r.calls,
+    failedCalls: r.failed_calls,
+    inputTokens: r.input_tokens ?? 0,
+    outputTokens: r.output_tokens ?? 0,
+  };
 }
 
 export interface RunWritersOptions {

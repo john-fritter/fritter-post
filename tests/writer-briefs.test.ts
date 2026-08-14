@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   buildBriefBatchUserPrompt,
   parseBriefBatchOutput,
+  parseWriterOutput,
 } from "../src/pipeline/writers/prompt.js";
 import { countWords } from "../src/pipeline/writers/index.js";
 import type { WriterPacket } from "../src/pipeline/writers/assembler.js";
@@ -133,6 +134,70 @@ function testPreambleAndFencesAreIgnored() {
   assert.equal(parsed.size, 1);
 }
 
+// --- reading a writer's output ---
+//
+// Run #3 lost two whole pieces to "unparseable output": calls that succeeded,
+// cost their tokens, and produced prose the parser refused to read because the
+// first line was not exactly the contracted shape.
+
+function testLabelledHeadlineIsRead() {
+  const parsed = parseWriterOutput("HEADLINE: Third person dies in ICE custody\n\nA man died...");
+  assert.equal(parsed!.headline, "Third person dies in ICE custody");
+  assert.equal(parsed!.body, "A man died...");
+}
+
+function testPreambleBeforeTheHeadlineIsSkipped() {
+  const parsed = parseWriterOutput(
+    "Here is the piece:\n\nHEADLINE: Oregon covers wildfire costs upfront\n\nOregon's season is the worst on record.",
+  );
+  assert.equal(parsed!.headline, "Oregon covers wildfire costs upfront");
+  assert.ok(parsed!.body.startsWith("Oregon's season"));
+}
+
+function testCodeFencesAreIgnored() {
+  const parsed = parseWriterOutput(
+    "```\nHEADLINE: A fenced headline\n\nThe body of the piece.\n```",
+  );
+  assert.equal(parsed!.headline, "A fenced headline");
+  assert.equal(parsed!.body, "The body of the piece.");
+}
+
+function testDecoratedLabelsAreRead() {
+  assert.equal(
+    parseWriterOutput("**Headline:** A bold label\n\nBody.")!.headline,
+    "A bold label",
+  );
+  assert.equal(parseWriterOutput("## HEADLINE: A heading label\n\nBody.")!.headline, "A heading label");
+}
+
+function testAnUnlabelledShortFirstLineIsTheHeadline() {
+  // The model wrote the piece correctly and skipped the label. Refusing to read
+  // that costs a whole piece for nothing.
+  const parsed = parseWriterOutput(
+    "Ukrainian strike shuts down three Russian grain terminals\n\nA combined drone and missile attack...",
+  );
+  assert.equal(parsed!.headline, "Ukrainian strike shuts down three Russian grain terminals");
+  assert.ok(parsed!.body.startsWith("A combined drone"));
+}
+
+function testMarkdownHeadingAsHeadline() {
+  const parsed = parseWriterOutput("# Oregon bans fireworks in Redmond\n\nThe council voted Tuesday.");
+  assert.equal(parsed!.headline, "Oregon bans fireworks in Redmond");
+}
+
+function testProseFirstLineIsNotAHeadline() {
+  // Publishing a paragraph as a headline is worse than recording a failure.
+  const prose =
+    "The Trump administration's immigration crackdown has widened from Latino communities to groups that previously drew less enforcement attention, according to data obtained under a Freedom of Information Act request.";
+  assert.equal(parseWriterOutput(`${prose}\n\nMore body text follows here.`), null);
+}
+
+function testHeadlineWithNoBodyIsAFailure() {
+  assert.equal(parseWriterOutput("HEADLINE: no body follows"), null);
+  assert.equal(parseWriterOutput("A bare line and nothing else"), null);
+  assert.equal(parseWriterOutput(""), null);
+}
+
 function testWordCount() {
   assert.equal(countWords("The city council voted Tuesday to ban fireworks."), 8);
   assert.equal(countWords("  spaced   out \n words  "), 3);
@@ -148,5 +213,13 @@ testFirstLineForARefWins();
 testMissingBriefsAreSimplyAbsent();
 testEmptyFieldsAreRejected();
 testPreambleAndFencesAreIgnored();
+testLabelledHeadlineIsRead();
+testPreambleBeforeTheHeadlineIsSkipped();
+testCodeFencesAreIgnored();
+testDecoratedLabelsAreRead();
+testAnUnlabelledShortFirstLineIsTheHeadline();
+testMarkdownHeadingAsHeadline();
+testProseFirstLineIsNotAHeadline();
+testHeadlineWithNoBodyIsAFailure();
 testWordCount();
 console.log("writer briefs tests passed");

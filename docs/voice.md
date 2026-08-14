@@ -69,6 +69,23 @@ The headline is the test. If it needs an "as" clause, or a list of three nouns,
 to cover what the piece contains, the piece has no spine. Find the spine, write
 the headline for that, and cut what the headline does not promise.
 
+## Characterization is a claim
+
+The hardest line to hold is not inventing facts — it is inventing *frames*. A
+source says people were resettled after a war; the paper says they came from
+"countries the United States destabilized". A source says a contract went to an
+anti-trafficking group; the paper says the group "has no expertise in immigration
+law". Each of those may be true, and neither is in the source.
+
+If a characterization is worth making, attribute it to whoever made it, or state
+the fact that supports it and let the reader draw the line. "Resettled by the
+U.S. government after the wars that displaced them" is reporting. "From countries
+the U.S. destabilized" is an argument, and an argument in the paper's own voice
+needs a source standing behind it.
+
+This applies to causes, motives, and histories especially. Say what happened and
+who said it. The reader is capable of the rest.
+
 ## Register by length
 
 The tier in the prompt sets the length, and length changes what kind of writing

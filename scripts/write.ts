@@ -4,13 +4,14 @@
  * Usage:
  *   npm run write -- --editor-run 112
  *   npm run write -- --editor-run 112 --tier feature --limit 3
+ *   npm run write -- --repair 3
  *
  * --tier and --limit exist for a cautious first run: three features cost three
  * calls and show whether the prose is worth 150 of them.
  */
 
 import "dotenv/config";
-import { runWriters } from "../src/pipeline/writers/index.js";
+import { runWriters, repairWriterRun } from "../src/pipeline/writers/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -33,9 +34,21 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const flags = parseArgs(process.argv);
+
+  // Repair re-writes only the failed pieces of an existing run, in place: a
+  // paper is one run, and filling three holes should not cost 150 calls.
+  if (flags["repair"]) {
+    const summary = await repairWriterRun(parseInt(flags["repair"], 10));
+    console.log(JSON.stringify(summary, null, 2));
+    process.exit(0);
+  }
+
   const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : NaN;
   if (Number.isNaN(editorRunId)) {
-    console.error("Usage: npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]");
+    console.error(
+      "Usage: npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]\n" +
+        "       npm run write -- --repair <writer-run-id>",
+    );
     process.exit(1);
   }
 
