@@ -20,6 +20,59 @@ Entry format:
 
 ---
 
+## 2026-08-15 — A run stops asking when the provider stops answering
+
+**Decision:** the writers stage aborts after `abort_after_consecutive_failures`
+(10) consecutive call failures, records the remaining pieces as failed, and
+points at the repair pass. `callWithBackoff` keeps its per-call retries; this is
+a second, run-level bound on top of them.
+
+**Context:** run #4 met a provider outage. `zai-org/glm-5.2` broke streams call
+after call, and because `callWithBackoff` correctly retries broken streams, **103
+logical calls became 807 provider attempts, 775 of them errors**. The run spent
+31 minutes to write 17 pieces; the repair pass spent 34 more to add 22. The
+sections design itself passed every structural gate in the same run — 191 pieces,
+52 in 11 sections, 41 standalone displaced, zero cross-section article overlaps —
+so the only thing missing was prose the provider would not produce.
+
+**Rationale:** per-call backoff answers "did this request fail for a reason worth
+re-asking?" and it answers it correctly. It cannot answer "is the provider up?",
+because each call only sees itself. Nothing about the hundredth request was going
+to succeed where the first ninety-nine failed, and continuing to ask was both
+expensive and impolite.
+
+Consecutive failures rather than a failure rate: one hard piece failing among
+successes is a piece problem, a hundred failing in a row is an outage, and only
+the second is worth abandoning a run over. A single success resets the count.
+
+**Why this needs no new recovery path:** `--repair` already exists and re-writes
+exactly the missing pieces, so an aborted run is a resumable one. The operator
+gets a message naming the command instead of an hour of hammering.
+
+**Watch:** if a run aborts on a healthy provider, the threshold is too low for
+the concurrency — ten is about two rounds at concurrency 4.
+
+---
+
+## 2026-08-15 — Comparatives are measurements
+
+**Decision:** superlatives and comparatives join characterization on the list of
+things that need a source. Added to `voice.md` and the writer prompt.
+
+**Context:** the sentence behind the run #3 overstatement, finally quoted: *"But
+the increases in APIDA arrests outpaced every other group."* The sources
+supported a sixfold rise and, separately, that this was among the largest
+increases on record. They did not support the comparison.
+
+**Rationale:** this is a distinct failure from the characterization rule written
+against it — that rule covers causes, motives and histories, and this is a
+measurement. "Largest", "first", "worst", "most", "outpaced" each assert a
+ranking, and a piece can slip into one while every individual fact in it is
+sourced. The remedy is the same and simpler: give the number the source gave,
+which usually hits harder anyway.
+
+---
+
 ## 2026-08-15 — A thread is a section, not a story
 
 **Decision:** a thread expands into several pieces under one heading — a lead at

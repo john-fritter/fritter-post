@@ -4,7 +4,11 @@ import {
   type ResolvedText,
 } from "../src/pipeline/writers/assembler.js";
 import { applyPaperBudget } from "../src/pipeline/writers/packets.js";
-import { buildWriterUserPrompt } from "../src/pipeline/writers/prompt.js";
+import {
+  buildWriterUserPrompt,
+  buildWriterSystemPrompt,
+} from "../src/pipeline/writers/prompt.js";
+import { FailureBreaker } from "../src/pipeline/writers/index.js";
 import type {
   StoryMaterials,
   StoryMember,
@@ -273,6 +277,58 @@ function testAPaperUnderBudgetIsUntouched() {
   assert.equal(applyPaperBudget(packets, 10).length, 2);
 }
 
+// --- the provider giving up ---
+
+function testTheBreakerTripsOnConsecutiveFailures() {
+  // Run #4: 103 logical calls became 807 provider attempts, 775 of them errors,
+  // over 31 minutes. Nothing about the hundredth request was going to succeed.
+  const breaker = new FailureBreaker(3);
+  breaker.record(false);
+  breaker.record(false);
+  assert.equal(breaker.isOpen, false);
+  breaker.record(false);
+  assert.equal(breaker.isOpen, true);
+}
+
+function testOneSuccessResetsTheRun() {
+  // One hard piece among successes is a piece problem, not an outage.
+  const breaker = new FailureBreaker(3);
+  breaker.record(false);
+  breaker.record(false);
+  breaker.record(true);
+  breaker.record(false);
+  breaker.record(false);
+  assert.equal(breaker.isOpen, false);
+  assert.equal(breaker.consecutiveFailures, 2);
+}
+
+function testTheBreakerStaysOpenOnceTripped() {
+  const breaker = new FailureBreaker(2);
+  breaker.record(false);
+  breaker.record(false);
+  breaker.record(true);
+  assert.equal(breaker.isOpen, true);
+}
+
+function testABreakerThresholdOfZeroIsDisabled() {
+  const breaker = new FailureBreaker(0);
+  for (let i = 0; i < 50; i++) breaker.record(false);
+  assert.equal(breaker.isOpen, false);
+}
+
+function testSuperlativesNeedASource() {
+  // The sentence the reviewer finally quoted: "the increases in APIDA arrests
+  // outpaced every other group" against sources supporting "among the largest".
+  const prompt = buildWriterSystemPrompt("voice");
+  assert.ok(/Comparatives and superlatives are measurements/.test(prompt));
+  assert.ok(/outpaced every other/.test(prompt));
+}
+
+testTheBreakerTripsOnConsecutiveFailures();
+testOneSuccessResetsTheRun();
+testTheBreakerStaysOpenOnceTripped();
+testABreakerThresholdOfZeroIsDisabled();
+testSuperlativesNeedASource();
 testEveryMemberBecomesAPiece();
 testRolesFollowMemberOrder();
 testSidebarsRunOneTierBelowTheLead();

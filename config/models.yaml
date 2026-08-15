@@ -192,6 +192,19 @@ writers:
   brief_batch_size: 10
   retry_max_attempts: 5
   retry_base_ms: 2000
+  # Stop the run after this many consecutive call failures.
+  #
+  # Run #4 met a provider outage: streams broke call after call, and since
+  # callWithBackoff retries broken streams, 103 logical calls became 807 provider
+  # attempts with 775 errors. The run spent 31 minutes to write 17 pieces and the
+  # repair pass another 34 to add 22. Nothing about the hundredth request was
+  # going to succeed where the first ninety-nine failed.
+  #
+  # Consecutive rather than a failure rate: one hard piece among successes is a
+  # piece problem, a hundred in a row is an outage, and only the second is worth
+  # abandoning a run over. 10 is roughly two rounds at concurrency 4 — long
+  # enough that a couple of unlucky calls do not trip it. Set to 0 to disable.
+  abort_after_consecutive_failures: 10
 
   # Article text fetch. Editor run #112's audit is the source of every number
   # here: 305 underlying articles, 185 of them (61%) under 800 characters of feed

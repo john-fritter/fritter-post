@@ -233,6 +233,8 @@ const WritersStageConfigSchema = StageConfigSchema.extend({
   // Briefs per batched call. 75 separate calls would each re-send the bio and
   // the standing memo.
   brief_batch_size: z.number().int().positive(),
+  // Consecutive call failures after which the run stops asking. 0 disables.
+  abort_after_consecutive_failures: z.number().int().nonnegative(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
   fetch: WritersFetchConfigSchema,

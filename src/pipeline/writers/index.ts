@@ -32,6 +32,51 @@ import {
 } from "./prompt.js";
 import type { WriterPacket } from "./assembler.js";
 
+/**
+ * Stops a run that is failing because the provider is down rather than because
+ * any piece is hard.
+ *
+ * Run #4 met an outage: `zai-org/glm-5.2` broke streams call after call, and
+ * because `callWithBackoff` retries broken streams, 103 logical calls became
+ * **807 provider attempts, 775 of them errors**. The run took 31 minutes to
+ * produce 17 pieces, and the repair pass took another 34 to add 22 more. Every
+ * one of those attempts was polite, bounded, and pointless: nothing about the
+ * hundredth request was going to succeed where the first ninety-nine did not.
+ *
+ * So the stage watches for the pattern. After a run of consecutive failures it
+ * stops asking, records the rest as failed pieces, and says what to do — the
+ * repair pass already exists and re-writes exactly the missing ones. An hour of
+ * hammering is replaced by a minute and a clear message.
+ *
+ * Consecutive, not a rate: one hard piece failing among successes is a piece
+ * problem, and a hundred failing in a row is an outage. Only the second is worth
+ * abandoning a run over.
+ */
+export class FailureBreaker {
+  private consecutive = 0;
+  private tripped = false;
+
+  constructor(private readonly threshold: number) {}
+
+  record(ok: boolean): void {
+    if (this.threshold <= 0) return;
+    if (ok) {
+      this.consecutive = 0;
+      return;
+    }
+    this.consecutive++;
+    if (this.consecutive >= this.threshold) this.tripped = true;
+  }
+
+  get isOpen(): boolean {
+    return this.tripped;
+  }
+
+  get consecutiveFailures(): number {
+    return this.consecutive;
+  }
+}
+
 /** Words, counted the way a reader would — for the report, never enforced mid-call. */
 export function countWords(text: string): number {
   return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
@@ -89,8 +134,17 @@ async function writeOnePiece(
   storyId: number | null,
   runId: number,
   cfg: WritersStageConfig,
+  breaker: FailureBreaker,
 ): Promise<{ piece: WrittenPiece; inputTokens: number; outputTokens: number; failed: boolean }> {
   const { packet } = rendered;
+  if (breaker.isOpen) {
+    return {
+      piece: failedPiece(packet, storyId, "not attempted: run aborted after repeated provider failures"),
+      inputTokens: 0,
+      outputTokens: 0,
+      failed: false,
+    };
+  }
   try {
     const result = await callWithBackoff(
       () =>
@@ -110,6 +164,8 @@ async function writeOnePiece(
       { retry_max_attempts: cfg.retry_max_attempts, retry_base_ms: cfg.retry_base_ms },
       `writers ${packet.ref}`,
     );
+
+    breaker.record(true);
 
     const parsed = parseWriterOutput(result.text);
     if (!parsed) {
@@ -148,6 +204,7 @@ async function writeOnePiece(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    breaker.record(false);
     console.warn(`[writers] ${packet.ref}: call failed — ${msg}`);
     return {
       piece: failedPiece(packet, storyId, msg),
@@ -164,11 +221,23 @@ async function writeBriefBatch(
   bio: string,
   runId: number,
   cfg: WritersStageConfig,
+  breaker: FailureBreaker,
 ): Promise<{ pieces: WrittenPiece[]; inputTokens: number; outputTokens: number; failed: boolean }> {
   const packets = batch.map((b) => b.rendered.packet);
   const refs = packets.map((p) => p.ref);
   // The system prompt is identical for every piece; take the first.
   const systemPrompt = batch[0]!.rendered.systemPrompt;
+
+  if (breaker.isOpen) {
+    return {
+      pieces: batch.map(({ rendered, storyId }) =>
+        failedPiece(rendered.packet, storyId, "not attempted: run aborted after repeated provider failures"),
+      ),
+      inputTokens: 0,
+      outputTokens: 0,
+      failed: false,
+    };
+  }
 
   try {
     const result = await callWithBackoff(
@@ -189,6 +258,8 @@ async function writeBriefBatch(
       { retry_max_attempts: cfg.retry_max_attempts, retry_base_ms: cfg.retry_base_ms },
       `writers briefs ${batchIndex}`,
     );
+
+    breaker.record(true);
 
     const parsed = parseBriefBatchOutput(result.text, refs);
     let missing = refs.filter((r) => !parsed.has(r));
@@ -270,6 +341,7 @@ async function writeBriefBatch(
     return { pieces, inputTokens, outputTokens, failed: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    breaker.record(false);
     console.warn(`[writers] brief batch ${batchIndex}: call failed — ${msg}`);
     // A failed batch costs its briefs, not the paper.
     return {
@@ -332,6 +404,7 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
 
   const { bio } = loadWriterDocs();
   const limiter = pLimit(cfg.concurrency);
+  const breaker = new FailureBreaker(cfg.abort_after_consecutive_failures);
 
   // Briefs are re-asked individually here rather than in a batch: a repair is a
   // handful of pieces, and one call each removes the batch's own failure mode.
@@ -339,10 +412,10 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
     targets.map((rendered) =>
       limiter(async () => {
         if (rendered.packet.tier !== "brief") {
-          return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg);
+          return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg, breaker);
         }
         const batch = [{ rendered, storyId: rendered.packet.storyId ?? null }];
-        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg);
+        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg, breaker);
         return {
           piece: batchResult.pieces[0]!,
           inputTokens: batchResult.inputTokens,
@@ -390,6 +463,12 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   console.log(
     `[writers] repair of run #${runId}: ${repaired} piece(s) recovered, ${counts[0]!.failed} still missing`,
   );
+  if (breaker.isOpen) {
+    console.warn(
+      `[writers] repair ABORTED after ${cfg.abort_after_consecutive_failures} consecutive failures — ` +
+        `the provider is still failing. Try again later; repair is safe to re-run.`,
+    );
+  }
 
   return fetchRunSummary(pool, runId);
 }
@@ -470,6 +549,7 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   const storyIdOf = (rendered: RenderedPacket) => rendered.packet.storyId ?? null;
 
   const limiter = pLimit(cfg.concurrency);
+  const breaker = new FailureBreaker(cfg.abort_after_consecutive_failures);
   const pieces: WrittenPiece[] = [];
   let calls = 0;
   let failedCalls = 0;
@@ -478,7 +558,7 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
 
   const longformResults = await Promise.all(
     longform.map((rendered) =>
-      limiter(() => writeOnePiece(rendered, storyIdOf(rendered), runId, cfg)),
+      limiter(() => writeOnePiece(rendered, storyIdOf(rendered), runId, cfg, breaker)),
     ),
   );
   for (const r of longformResults) {
@@ -500,7 +580,7 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   }
 
   const batchResults = await Promise.all(
-    batches.map((batch, i) => limiter(() => writeBriefBatch(batch, i, bio, runId, cfg))),
+    batches.map((batch, i) => limiter(() => writeBriefBatch(batch, i, bio, runId, cfg, breaker))),
   );
   for (const r of batchResults) {
     pieces.push(...r.pieces);
@@ -558,6 +638,13 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
     `[writers] run #${runId} complete: ${written} written, ${failed} failed, ` +
       `${calls} call(s), ${failedCalls} failed call(s)`,
   );
+  if (breaker.isOpen) {
+    console.warn(
+      `[writers] ABORTED: ${cfg.abort_after_consecutive_failures} consecutive call failures — ` +
+        `the provider is failing, not the material. ${written} piece(s) written. ` +
+        `Run \`npm run write -- --repair ${runId}\` once it recovers; it re-writes only what is missing.`,
+    );
+  }
   if (failed > 0) {
     console.warn(`[writers] WARNING: ${failed} piece(s) have no text — the paper is short by that many`);
   }

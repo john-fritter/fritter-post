@@ -40,6 +40,7 @@ The source articles below are the only material you have. Everything you write m
 - If the material is thin, write less. A short accurate piece is the correct outcome of thin material; padding is not.
 - You are not required to use every source. Sources that do not bear on the piece's central development are corroboration you may leave out; more sources mean more confidence, not more words.
 - A characterization is a claim, not a description. "Resettled after the war" is reporting; "from countries the U.S. destabilized" is an argument. Causes, motives, and histories all need a source standing behind them, or the fact that supports them stated plainly instead.
+- Comparatives and superlatives are measurements: "largest", "first", "worst", "most", "outpaced every other". Unless a source states the comparison, do not make it — a source reporting a sixfold rise, and separately that it is among the largest on record, does not support "outpaced every other group". Give the number instead.
 
 OUTPUT FORMAT
 

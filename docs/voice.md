@@ -86,6 +86,13 @@ needs a source standing behind it.
 This applies to causes, motives, and histories especially. Say what happened and
 who said it. The reader is capable of the rest.
 
+**Comparatives and superlatives are claims too, and they are the easiest to slip
+into.** A source saying arrests rose sixfold, and separately that this is among
+the largest increases on record, does not support "outpaced every other group".
+"Largest", "first", "worst", "most", "outpaced", "unprecedented" — each of those
+is a measurement, and unless a source made it, the paper cannot. Write the number
+the source gives and let it do the work; it usually hits harder anyway.
+
 ## Register by length
 
 The tier in the prompt sets the length, and length changes what kind of writing

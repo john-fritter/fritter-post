@@ -419,6 +419,15 @@ one follow-up call for the stragglers.
 **`npm run write -- --repair <run>`** re-writes only the failed pieces of a run,
 in place. A paper is one run: filling three holes must not cost 150 calls.
 
+**A run stops asking when the provider stops answering.** Run #4 met an outage
+and, because `callWithBackoff` correctly retries broken streams, 103 logical
+calls became 807 provider attempts with 775 errors over 31 minutes. Per-call
+backoff cannot see that the provider is down — each call only sees itself — so
+the stage aborts after `abort_after_consecutive_failures` consecutive failures,
+marks the rest as failed, and names the `--repair` command. Consecutive rather
+than a rate: one hard piece among successes is a piece problem; a hundred in a
+row is an outage.
+
 **A failed call is a row, not an exception.** The paper has a deadline; one call
 that times out must cost one piece, not the edition. Failures are stored as
 `status='failed'` pieces with the reason, and `writer_runs.failed_calls` says how
