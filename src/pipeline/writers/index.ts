@@ -42,6 +42,10 @@ interface WrittenPiece {
   rank: number;
   tier: string;
   ref: string;
+  sectionRef: string | null;
+  sectionTitle: string | null;
+  sectionRole: string | null;
+  sectionRank: number;
   headline: string | null;
   body: string | null;
   wordCount: number;
@@ -64,6 +68,10 @@ function failedPiece(
     rank: packet.rank,
     tier: packet.tier,
     ref: packet.ref,
+    sectionRef: packet.section?.ref ?? null,
+    sectionTitle: packet.section?.title ?? null,
+    sectionRole: packet.section?.role ?? null,
+    sectionRank: packet.section?.rank ?? 0,
     headline: null,
     body: null,
     wordCount: 0,
@@ -120,6 +128,10 @@ async function writeOnePiece(
         rank: packet.rank,
         tier: packet.tier,
         ref: packet.ref,
+        sectionRef: packet.section?.ref ?? null,
+        sectionTitle: packet.section?.title ?? null,
+        sectionRole: packet.section?.role ?? null,
+        sectionRank: packet.section?.rank ?? 0,
         headline: parsed.headline,
         body: parsed.body,
         wordCount: countWords(parsed.body),
@@ -239,6 +251,10 @@ async function writeBriefBatch(
         rank: rendered.packet.rank,
         tier: rendered.packet.tier,
         ref: rendered.packet.ref,
+        sectionRef: rendered.packet.section?.ref ?? null,
+        sectionTitle: rendered.packet.section?.title ?? null,
+        sectionRole: rendered.packet.section?.role ?? null,
+        sectionRank: rendered.packet.section?.rank ?? 0,
         headline: brief.headline,
         body: brief.body,
         wordCount: countWords(brief.body),
@@ -437,8 +453,14 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   );
   const runId = runRows[0]!.id;
 
-  const longform = selected.filter((p) => p.packet.tier !== "brief");
-  const briefs = selected.filter((p) => p.packet.tier === "brief");
+  // Lines and briefs are both one- or two-sentence pieces, so they batch
+  // together; everything longer gets its own call.
+  const longform = selected.filter(
+    (p) => p.packet.tier !== "brief" && p.packet.section?.role !== "line",
+  );
+  const briefs = selected.filter(
+    (p) => p.packet.tier === "brief" || p.packet.section?.role === "line",
+  );
 
   console.log(
     `[writers] run #${runId}: ${selected.length} piece(s) from editor run #${editorRunId} — ` +
@@ -488,14 +510,16 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
     outputTokens += r.outputTokens;
   }
 
-  pieces.sort((a, b) => a.rank - b.rank);
+  // Paper order: the story's rank, then position within its section.
+  pieces.sort((a, b) => a.rank - b.rank || a.sectionRank - b.sectionRank);
 
   for (const piece of pieces) {
     await pool.query(
       `INSERT INTO writer_pieces
          (run_id, editor_story_id, rank, tier, ref, headline, body, word_count,
-          material_level, source_count, articles_used, status, detail, generation_log_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          material_level, source_count, articles_used, status, detail, generation_log_id,
+          section_ref, section_title, section_role, section_rank)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         runId,
         piece.storyId,
@@ -511,6 +535,10 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
         piece.status,
         piece.detail,
         piece.generationLogId !== null ? piece.generationLogId.toString() : null,
+        piece.sectionRef,
+        piece.sectionTitle,
+        piece.sectionRole,
+        piece.sectionRank,
       ],
     );
   }

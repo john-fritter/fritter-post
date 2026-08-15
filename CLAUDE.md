@@ -83,7 +83,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–035)
+├── migrations/                  # numbered SQL migrations (001–036)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -385,6 +385,23 @@ adequate for a standard piece — and a headline-only story carries a note telli
 the writer to write short and invent nothing. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
 
+**Sections: a thread is not one piece.** Threading absorbs a situation's rows
+into one ranked story, and one 500-word slot cannot hold twelve events — run #3's
+T1 dropped a story scoring 81 while the paper ran a brief on one scoring 56. A
+thread now expands into a lead (the top member, at the story's tier), up to
+`packet.section.max_sidebars` members one tier below, and a one-sentence line for
+every remaining member, all sharing `section_ref` and the story's rank.
+
+**Material partitions by member, so no coordination is needed.** A thread's
+members are distinct events by construction, so each piece is assembled from its
+own member's articles alone and two pieces of a section cannot overlap. The lead
+is told what runs below it and a sidebar what the lead covers — static text, not
+a call. Writers still never see each other's work.
+
+Sections make the paper longer than the editor's story count, so
+`applyPaperBudget` drops standalone pieces from the bottom of the rank order to
+compensate. Section pieces are never dropped and one standalone always survives.
+
 **`index.ts` — the writer calls.** One call per feature and standard piece;
 briefs go in batches of `brief_batch_size`, because 75 separate calls would each
 re-send the bio and the standing memo and the scaffolding would outweigh the
@@ -553,7 +570,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **036**.
+number is ambiguous. The next migration is **037**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

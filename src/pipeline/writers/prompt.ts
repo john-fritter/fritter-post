@@ -79,6 +79,10 @@ function formatArticle(article: WriterPacket["articles"][number], index: number)
  * happened and say where accounts differ. A singleton needs neither.
  */
 function focusInstruction(packet: WriterPacket): string | null {
+  // A section piece already has exactly one member's material, so its focus is
+  // structural rather than instructed: it covers its own development and the
+  // section's other pieces cover theirs. See sectionInstruction.
+  if (packet.section !== null) return null;
   if (packet.itemType === "thread") {
     return (
       "This story is a thread: several related events that belong to one continuing " +
@@ -96,6 +100,53 @@ function focusInstruction(packet: WriterPacket): string | null {
     );
   }
   return null;
+}
+
+/**
+ * Where this piece sits in its section, and what the neighbours cover.
+ *
+ * This is the whole of the coordination between a section's writers, and it is
+ * static text rather than a call: material is partitioned by member, so two
+ * pieces cannot draw on the same sources. All this has to do is stop a piece
+ * *retelling* what the reader will find a few inches away.
+ */
+function sectionInstruction(packet: WriterPacket): string[] | null {
+  const section = packet.section;
+  if (section === null) return null;
+
+  const siblings =
+    section.siblingTitles.length > 0
+      ? section.siblingTitles.map((t) => `  - ${t}`).join("\n")
+      : "  (nothing else)";
+
+  if (section.role === "lead") {
+    return [
+      "IN THIS SECTION",
+      `This piece leads a section of the paper: "${section.title}".`,
+      "These related developments are written up separately, immediately below yours:",
+      siblings,
+      "Write the lead. Do not retell those — the reader will read them next. Mention one " +
+        "only if your own piece genuinely needs it, and then in a clause, not a paragraph.",
+    ];
+  }
+
+  if (section.role === "sidebar") {
+    return [
+      "IN THIS SECTION",
+      `This piece runs inside the section "${section.title}", under a lead that covers:`,
+      siblings,
+      "Write only your own development. Do not summarize the section, do not recap the " +
+        "lead, and do not open by placing your story in the wider situation — the heading " +
+        "and the lead have already done that.",
+    ];
+  }
+
+  return [
+    "IN THIS SECTION",
+    `A single sentence inside the section "${section.title}", whose lead covers:`,
+    siblings,
+    "One sentence. The fact, and nothing else. No context, no framing.",
+  ];
 }
 
 export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string {
@@ -131,6 +182,11 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   } else {
     parts.push(`Working title from the source: ${packet.title}`);
     parts.push("That title is the source's own. Write your own headline.");
+  }
+
+  const section = sectionInstruction(packet);
+  if (section !== null) {
+    parts.push("", ...section);
   }
 
   // Run #1's first three features came back at 716, 534 and 661 words against a

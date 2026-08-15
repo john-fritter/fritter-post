@@ -83,9 +83,34 @@ export interface PacketOmission {
  */
 export type MaterialLevel = "full" | "partial" | "headline-only";
 
+/**
+ * A piece's place in a section. `lead` is the section's main piece, `sidebar`
+ * its own development at one tier below, `line` a single sentence so a minor
+ * member is still visible. Null for an ordinary standalone story.
+ */
+export type SectionRole = "lead" | "sidebar" | "line";
+
+export interface PacketSection {
+  /** The thread's ref, e.g. T3 — the heading every piece in the section shares. */
+  ref: string;
+  title: string;
+  role: SectionRole;
+  /** 0 for the lead, then 1..n in reading order. */
+  rank: number;
+  /**
+   * What the *other* pieces in this section cover. The lead is told what runs
+   * below it and a sidebar is told what the lead covers, so no two pieces retell
+   * the same development — the only coordination a section needs, and it is
+   * static text rather than a call.
+   */
+  siblingTitles: string[];
+}
+
 export interface WriterPacket {
   /** editor_stories.id, carried through for the written piece's lineage. */
   storyId: number | null;
+  /** Set when this piece is part of a thread's section. */
+  section: PacketSection | null;
   rank: number;
   tier: string;
   ref: string;
@@ -419,6 +444,7 @@ export function assembleWriterPacket(
 
   return {
     storyId: story.storyId,
+    section: null,
     rank: story.rank,
     tier: story.tier,
     ref: story.ref,
@@ -434,4 +460,89 @@ export function assembleWriterPacket(
     notes,
     totalChars,
   };
+}
+
+/** A sidebar runs one tier below its lead; a line is always brief-tier. */
+function tierBelow(tier: string): string {
+  if (tier === "feature") return "standard";
+  return "brief";
+}
+
+/**
+ * Expands a thread into the pieces of a section: a lead, sidebars, and lines.
+ *
+ * **Why this exists.** Threading absorbs a situation's rows into one ranked
+ * story, which is right for ranking and wrong for writing. Run #3 put T1's
+ * twelve members into one 500-word slot; the writer, told to find a spine, wrote
+ * one of them and dropped eleven — including a story scoring 81 while the paper
+ * ran a 35-word brief on one scoring 56. Nobody chose that; it fell out of the
+ * structure.
+ *
+ * **Why no coordination is needed.** A thread's members are distinct events by
+ * construction — grouping separated them, threading gathered them — so material
+ * partitions cleanly by member. Each piece is assembled from its own member's
+ * articles alone, which makes overlap between two pieces of a section
+ * structurally impossible. The writers still never see each other's work; they
+ * are only told, in static text, what the others cover so nobody retells it.
+ *
+ * Members arrive score-ordered from the resolver, so the split is deterministic:
+ * the top member leads, the next `max_sidebars` get their own piece one tier
+ * down, and everything else gets a line. Nothing is dropped.
+ */
+export function assembleSectionPackets(
+  story: StoryMaterials,
+  textsById: Map<number, ResolvedText>,
+  cfg: WritersPacketConfig,
+): WriterPacket[] {
+  const members = story.members.filter((m) => m.articles.length > 0);
+  if (members.length === 0) return [assembleWriterPacket(story, textsById, cfg)];
+
+  // A one-member thread is not a section; it is a story that happens to have
+  // been threaded. Write it the ordinary way.
+  if (members.length === 1) return [assembleWriterPacket(story, textsById, cfg)];
+
+  const sidebarCount = Math.min(cfg.section.max_sidebars, members.length - 1);
+  const roleOf = (index: number): SectionRole =>
+    index === 0 ? "lead" : index <= sidebarCount ? "sidebar" : "line";
+
+  return members.map((member, index) => {
+    const role = roleOf(index);
+    const tier =
+      role === "lead" ? story.tier : role === "sidebar" ? tierBelow(story.tier) : "brief";
+
+    // One member's own material, assembled by the ordinary rules.
+    const memberStory: StoryMaterials = {
+      ...story,
+      ref: member.ref,
+      itemType: member.itemType,
+      title: member.title.length > 0 ? member.title : story.title,
+      summary: member.summary,
+      score: member.score,
+      sourceCount: member.sourceCount,
+      tier: tier as StoryMaterials["tier"],
+      members: [member],
+      articles: member.articles,
+    };
+
+    const packet = assembleWriterPacket(memberStory, textsById, cfg);
+
+    // The lead is told what runs below it; everything else is told what leads.
+    const siblingTitles =
+      role === "lead"
+        ? members.slice(1, sidebarCount + 1).map((m) => m.title)
+        : [members[0]!.title];
+
+    return {
+      ...packet,
+      section: {
+        ref: story.ref,
+        title: story.title,
+        role,
+        rank: index,
+        siblingTitles,
+      },
+      // A line is one sentence whatever its tier's usual target says.
+      targetWords: role === "line" ? cfg.section.line_words : packet.targetWords,
+    };
+  });
 }

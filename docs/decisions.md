@@ -20,6 +20,68 @@ Entry format:
 
 ---
 
+## 2026-08-15 — A thread is a section, not a story
+
+**Decision:** a thread expands into several pieces under one heading — a lead at
+the story's tier, up to `max_sidebars` members at one tier below, and a
+one-sentence line for every remaining member. Section pieces displace standalone
+pieces from the bottom of the ranked list, so the paper stays the size the editor
+said it was.
+
+**Context:** threading absorbs a situation's rows into one ranked story, which is
+right for ranking and wrong for writing. The two writer behaviours we have seen
+are both wrong, and for the same reason:
+
+- Before the spine instruction: twelve events in 500 words, which is a list.
+- After it: one event in 500 words, and eleven stories silently discarded.
+
+Run #3's T1 dropped a story scoring **81** (federal investigation of
+left-leaning groups during the Minnesota crackdown) while the paper ran a 35-word
+brief on a story scoring **56**. T3 dropped the Orsk refinery halt, the Sevastopol
+assassination, the Warsaw assassination plot, the FSB erasing the border with
+annexed territory. Nobody made those judgments; they fell out of a structure
+where one slot has to hold a situation.
+
+**Rationale:** the sub-stories already exist. A thread's members are distinct
+events *by construction* — grouping separated them, threading gathered them — so
+the assembler does not need to invent a structure or ask a model to plan one. It
+builds one packet per member instead of flattening twelve members into one.
+
+That has a property worth stating plainly: **material partitions by member, so
+two pieces of a section cannot overlap.** No coordination between writer calls is
+needed, and "writers don't see each other's work" survives intact. The only
+cross-piece information is static text — the lead is told what runs below it, a
+sidebar is told what the lead covers — and its entire job is to stop a piece
+retelling what the reader will find two inches away.
+
+**Alternatives rejected:**
+
+- *Longer thread features* (scale words with member count). A 1,000-word piece
+  covering twelve events is still a list, and it breaks the finite-paper
+  principle.
+- *Weaken threading* so only the top members are absorbed. Fixes coverage and
+  prose, but scatters the related items across the paper as unrelated briefs —
+  the repetition problem threading was built to solve (run #43's five wildfire
+  clusters, four in the top fifteen).
+
+**On paper size:** sections produce more pieces than the slots they replace, so
+the tail of the ranked list gives up its places. Deeper coverage of eleven real
+situations costs the lowest-scoring unrelated items. Given that run #112's bottom
+briefs scored 56 against a dropped thread member at 81, that trade is the right
+way round. Section pieces are never displaced, and one standalone story always
+survives so a pathological day cannot produce a paper of nothing but threads.
+
+**Timing:** the publisher is the one unbuilt stage, so this was the cheapest
+moment this change will ever be — it lands as a migration on a table nothing
+renders yet, rather than a schema change plus a rendering rewrite.
+
+**Open:** whether T1's "immigration crackdown" is a *situation* or a *topic* is
+still a threading question, and sections make it visible rather than answering
+it. Judge it on the next run: a section whose lead and sidebars have nothing to
+do with each other is a thread that should not have formed.
+
+---
+
 ## 2026-08-14 — The paper writes: 147 of 150, and three defects worth the run
 
 **Decision:** the spine instruction stays; the parser gets more forgiving; a

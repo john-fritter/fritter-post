@@ -252,6 +252,25 @@ writers:
     # across outlets is not the redundancy we are removing, and cutting it would
     # reshape a lede.
     min_dedup_paragraph_chars: 120
+    # Sections: a thread is several pieces under one heading, not one piece.
+    #
+    # Threading absorbs a situation's rows into one ranked story. That is right
+    # for ranking and wrong for writing: run #3 put T1's twelve members into one
+    # 500-word slot and the writer kept one of them, dropping a story scoring 81
+    # while the paper ran a 35-word brief on one scoring 56.
+    #
+    # The top member leads at the story's own tier, the next max_sidebars get
+    # their own piece one tier down, and every remaining member gets a line — so
+    # nothing a thread absorbed disappears. Material is partitioned by member, so
+    # two pieces of a section cannot overlap.
+    section:
+      # Sidebars per section. Three plus a lead is a section a reader can finish;
+      # more turns the top of the paper into one subject. The tail still gets
+      # lines, so this caps depth rather than coverage.
+      max_sidebars: 3
+      # A line is one sentence. Shorter than a brief on purpose: it exists so a
+      # minor development is visible, not to compete with the sidebars.
+      line_words: [15, 30]
     # Floor for a body to be worth a packet slot at all, after furniture removal.
     # Deliberately low: run #112's Al Jazeera summary was 89 characters and
     # carried a real fact, while the Google News stub next to it was the headline

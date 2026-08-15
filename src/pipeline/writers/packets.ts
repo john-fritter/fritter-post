@@ -12,7 +12,12 @@ import path from "path";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { loadEditorRunMaterials } from "./materials.js";
-import { assembleWriterPacket, type ResolvedText, type WriterPacket } from "./assembler.js";
+import {
+  assembleWriterPacket,
+  assembleSectionPackets,
+  type ResolvedText,
+  type WriterPacket,
+} from "./assembler.js";
 import { buildWriterSystemPrompt, buildWriterUserPrompt, VOICE_FALLBACK } from "./prompt.js";
 
 const DOCS_DIR = path.join(import.meta.dirname, "..", "..", "..", "docs");
@@ -68,6 +73,35 @@ export interface RenderedPacket {
   promptChars: number;
 }
 
+/**
+ * Keeps the paper the size the editor said it was.
+ *
+ * A thread expands into a lead, sidebars and lines, so a 150-story editor run
+ * yields more than 150 pieces. Rather than letting the paper grow, the tail of
+ * the ranked list gives up its slots — deeper coverage of eleven real situations
+ * costs the lowest-scoring unrelated items, which is the trade a section is for.
+ * Run #112's bottom briefs scored 56 while a story inside T1 scored 81.
+ *
+ * Section pieces are never dropped: the displacement comes off standalone
+ * stories from the bottom of the rank order, and at least one standalone story
+ * always survives so a pathological day cannot produce a paper of nothing but
+ * threads.
+ */
+export function applyPaperBudget(packets: WriterPacket[], target: number): WriterPacket[] {
+  if (packets.length <= target) return packets;
+
+  const overflow = packets.length - target;
+  const standalone = packets
+    .map((packet, index) => ({ packet, index }))
+    .filter((entry) => entry.packet.section === null)
+    .sort((a, b) => b.packet.rank - a.packet.rank);
+
+  const droppable = Math.max(0, standalone.length - 1);
+  const dropIndexes = new Set(standalone.slice(0, Math.min(overflow, droppable)).map((e) => e.index));
+
+  return packets.filter((_packet, index) => !dropIndexes.has(index));
+}
+
 /** Every story of an editor run, assembled and rendered into writer prompts. */
 export async function buildEditorRunPackets(editorRunId: number): Promise<RenderedPacket[]> {
   const cfg = loadModelConfig().writers.packet;
@@ -78,8 +112,24 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
 
   const { bio, voice } = loadWriterDocs();
 
-  return stories.map((story) => {
-    const packet = assembleWriterPacket(story, textsById, cfg);
+  // A thread becomes a section of several pieces; everything else is one piece.
+  const expanded = stories.flatMap((story) =>
+    story.itemType === "thread"
+      ? assembleSectionPackets(story, textsById, cfg)
+      : [assembleWriterPacket(story, textsById, cfg)],
+  );
+
+  const budgeted = applyPaperBudget(expanded, stories.length);
+  const dropped = expanded.length - budgeted.length;
+  const sectionPieces = budgeted.filter((p) => p.section !== null).length;
+  if (sectionPieces > 0) {
+    console.log(
+      `[writers] editor run #${editorRunId}: ${stories.length} stories → ${expanded.length} pieces ` +
+        `(${sectionPieces} in sections), ${dropped} standalone piece(s) displaced to hold the paper at ${stories.length}`,
+    );
+  }
+
+  return budgeted.map((packet) => {
     const systemPrompt = buildWriterSystemPrompt(voice);
     const userPrompt = buildWriterUserPrompt(bio, packet);
     return {

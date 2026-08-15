@@ -758,11 +758,21 @@ async function main() {
         console.log(`  Total prompt characters: ${totalChars}`);
         console.log(`  Largest packet:          ${Math.max(...packets.map((p) => p.promptChars))}`);
         console.log("");
-        console.log("  rank tier      ref     arts  omit  material       chars  fetched/feed");
+        const sectionPieces = packets.filter((p) => p.packet.section !== null).length;
+        if (sectionPieces > 0) {
+          const sections = new Set(packets.map((p) => p.packet.section?.ref).filter(Boolean));
+          console.log(`  Sections:                ${sections.size} (${sectionPieces} pieces)`);
+        }
+        console.log("");
+        console.log("  rank tier      ref     section     arts  omit  material       chars  fetched/feed");
         for (const { packet, promptChars } of packets) {
           const fetched = packet.articles.filter((a) => a.origin === "fetched").length;
+          const section = packet.section
+            ? `${packet.section.ref}/${packet.section.role}`
+            : "-";
           console.log(
             `  ${String(packet.rank).padStart(4)} ${packet.tier.padEnd(9)} ${packet.ref.padEnd(7)} ` +
+              `${section.padEnd(11)} ` +
               `${String(packet.articles.length).padStart(4)}  ${String(packet.omitted.length).padStart(4)}  ` +
               `${packet.materialLevel.padEnd(13)} ${String(promptChars).padStart(6)}  ` +
               `${fetched}/${packet.articles.length - fetched}`,
@@ -797,22 +807,34 @@ async function main() {
             rank: number; tier: string; ref: string; headline: string | null;
             body: string | null; word_count: number; material_level: string | null;
             source_count: number; articles_used: number; status: string; detail: string | null;
+            section_ref: string | null; section_title: string | null;
+            section_role: string | null; section_rank: number;
           }>(
             `SELECT rank, tier, ref, headline, body, word_count, material_level,
-                    source_count, articles_used, status, detail
-             FROM writer_pieces WHERE run_id = $1 ORDER BY rank ASC`,
+                    source_count, articles_used, status, detail,
+                    section_ref, section_title, section_role, section_rank
+             FROM writer_pieces WHERE run_id = $1 ORDER BY rank ASC, section_rank ASC`,
             [runId],
           );
 
           const full = flags["full"] === "true";
           console.log(`\n── PIECES (${pieces.length})`);
+          let currentSection: string | null = null;
           for (const p of pieces) {
+            // A section reads as one run of pieces under one heading.
+            if (p.section_ref !== currentSection) {
+              currentSection = p.section_ref;
+              if (p.section_ref !== null) {
+                console.log(`\n  ══ SECTION ${p.section_ref}: ${p.section_title ?? ""}`);
+              }
+            }
             if (p.status !== "ok") {
               console.log(`  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}] ${p.ref.padEnd(7)} FAILED — ${p.detail ?? ""}`);
               continue;
             }
+            const role = p.section_role ? ` ${p.section_role.padEnd(7)}` : "";
             console.log(
-              `  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}] ${p.ref.padEnd(7)} ` +
+              `  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}]${role} ${p.ref.padEnd(7)} ` +
                 `${String(p.word_count).padStart(3)}w  ${(p.material_level ?? "").padEnd(13)} ` +
                 `src=${p.source_count}/${p.articles_used}`,
             );

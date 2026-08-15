@@ -207,7 +207,15 @@ const WritersTierPacketConfigSchema = z.object({
   full_material_chars: z.number().int().nonnegative(),
 });
 
+// A thread's section: how many members get their own piece before the rest
+// become one-line entries.
+const WritersSectionConfigSchema = z.object({
+  max_sidebars: z.number().int().nonnegative(),
+  line_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+});
+
 const WritersPacketConfigSchema = z.object({
+  section: WritersSectionConfigSchema,
   min_dedup_paragraph_chars: z.number().int().nonnegative(),
   // Sources with less usable text than this are left out of the packet.
   min_article_chars: z.number().int().nonnegative(),

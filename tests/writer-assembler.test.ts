@@ -21,6 +21,7 @@ import type { WritersPacketConfig } from "../src/config/models.js";
 // every request — so a packet has to survive both too much material and none.
 
 const CFG: WritersPacketConfig = {
+  section: { max_sidebars: 3, line_words: [15, 30] },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,
   tiers: {

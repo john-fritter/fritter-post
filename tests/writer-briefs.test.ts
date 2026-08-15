@@ -16,6 +16,7 @@ import type { WriterPacket } from "../src/pipeline/writers/assembler.js";
 function packet(ref: string, rank: number): WriterPacket {
   return {
     storyId: rank,
+    section: null,
     rank,
     tier: "brief",
     ref,

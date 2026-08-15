@@ -132,6 +132,8 @@ The stage is three pieces, of which the first two are built:
 2. **Article-text fetch** — most feeds carry a teaser rather than a body (61% of run #112's articles were under 800 characters), so the articles the feed left short are fetched from the publisher and extracted. The text is used to write the paper and never published.
 3. **Prompt assembler** — selects, deduplicates and budgets that material into one prompt per piece, then makes the calls: one per feature and standard piece, briefs in batches. A failed call costs one piece, never the edition.
 
+A thread does not become one piece. It becomes a **section**: a lead, several sidebars at one tier below, and a one-sentence line for each remaining member, all under one heading. One slot cannot hold a situation — either the writer tours every event and produces a list, or it picks one and silently drops the rest. Because a thread's members are distinct events by construction, material partitions cleanly by member and the pieces of a section cannot overlap, so no writer needs to see another's work. Sections displace the lowest-ranked standalone stories, keeping the paper finite.
+
 ### Stage 9: Publisher (software)
 
 Pure rendering. Takes the structured document from the editor (ordered list of stories with size tiers, body text, image refs, sources) and produces the page according to layout rules. No judgment. All editorial work happened upstream.
