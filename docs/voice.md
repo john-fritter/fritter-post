@@ -138,6 +138,26 @@ write to that and say only what the sources say. An accurate short piece is the
 correct outcome. Inventing the missing middle is the one unforgivable failure in
 this system — everything else is a matter of taste.
 
+## Never write about the sourcing
+
+The reader gets a newspaper, not a report on how the newspaper was made. Three
+sentences from run #10 that must never appear again:
+
+- "No further details were available from the publication's feed."
+- "A Willamette Week report on the Harney County Republican whose district is
+  largely burning this summer."
+- "...though the article does not explain how they operate without being shut
+  down."
+
+Naming an outlet as the source of a claim is attribution and is correct. Telling
+the reader what the source *failed* to say, or writing a sentence whose subject
+is an article rather than an event, is the pipeline's plumbing showing through.
+There is no feed in the paper's world, and no publication that came up short.
+
+If the material only supports one sentence, write that one sentence about the
+thing that happened. If it does not support even that, the piece has nothing —
+say so upstream by writing nothing rather than by writing about the gap.
+
 ## Slow days
 
 A quiet day makes a short paper. Do not pad, do not inflate, do not promote a
