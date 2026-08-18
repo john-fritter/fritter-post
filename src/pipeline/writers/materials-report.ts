@@ -1,5 +1,19 @@
 /**
- * Audit of what text the paper actually has before any fetching happens.
+ * Audit of what text the paper has: what the feeds gave, and what it has after
+ * the fetcher ran.
+ *
+ * Both numbers are needed and they are wildly different. This report was
+ * written before the fetch stage existed, so it measured feed bodies only —
+ * and after run #113 that reading was actively misleading: the audit said the
+ * paper's median article carried 560 characters and 58% were thin, while the
+ * fetch had already taken the same run's body text from 33,903 to 405,351
+ * characters. Anyone reading the audit alone would conclude the features were
+ * being written from teasers.
+ *
+ * So `feed` is the fetch-planning view and `effective` is what a writer
+ * actually reads — `max(feed, fetched)`, the same choice `assembleWriterPacket`
+ * makes. Run it before the fetch and the two columns agree; run it after and
+ * the gap is the fetcher's yield.
  *
  * The fetch policy is the first real decision of the writers stage, and it
  * cannot be made from intuition: "some articles need fetching" is either 30% of
@@ -8,12 +22,13 @@
  * `content:encoded` article to a two-sentence teaser, and which is which is a
  * property of the outlet, not of the story.
  *
- * So this measures, per tier and per source, how much body text each underlying
- * article carries — and reports the numbers the fetcher's config needs: how many
- * URLs a feature+standard fetch would touch, and which outlets contribute the
- * articles that are all lede and no body.
+ * Per tier and per source, how much body text each underlying article carries —
+ * plus the numbers the fetcher's config needs: how many URLs a feature+standard
+ * fetch would touch, and which outlets contribute the articles that are all
+ * lede and no body.
  *
- * Pure functions over resolved materials. No database, no clock.
+ * Pure functions over resolved materials. No database, no clock — the caller
+ * supplies the fetched lengths.
  */
 
 import type { StoryMaterials, StoryArticle } from "./materials.js";
@@ -58,6 +73,10 @@ export interface TierStats {
   medianChars: number;
   thinCount: number;
   emptyCount: number;
+  /** Same three, measured on what a writer reads rather than on the feed body. */
+  effectiveMedianChars: number;
+  effectiveThinCount: number;
+  effectiveEmptyCount: number;
 }
 
 export interface HostStats {
@@ -75,6 +94,7 @@ export interface BigStoryStats {
   articles: number;
   totalChars: number;
   thinCount: number;
+  effectiveChars: number;
 }
 
 export interface MaterialsReport {
@@ -86,6 +106,19 @@ export interface MaterialsReport {
   thinCount: number;
   emptyCount: number;
   translationFailed: number;
+  /**
+   * The fetcher's yield, or null when no fetched text was supplied. `improved`
+   * counts articles the fetch actually lengthened — the rest either were not in
+   * scope, were blocked, or came back shorter than the teaser.
+   */
+  fetched: {
+    improved: number;
+    medianChars: number;
+    thinCount: number;
+    emptyCount: number;
+    charsFromFeed: number;
+    charsEffective: number;
+  } | null;
   tiers: TierStats[];
   buckets: Array<{ label: string; count: number }>;
   sources: SourceTextStats[];
@@ -116,12 +149,26 @@ function bucketOf(chars: number): string {
   return BUCKETS[BUCKETS.length - 1]!.label;
 }
 
-function articleStats(articles: StoryArticle[]) {
-  const chars = articles.map((a) => a.feedTextChars);
+/** How many characters one article carries, under one of the two views. */
+type CharsOf = (article: StoryArticle) => number;
+
+const feedChars: CharsOf = (a) => a.feedTextChars;
+
+/**
+ * What a writer actually reads: the longer of the feed body and the fetched
+ * text, which is the same choice `assembleWriterPacket` makes. A `thin`
+ * extraction can come back shorter than the teaser, and then the teaser wins.
+ */
+function effectiveCharsOf(fetchedChars: Map<number, number>): CharsOf {
+  return (a) => Math.max(a.feedTextChars, fetchedChars.get(a.preprocessedItemId) ?? 0);
+}
+
+function articleStats(articles: StoryArticle[], charsOf: CharsOf = feedChars) {
+  const chars = articles.map(charsOf);
   return {
     medianChars: median(chars),
-    thinCount: articles.filter((a) => a.feedTextChars < THIN_CHARS).length,
-    emptyCount: articles.filter((a) => a.feedTextChars === 0).length,
+    thinCount: articles.filter((a) => charsOf(a) < THIN_CHARS).length,
+    emptyCount: articles.filter((a) => charsOf(a) === 0).length,
     uniqueUrls: new Set(articles.map((a) => a.canonicalUrl)).size,
   };
 }
@@ -130,9 +177,13 @@ export function summarizeMaterials(
   editorRunId: number,
   stories: StoryMaterials[],
   bigStoryLimit = 15,
+  /** Fetched text length per preprocessed item. Empty means "before the fetch". */
+  fetchedChars: Map<number, number> = new Map(),
 ): MaterialsReport {
   const allArticles = stories.flatMap((s) => s.articles);
   const overall = articleStats(allArticles);
+  const effective = effectiveCharsOf(fetchedChars);
+  const overallEffective = articleStats(allArticles, effective);
 
   const tierOrder = ["feature", "standard", "brief", "cut"];
   const tiers: TierStats[] = [];
@@ -141,6 +192,7 @@ export function summarizeMaterials(
     if (inTier.length === 0) continue;
     const articles = inTier.flatMap((s) => s.articles);
     const stats = articleStats(articles);
+    const eff = articleStats(articles, effective);
     tiers.push({
       tier,
       stories: inTier.length,
@@ -149,6 +201,9 @@ export function summarizeMaterials(
       medianChars: stats.medianChars,
       thinCount: stats.thinCount,
       emptyCount: stats.emptyCount,
+      effectiveMedianChars: eff.medianChars,
+      effectiveThinCount: eff.thinCount,
+      effectiveEmptyCount: eff.emptyCount,
     });
   }
 
@@ -193,6 +248,7 @@ export function summarizeMaterials(
       articles: s.articles.length,
       totalChars: s.articles.reduce((sum, a) => sum + a.feedTextChars, 0),
       thinCount: s.articles.filter((a) => a.feedTextChars < THIN_CHARS).length,
+      effectiveChars: s.articles.reduce((sum, a) => sum + effective(a), 0),
     }));
 
   const fetchArticles = stories
@@ -224,6 +280,17 @@ export function summarizeMaterials(
     thinCount: overall.thinCount,
     emptyCount: overall.emptyCount,
     translationFailed: allArticles.filter((a) => a.translationFailed).length,
+    fetched:
+      fetchedChars.size === 0
+        ? null
+        : {
+            improved: allArticles.filter((a) => effective(a) > a.feedTextChars).length,
+            medianChars: overallEffective.medianChars,
+            thinCount: overallEffective.thinCount,
+            emptyCount: overallEffective.emptyCount,
+            charsFromFeed: allArticles.reduce((sum, a) => sum + a.feedTextChars, 0),
+            charsEffective: allArticles.reduce((sum, a) => sum + effective(a), 0),
+          },
     tiers,
     buckets: BUCKETS.map((b) => ({ label: b.label, count: bucketCounts.get(b.label) ?? 0 })),
     sources,
@@ -265,14 +332,37 @@ export function formatMaterialsReport(report: MaterialsReport, sourceLimit = 40)
       `(translation failed; text is still original-language)`,
   );
 
+  // Everything above is the feed. Everything a writer reads is the feed plus
+  // whatever the fetcher recovered, and the two are far apart on a run where
+  // the fetch worked — so say both, rather than leaving the reader of this
+  // report to conclude the paper was written from teasers.
+  if (report.fetched === null) {
+    lines.push("");
+    lines.push("  (No fetched text — figures above are feed bodies only.)");
+  } else {
+    const f = report.fetched;
+    lines.push("");
+    lines.push("── AFTER FETCH (what a writer actually reads)");
+    lines.push(`  Improved:       ${f.improved} of ${report.articles} article(s)`);
+    lines.push(`  Median body:    ${report.medianChars} → ${f.medianChars} chars`);
+    lines.push(
+      `  Thin (<${THIN_CHARS}):    ${report.thinCount} → ${f.thinCount} ` +
+        `(${pct(f.thinCount, report.articles)})`,
+    );
+    lines.push(`  Empty body:     ${report.emptyCount} → ${f.emptyCount}`);
+    lines.push(`  Total chars:    ${f.charsFromFeed} → ${f.charsEffective}`);
+  }
+
   lines.push("");
-  lines.push("── PER TIER");
-  lines.push("  tier      stories  articles  urls  median  thin  empty");
+  lines.push("── PER TIER (feed → after fetch)");
+  lines.push("  tier      stories  articles  urls        median          thin  empty");
   for (const t of report.tiers) {
+    const med = `${t.medianChars} → ${t.effectiveMedianChars}`;
+    const thin = `${t.thinCount} → ${t.effectiveThinCount}`;
     lines.push(
       `  ${t.tier.padEnd(9)} ${String(t.stories).padStart(7)}  ${String(t.articles).padStart(8)}  ` +
-        `${String(t.uniqueUrls).padStart(4)}  ${String(t.medianChars).padStart(6)}  ` +
-        `${String(t.thinCount).padStart(4)}  ${String(t.emptyCount).padStart(5)}`,
+        `${String(t.uniqueUrls).padStart(4)}  ${med.padStart(12)}  ` +
+        `${thin.padStart(10)}  ${String(t.effectiveEmptyCount).padStart(5)}`,
     );
   }
 
@@ -303,7 +393,8 @@ export function formatMaterialsReport(report: MaterialsReport, sourceLimit = 40)
     lines.push(
       `  ${String(s.rank).padStart(3)}. [${s.tier.padEnd(8)}] ${s.ref.padEnd(7)} ` +
         `members=${String(s.members).padStart(2)} articles=${String(s.articles).padStart(2)} ` +
-        `chars=${String(s.totalChars).padStart(6)} thin=${s.thinCount}`,
+        `chars=${String(s.totalChars).padStart(6)}→${String(s.effectiveChars).padStart(6)} ` +
+        `thin=${s.thinCount}`,
     );
     lines.push(`       ${s.title.slice(0, 100)}`);
   }

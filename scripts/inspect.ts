@@ -23,7 +23,7 @@ import {
   summarizeMaterials,
   formatMaterialsReport,
 } from "../src/pipeline/writers/materials-report.js";
-import { buildEditorRunPackets } from "../src/pipeline/writers/packets.js";
+import { buildEditorRunPackets, loadFetchedTexts } from "../src/pipeline/writers/packets.js";
 
 interface RawItemRow {
   id: string;
@@ -712,7 +712,17 @@ async function main() {
           break;
         }
         const stories = await loadEditorRunMaterials(runId);
-        const report = summarizeMaterials(runId, stories);
+        // Fetched lengths, so the audit can report what a writer reads and not
+        // only what the feeds gave. Empty before the fetch has run, which is
+        // when the report says so rather than implying the two are the same.
+        const itemIds = [
+          ...new Set(stories.flatMap((s) => s.articles.map((a) => a.preprocessedItemId))),
+        ];
+        const fetched = await loadFetchedTexts(itemIds);
+        const fetchedChars = new Map(
+          [...fetched].map(([id, resolved]) => [id, resolved.text.length]),
+        );
+        const report = summarizeMaterials(runId, stories, undefined, fetchedChars);
         const sourceLimit = flags["sources"] ? parseInt(flags["sources"], 10) : undefined;
         console.log(formatMaterialsReport(report, sourceLimit));
         break;

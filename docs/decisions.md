@@ -3129,3 +3129,52 @@ something the paper found out.
 reads as a topic rather than a situation. If that holds, it is a threading
 problem upstream, not a writing one, and the sections machinery is correctly
 reporting it rather than causing it.
+
+## 2026-08-18 — The materials audit reports feed text and fetched text separately
+
+Run #113 was the first full-pipeline run: collect #50 through writer #10, 150
+pieces on the day's news. The materials audit for it read:
+
+    Median body: 560 chars       Thin (<800): 176 (58%)
+    feature: 15 stories, 112 articles, median 441 chars, 75 thin
+
+and the fetch for the same editor run reported `body text 33903 → 405351 chars`.
+Both were correct. Read together they say the paper's features were written from
+441-character teasers, which is false — the audit predates the fetch stage and
+only ever measured `preprocessed_items`, never `article_texts`.
+
+That mattered immediately: T2 (Gaza, rank 7, feature) shows 5 articles and 1,186
+characters in the audit, and on those numbers its packet would be headline-only
+and capped at 25–60 words. It was written at feature length because the fetch had
+already given it real text the audit could not see.
+
+`summarizeMaterials` now takes a `fetchedChars` map and reports both views —
+`effective = max(feed, fetched)`, the same choice `assembleWriterPacket` makes,
+so the audit agrees with the packet rather than describing one nobody is given.
+Run it before the fetch and the columns match; run it after and the gap is the
+fetcher's yield. With no map supplied the report says "feed bodies only" instead
+of leaving the reader to assume.
+
+The general shape: **a report written for one stage of a pipeline keeps
+answering that stage's question after a later stage changes the answer.** The
+audit was built to size the fetch and was still sizing the fetch after the fetch
+existed.
+
+**Also recorded from run #113, not yet acted on:**
+
+- **Threading produced a second topic-bundle.** T4 "Afghanistan under Taliban"
+  gathers five members spanning a country and a five-year period — one of them
+  is literally titled "Afghanistan: 5 Years in the Dark". T1 (Iran/Hormuz) and
+  T0 (Oregon wildfire) both hold as situations. That is two confirmed misses of
+  the same shape — a country or a policy area rather than a concrete situation
+  anchored in a place and a time.
+- **`raw_items` inserts hit a Postgres index-corruption error.** Collect #50 lost
+  two items to `posting list tuple with 21 items cannot be split at offset 129`
+  and `... 10 items ... offset 151`. That is a GIN index signature and the
+  migrations define no GIN index, so something created one outside them. It is
+  silent, per-item, and will recur.
+- **Individually-called brief-tier pieces overshoot.** Section sidebars demoted
+  to brief tier came in at 48–53 words against a 25–45 target, while batched
+  briefs ran 19–51. Same shape as the line problem — a brief's material budget
+  supports more sentences than a brief's word target asks for — and worth
+  checking against the paper before changing anything.

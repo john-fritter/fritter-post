@@ -624,7 +624,10 @@ number is ambiguous. The next migration is **037**.
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
 - `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
   much body text each story's underlying articles carry, per tier, per source and
-  per host, plus the fetch scope
+  per host, plus the fetch scope. Reports **feed body and after-fetch side by
+  side** — run #113's audit said the median article carried 560 characters while
+  the same run's fetch had taken body text from 33,903 to 405,351, and reading
+  the feed column alone says the features were written from teasers
 - `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
   packets: sizes for every story, or the full prompt for one
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every

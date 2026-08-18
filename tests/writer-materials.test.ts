@@ -9,6 +9,7 @@ import {
 } from "../src/pipeline/writers/materials.js";
 import {
   summarizeMaterials,
+  formatMaterialsReport,
   THIN_CHARS,
 } from "../src/pipeline/writers/materials-report.js";
 import type { ParsedGroupingCluster } from "../src/pipeline/editor-pass-1/index.js";
@@ -392,6 +393,63 @@ function testReportCountsThinArticlesAndScopesTheFetch() {
   assert.equal(feature.stories, 1);
 }
 
+function testReportSeparatesFeedTextFromFetchedText() {
+  // Run #113's audit said the paper's median article carried 560 characters and
+  // 58% were thin, while the same run's fetch had taken body text from 33,903
+  // to 405,351 characters. Both numbers were true; only one was the paper's.
+  const teaser = "x".repeat(200);
+  const fetched = "y".repeat(4000);
+  const stories = buildStoryMaterials(
+    inputs({
+      stories: [
+        story({ preprocessed_item_id: "10", tier: "standard", rank: 1 }),
+        story({ preprocessed_item_id: "11", tier: "standard", rank: 2 }),
+      ],
+      itemsById: new Map([
+        [10, item(10, { body_text: teaser, source_name: "Reuters World News" })],
+        [11, item(11, { body_text: teaser, source_name: "Reuters World News" })],
+      ]),
+    }),
+  );
+
+  // Before the fetch: no fetched map, and the report says so rather than
+  // implying the feed numbers are what the writers got.
+  const before = summarizeMaterials(112, stories);
+  assert.equal(before.fetched, null);
+  assert.equal(before.thinCount, 2);
+  assert.ok(/feed bodies only/.test(formatMaterialsReport(before)));
+
+  // After: one article recovered, one blocked.
+  const after = summarizeMaterials(112, stories, undefined, new Map([[10, fetched.length]]));
+  assert.equal(after.thinCount, 2, "the feed view is unchanged");
+  assert.equal(after.fetched!.improved, 1);
+  assert.equal(after.fetched!.thinCount, 1, "the recovered article is no longer thin");
+  assert.equal(after.fetched!.medianChars, (200 + 4000) / 2);
+  assert.equal(after.tiers[0]!.thinCount, 2);
+  assert.equal(after.tiers[0]!.effectiveThinCount, 1);
+
+  const rendered = formatMaterialsReport(after);
+  assert.ok(/AFTER FETCH/.test(rendered));
+  assert.ok(!/feed bodies only/.test(rendered));
+}
+
+function testAShorterFetchDoesNotBeatTheTeaser() {
+  // A `thin` extraction can come back shorter than the feed teaser. The packet
+  // assembler takes the longer of the two, so the audit must agree with it or
+  // it is measuring a packet nobody will be given.
+  const teaser = "x".repeat(900);
+  const stories = buildStoryMaterials(
+    inputs({
+      stories: [story({ preprocessed_item_id: "10", tier: "standard", rank: 1 })],
+      itemsById: new Map([[10, item(10, { body_text: teaser })]]),
+    }),
+  );
+
+  const report = summarizeMaterials(112, stories, undefined, new Map([[10, 300]]));
+  assert.equal(report.fetched!.improved, 0);
+  assert.equal(report.fetched!.medianChars, 900);
+}
+
 function testReportCountsUniqueUrlsNotArticles() {
   // Cross-source pickup is preserved deliberately, but two outlets syndicating
   // one wire story can carry the same canonical URL — the fetcher pays once.
@@ -463,6 +521,8 @@ testNullBodyBecomesEmptyString();
 testParentOutletIsAttached();
 testReportCountsThinArticlesAndScopesTheFetch();
 testReportCountsUniqueUrlsNotArticles();
+testReportSeparatesFeedTextFromFetchedText();
+testAShorterFetchDoesNotBeatTheTeaser();
 testReportGroupsFetchScopeByHost();
 testReportSurfacesUnresolvedStories();
 console.log("writer materials tests passed");
