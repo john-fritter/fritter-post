@@ -27,6 +27,7 @@ import { callWithBackoff } from "../../llm/backoff.js";
 import { buildEditorRunPackets, loadWriterDocs, type RenderedPacket } from "./packets.js";
 import {
   buildBriefBatchUserPrompt,
+  type BriefBatchKind,
   parseBriefBatchOutput,
   parseWriterOutput,
 } from "./prompt.js";
@@ -215,6 +216,26 @@ async function writeOnePiece(
   }
 }
 
+/**
+ * Splits a paper's packets into the three call shapes.
+ *
+ * Everything longer than a paragraph gets its own call. Briefs and section
+ * lines both batch, but never in the same call: a brief is a short paragraph
+ * and a line is one sentence, and run #8 sent them together and got briefs back
+ * for both — lines at 40 to 47 words against a 15-30 target. One call, one
+ * register.
+ */
+export function partitionByCallShape<T extends { packet: WriterPacket }>(
+  packets: T[],
+): { longform: T[]; briefs: T[]; lines: T[] } {
+  const isLine = (p: T) => p.packet.section?.role === "line";
+  return {
+    longform: packets.filter((p) => p.packet.tier !== "brief" && !isLine(p)),
+    briefs: packets.filter((p) => p.packet.tier === "brief" && !isLine(p)),
+    lines: packets.filter(isLine),
+  };
+}
+
 async function writeBriefBatch(
   batch: Array<{ rendered: RenderedPacket; storyId: number | null }>,
   batchIndex: number,
@@ -222,7 +243,9 @@ async function writeBriefBatch(
   runId: number,
   cfg: WritersStageConfig,
   breaker: FailureBreaker,
+  kind: BriefBatchKind = "brief",
 ): Promise<{ pieces: WrittenPiece[]; inputTokens: number; outputTokens: number; failed: boolean }> {
+  const label = kind === "line" ? "line" : "brief";
   const packets = batch.map((b) => b.rendered.packet);
   const refs = packets.map((p) => p.ref);
   // The system prompt is identical for every piece; take the first.
@@ -247,7 +270,7 @@ async function writeBriefBatch(
           stageRunId: runId,
           model: cfg.model,
           systemPrompt,
-          userPrompt: buildBriefBatchUserPrompt(bio, packets),
+          userPrompt: buildBriefBatchUserPrompt(bio, packets, kind),
           temperature: cfg.temperature,
           maxTokens: cfg.max_tokens,
           reasoningEffort: cfg.reasoning_effort,
@@ -256,7 +279,7 @@ async function writeBriefBatch(
           stream: cfg.stream,
         }),
       { retry_max_attempts: cfg.retry_max_attempts, retry_base_ms: cfg.retry_base_ms },
-      `writers briefs ${batchIndex}`,
+      `writers ${label}s ${batchIndex}`,
     );
 
     breaker.record(true);
@@ -273,7 +296,7 @@ async function writeBriefBatch(
     // answer.
     if (missing.length > 0) {
       console.warn(
-        `[writers] brief batch ${batchIndex}: ${missing.length} of ${refs.length} brief(s) missing — re-asking for those`,
+        `[writers] ${label} batch ${batchIndex}: ${missing.length} of ${refs.length} ${label}(s) missing — re-asking for those`,
       );
       const stragglers = packets.filter((p) => missing.includes(p.ref));
       try {
@@ -284,7 +307,7 @@ async function writeBriefBatch(
               stageRunId: runId,
               model: cfg.model,
               systemPrompt,
-              userPrompt: buildBriefBatchUserPrompt(bio, stragglers),
+              userPrompt: buildBriefBatchUserPrompt(bio, stragglers, kind),
               temperature: cfg.temperature,
               maxTokens: cfg.max_tokens,
               reasoningEffort: cfg.reasoning_effort,
@@ -293,7 +316,7 @@ async function writeBriefBatch(
               stream: cfg.stream,
             }),
           { retry_max_attempts: cfg.retry_max_attempts, retry_base_ms: cfg.retry_base_ms },
-          `writers briefs ${batchIndex} straggler`,
+          `writers ${label}s ${batchIndex} straggler`,
         );
         inputTokens += retry.inputTokens ?? 0;
         outputTokens += retry.outputTokens ?? 0;
@@ -303,7 +326,7 @@ async function writeBriefBatch(
         missing = refs.filter((r) => !parsed.has(r));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[writers] brief batch ${batchIndex}: straggler call failed — ${msg}`);
+        console.warn(`[writers] ${label} batch ${batchIndex}: straggler call failed — ${msg}`);
       }
     }
 
@@ -342,7 +365,7 @@ async function writeBriefBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     breaker.record(false);
-    console.warn(`[writers] brief batch ${batchIndex}: call failed — ${msg}`);
+    console.warn(`[writers] ${label} batch ${batchIndex}: call failed — ${msg}`);
     // A failed batch costs its briefs, not the paper.
     return {
       pieces: batch.map(({ rendered, storyId }) => failedPiece(rendered.packet, storyId, msg)),
@@ -415,7 +438,9 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
           return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg, breaker);
         }
         const batch = [{ rendered, storyId: rendered.packet.storyId ?? null }];
-        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg, breaker);
+        const kind: BriefBatchKind =
+          rendered.packet.section?.role === "line" ? "line" : "brief";
+        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg, breaker, kind);
         return {
           piece: batchResult.pieces[0]!,
           inputTokens: batchResult.inputTokens,
@@ -532,18 +557,12 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   );
   const runId = runRows[0]!.id;
 
-  // Lines and briefs are both one- or two-sentence pieces, so they batch
-  // together; everything longer gets its own call.
-  const longform = selected.filter(
-    (p) => p.packet.tier !== "brief" && p.packet.section?.role !== "line",
-  );
-  const briefs = selected.filter(
-    (p) => p.packet.tier === "brief" || p.packet.section?.role === "line",
-  );
+  const { longform, briefs, lines } = partitionByCallShape(selected);
 
   console.log(
     `[writers] run #${runId}: ${selected.length} piece(s) from editor run #${editorRunId} — ` +
-      `${longform.length} individual call(s), ${briefs.length} brief(s) in batches of ${cfg.brief_batch_size}`,
+      `${longform.length} individual call(s), ${briefs.length} brief(s) and ${lines.length} ` +
+      `section line(s) in batches of ${cfg.brief_batch_size}`,
   );
 
   const storyIdOf = (rendered: RenderedPacket) => rendered.packet.storyId ?? null;
@@ -569,18 +588,30 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
     outputTokens += r.outputTokens;
   }
 
-  const batches: Array<Array<{ rendered: RenderedPacket; storyId: number | null }>> = [];
-  for (let i = 0; i < briefs.length; i += cfg.brief_batch_size) {
-    batches.push(
-      briefs.slice(i, i + cfg.brief_batch_size).map((rendered) => ({
-        rendered,
-        storyId: storyIdOf(rendered),
-      })),
-    );
+  type BriefBatch = {
+    items: Array<{ rendered: RenderedPacket; storyId: number | null }>;
+    kind: BriefBatchKind;
+  };
+  const batches: BriefBatch[] = [];
+  for (const [kind, pool] of [
+    ["brief", briefs],
+    ["line", lines],
+  ] as Array<[BriefBatchKind, RenderedPacket[]]>) {
+    for (let i = 0; i < pool.length; i += cfg.brief_batch_size) {
+      batches.push({
+        kind,
+        items: pool.slice(i, i + cfg.brief_batch_size).map((rendered) => ({
+          rendered,
+          storyId: storyIdOf(rendered),
+        })),
+      });
+    }
   }
 
   const batchResults = await Promise.all(
-    batches.map((batch, i) => limiter(() => writeBriefBatch(batch, i, bio, runId, cfg, breaker))),
+    batches.map((batch, i) =>
+      limiter(() => writeBriefBatch(batch.items, i, bio, runId, cfg, breaker, batch.kind)),
+    ),
   );
   for (const r of batchResults) {
     pieces.push(...r.pieces);

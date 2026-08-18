@@ -231,6 +231,9 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
 
 // --- briefs, written in batches ---
 
+/** Which register a batched call is writing in. See buildBriefBatchUserPrompt. */
+export type BriefBatchKind = "brief" | "line";
+
 /**
  * Briefs are 25–45 words each and the paper carries 75 of them. One call per
  * brief would be 75 calls that each re-send the bio and the standing memo — the
@@ -239,17 +242,41 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
  *
  * The output is the pipeline's usual flat line format, `ref;;headline;;body`,
  * with the body last so a `;;` inside it cannot shift a column.
+ *
+ * Section lines batch the same way but never in the same call. A line is one
+ * sentence and a brief is a short paragraph; run #8 batched them together and
+ * the lines came back as briefs — 40 to 47 words against a 15–30 target. One
+ * call, one register.
  */
-export function buildBriefBatchUserPrompt(bio: string, packets: WriterPacket[]): string {
+export function buildBriefBatchUserPrompt(
+  bio: string,
+  packets: WriterPacket[],
+  kind: BriefBatchKind = "brief",
+): string {
   const parts: string[] = ["THE READER", "", bio, "", "---", ""];
 
-  parts.push(
-    `BRIEFS TO WRITE (${packets.length})`,
-    "",
-    "Each item below is one brief. They are unrelated to each other — do not " +
-      "connect them, and do not let one brief's subject colour another's.",
-    "",
-  );
+  if (kind === "line") {
+    parts.push(
+      `SECTION LINES TO WRITE (${packets.length})`,
+      "",
+      "Each item below is one line: a single sentence naming what happened, " +
+        "nothing more. It runs at the foot of a section under a lead that has " +
+        "already established the situation, so give the development itself and " +
+        "no background. One sentence — not two, and not a compressed brief.",
+      "",
+      "They are unrelated to each other — do not connect them, and do not let " +
+        "one line's subject colour another's.",
+      "",
+    );
+  } else {
+    parts.push(
+      `BRIEFS TO WRITE (${packets.length})`,
+      "",
+      "Each item below is one brief. They are unrelated to each other — do not " +
+        "connect them, and do not let one brief's subject colour another's.",
+      "",
+    );
+  }
 
   for (const packet of packets) {
     const [minWords, maxWords] = packet.targetWords;
@@ -263,16 +290,17 @@ export function buildBriefBatchUserPrompt(bio: string, packets: WriterPacket[]):
     parts.push("");
   }
 
+  const noun = kind === "line" ? "line" : "brief";
   parts.push(
     "---",
     "",
-    "Output one line per brief, in this exact format, and nothing else:",
+    `Output one output line per ${noun}, in this exact format, and nothing else:`,
     "",
     "ref;;headline;;body",
     "",
     "The ref is the identifier above (for example " + (packets[0]?.ref ?? "S12345") + "). " +
       "Two semicolons separate the fields. The body is plain prose on one line, " +
-      "no line breaks. Write every brief listed, once each, in the order given.",
+      `no line breaks. Write every ${noun} listed, once each, in the order given.`,
   );
 
   return parts.join("\n");

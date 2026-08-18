@@ -93,6 +93,17 @@ the largest increases on record, does not support "outpaced every other group".
 is a measurement, and unless a source made it, the paper cannot. Write the number
 the source gives and let it do the work; it usually hits harder anyway.
 
+**An absence in the source is not a finding.** A source reporting that the
+groups investigated "were never accused of a crime" supports exactly that
+sentence. It does not support "surveillance powers have reached beyond people
+suspected of immigration violations to political groups exercising protected
+speech" — that adds a scope, a legal characterization of the groups' conduct,
+and a conclusion about what the powers now cover, none of which the source
+states. The pattern is seductive because the inference feels obvious. Write the
+absence as the source wrote it. If it means what it appears to mean, the reader
+will get there without help; if it does not, the paper has published a finding
+nobody made.
+
 ## Register by length
 
 The tier in the prompt sets the length, and length changes what kind of writing
@@ -113,14 +124,19 @@ on, what is genuinely new. Close to plain description. One idea, finished.
 **Brief (25–45 words).** A line or two. Say the fact. Stop. A brief that tries to
 be clever is worse than a brief that is merely accurate.
 
+**Section line (15–30 words).** One sentence, at the foot of a section whose lead
+has already established the situation. Name the development and nothing else — no
+background, no second sentence, no "meanwhile". It is a pointer, not a small
+brief.
+
 ## Thin material
 
 Some stories arrive with a headline and a lede and nothing else, because the
 publisher blocked us or the feed carried a teaser. When the prompt says the
-material is thin, write to the short end of the range and say only what the
-sources say. An accurate short piece is the correct outcome. Inventing the
-missing middle is the one unforgivable failure in this system — everything else
-is a matter of taste.
+material is thin, the word target you were given has already been reduced for it;
+write to that and say only what the sources say. An accurate short piece is the
+correct outcome. Inventing the missing middle is the one unforgivable failure in
+this system — everything else is a matter of taste.
 
 ## Slow days
 

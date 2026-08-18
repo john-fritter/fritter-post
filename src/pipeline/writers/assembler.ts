@@ -324,8 +324,14 @@ export function assembleWriterPacket(
   story: StoryMaterials,
   textsById: Map<number, ResolvedText>,
   cfg: WritersPacketConfig,
+  budgetTier?: string,
 ): WriterPacket {
-  const tierCfg = cfg.tiers[story.tier as keyof typeof cfg.tiers] ?? cfg.tiers.brief;
+  // `budgetTier` decouples the budget from the piece's published tier, which
+  // only section lines need: a line is stored as a brief and read as a brief,
+  // but a brief's 2,500-character budget is what made run #8's lines run 40–47
+  // words against a 15–30 target. See assembleSectionPackets.
+  const tierKey = budgetTier ?? story.tier;
+  const tierCfg = cfg.tiers[tierKey as keyof typeof cfg.tiers] ?? cfg.tiers.brief;
 
   const { selected, omitted } = selectArticles(story.articles, tierCfg.max_articles);
 
@@ -411,11 +417,26 @@ export function assembleWriterPacket(
   const availableChars = articles.reduce((sum, a) => sum + a.availableChars, 0);
   const materialLevel = materialLevelOf(availableChars, tierCfg);
 
+  // A headline-only packet gets a structural ceiling, not just a note. Run #8's
+  // T1 sidebar S53521 was asked for 120–200 words on headline material and
+  // filled the gap with the 1924 Johnson–Reed Act — detail no source carried.
+  // Telling a writer to "write short" leaves the target standing; this removes
+  // it. Element-wise min, so a tier already shorter than the ceiling keeps its
+  // own target.
+  const targetWords: [number, number] =
+    materialLevel === "headline-only"
+      ? [
+          Math.min(tierCfg.target_words[0], cfg.headline_only_words[0]),
+          Math.min(tierCfg.target_words[1], cfg.headline_only_words[1]),
+        ]
+      : tierCfg.target_words;
+
   const notes: string[] = [];
   if (materialLevel === "headline-only") {
     notes.push(
-      "Material is headline-level only. Write to the short end of the target and " +
-        "state only what the sources state — do not supply detail they do not carry.",
+      "Material is headline-level only. The word target above is already reduced " +
+        "for this — state only what the sources state, and do not supply detail " +
+        "they do not carry.",
     );
   } else if (materialLevel === "partial") {
     notes.push(
@@ -453,7 +474,7 @@ export function assembleWriterPacket(
     summary: story.summary,
     score: story.score,
     sourceCount: story.sourceCount,
-    targetWords: tierCfg.target_words,
+    targetWords,
     materialLevel,
     articles,
     omitted,
@@ -524,7 +545,17 @@ export function assembleSectionPackets(
       articles: member.articles,
     };
 
-    const packet = assembleWriterPacket(memberStory, textsById, cfg);
+    // A line is published as a brief but budgeted as a line. Run #8's lines came
+    // in at 40–47 words against a 15–30 target because a brief's budget handed
+    // them 2,500 characters across several sources — enough raw material for a
+    // second and third sentence. A shorter word target on the same material was
+    // not enough; one source and 900 characters removes the material itself.
+    const packet = assembleWriterPacket(
+      memberStory,
+      textsById,
+      cfg,
+      role === "line" ? "line" : undefined,
+    );
 
     // The lead is told what runs below it; everything else is told what leads.
     const siblingTitles =
@@ -541,8 +572,6 @@ export function assembleSectionPackets(
         rank: index,
         siblingTitles,
       },
-      // A line is one sentence whatever its tier's usual target says.
-      targetWords: role === "line" ? cfg.section.line_words : packet.targetWords,
     };
   });
 }

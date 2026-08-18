@@ -402,12 +402,29 @@ Sections make the paper longer than the editor's story count, so
 `applyPaperBudget` drops standalone pieces from the bottom of the rank order to
 compensate. Section pieces are never dropped and one standalone always survives.
 
+**A line is budgeted as a line, not as a brief.** Run #8's lines came back at
+40–47 words against a 15–30 target, because a brief's three sources and 2,500
+characters are enough raw material for a second and third sentence whatever the
+target says. The `line` tier in `packet.tiers` gives one source and 900
+characters; `assembleWriterPacket` takes a `budgetTier` override so the piece is
+still published as a brief. Same lesson as `headline_only_words`: **when a prompt
+instruction contradicts a prompt parameter, fix the parameter.** A headline-only
+packet's word target is capped element-wise against `packet.headline_only_words`
+whatever its tier, because a note saying "write short" competes with a number and
+loses — run #8's T1 sidebar filled a 120–200-word ask with detail about the 1924
+Johnson–Reed Act that no source carried.
+
 **`index.ts` — the writer calls.** One call per feature and standard piece;
 briefs go in batches of `brief_batch_size`, because 75 separate calls would each
 re-send the bio and the standing memo and the scaffolding would outweigh the
 writing. Batched briefs come back as `ref;;headline;;body` lines, keyed on ref so
 a brief cannot be written against the wrong story, and a ref missing from the
 output becomes a failed piece rather than a silent gap.
+
+**One call, one register.** `partitionByCallShape` returns three pools — longform,
+briefs, section lines — and lines never batch with briefs. The batch prompt frames
+the whole set, so a mixed call asks for one register and gets it for both; run #8
+did exactly that.
 
 **Reading the output is forgiving; producing it is not retried.** Run #3 lost two
 pieces to a parser that demanded a labelled headline on the first line — the

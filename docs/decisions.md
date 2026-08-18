@@ -3077,3 +3077,55 @@ stories were identical in substance.
   Storing translations in the preprocessor makes re-runs cheap.
 
 ---
+
+## 2026-08-18 — Section lines get their own budget, and thin material caps the target
+
+Run #8 was the first paper written with sections, and structurally it worked:
+191 pieces across 11 sections, zero cross-section article overlap, nothing a
+thread absorbed disappeared. Two of its defects were the same mistake in two
+places — a piece was asked for a length its material could not honestly fill,
+and it filled it anyway.
+
+**Section lines were budgeted as briefs.** T3's lines came back at 40, 43, 45,
+46 and 47 words against a 15–30 target: compressed briefs, not the one-sentence
+pointers the design calls for. The word target alone was doing all the work
+against a brief's allocation of three sources and 2,500 characters, which is
+enough raw material for a second and third sentence and reads as an invitation
+to write them.
+
+The fix is a `line` tier in `writers.packet.tiers` — one source, 900 characters,
+`target_words: [15, 30]` — selected by `assembleWriterPacket`'s new `budgetTier`
+override rather than by the piece's published tier, which stays `brief`. Cutting
+the target on the same material was tried first in the design and rejected: a
+shorter number arguing with a fatter packet is the situation that produced run
+#8. Removing the material removes the argument.
+
+**A headline-only packet now caps the word target, whatever its tier.** T1's
+sidebar S53521 had a headline and a lede and was asked for 120–200 words; it
+produced detail about the 1924 Johnson–Reed Act that no source carried. The
+packet already carried a note saying "write short and invent nothing", but a
+note competes with a number and the number wins. `writers.packet.
+headline_only_words` (25–60) is an element-wise minimum against the tier's own
+target, so a brief keeps its 25–45 and a standard drops from 120–200.
+
+The general rule this establishes: **when a prompt instruction contradicts a
+prompt parameter, fix the parameter.** Instructions written against a standing
+target lose.
+
+**Lines and briefs never share a call.** They batched together because both are
+short, but a brief is a short paragraph and a line is one sentence, and one call
+has one register — the batch prompt frames the whole set. `partitionByCallShape`
+now returns three pools and `buildBriefBatchUserPrompt` takes a `kind`.
+
+Also in the voice memo: **an absence in the source is not a finding.** Run #8's
+S53537 sidebar wrote that "surveillance powers have reached beyond people
+suspected of immigration violations to political groups exercising protected
+speech" where the source said only that the groups were never accused of a
+crime. That is the third variant of the same failure the memo already covers for
+characterizations and comparatives — an inference the reader can make, stated as
+something the paper found out.
+
+**Still open:** Gizmo has now reported twice that T1 ("immigration crackdown")
+reads as a topic rather than a situation. If that holds, it is a threading
+problem upstream, not a writing one, and the sections machinery is correctly
+reporting it rather than causing it.

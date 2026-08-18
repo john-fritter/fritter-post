@@ -7,8 +7,9 @@ import { applyPaperBudget } from "../src/pipeline/writers/packets.js";
 import {
   buildWriterUserPrompt,
   buildWriterSystemPrompt,
+  buildBriefBatchUserPrompt,
 } from "../src/pipeline/writers/prompt.js";
-import { FailureBreaker } from "../src/pipeline/writers/index.js";
+import { FailureBreaker, partitionByCallShape } from "../src/pipeline/writers/index.js";
 import type {
   StoryMaterials,
   StoryMember,
@@ -22,9 +23,10 @@ import type { WritersPacketConfig } from "../src/config/models.js";
 // now: a lead, sidebars, and a line for every remaining member.
 
 const CFG: WritersPacketConfig = {
-  section: { max_sidebars: 3, line_words: [15, 30] },
+  section: { max_sidebars: 3 },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,
+  headline_only_words: [25, 60],
   tiers: {
     feature: {
       max_articles: 12,
@@ -52,6 +54,15 @@ const CFG: WritersPacketConfig = {
       target_words: [25, 45],
       thin_material_chars: 300,
       full_material_chars: 900,
+    },
+    line: {
+      max_articles: 1,
+      total_chars: 900,
+      per_article_chars: 900,
+      floor_chars: 300,
+      target_words: [15, 30],
+      thin_material_chars: 200,
+      full_material_chars: 600,
     },
   },
 };
@@ -156,9 +167,30 @@ function testSidebarsRunOneTierBelowTheLead() {
 }
 
 function testLinesGetTheirOwnWordTarget() {
-  const packets = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
-  assert.deepEqual(packets[4]!.targetWords, [15, 30]);
+  // A well-sourced lead so the headline-only ceiling does not apply to it: the
+  // point here is the line's target, not the cap.
+  const members = [member("S52849", T1_MEMBERS[0]!.title, 83, 12), ...T1_MEMBERS.slice(1)];
+  const packets = assembleSectionPackets(threadStory(members), new Map(), CFG);
   assert.deepEqual(packets[0]!.targetWords, [400, 600]);
+  assert.deepEqual(packets[4]!.targetWords, [15, 30]);
+}
+
+function testLinesGetTheirOwnMaterialBudget() {
+  // Run #8's lines came back at 40-47 words because they were budgeted as
+  // briefs: three sources and 2,500 characters is enough raw material for a
+  // second and third sentence, whatever the word target says. A line now gets
+  // one source and 900 characters, so the material for a second sentence is
+  // simply not there.
+  const packets = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
+  const line = packets[4]!;
+  assert.equal(line.section!.role, "line");
+  assert.equal(line.articles.length, 1, "a line gets one source");
+  assert.ok(line.totalChars <= 900, `line budget ${line.totalChars} exceeds 900`);
+
+  // The sidebar beside it, one tier down, still gets a brief's material.
+  const sidebar = packets[3]!;
+  assert.equal(sidebar.section!.role, "sidebar");
+  assert.ok(sidebar.articles.length > 1, "a sidebar still gets more than one source");
 }
 
 function testEachPieceCarriesOnlyItsOwnMembersMaterial() {
@@ -232,6 +264,40 @@ function testALineIsToldToWriteOneSentence() {
   const prompt = buildWriterUserPrompt("bio", packets[5]!);
   assert.ok(/A single sentence inside the section/.test(prompt));
   assert.ok(prompt.includes("15–30 words"));
+}
+
+function testLinesAndBriefsNeverShareACall() {
+  // One call, one register. Run #8 batched a section line beside ordinary
+  // briefs and the model wrote briefs for both.
+  const section = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
+  const standalone = { ...section[0]!, tier: "brief", section: null };
+  const { longform, briefs, lines } = partitionByCallShape(
+    [...section, standalone].map((packet) => ({ packet })),
+  );
+
+  assert.deepEqual(
+    lines.map((p) => p.packet.section!.role),
+    ["line", "line"],
+  );
+  assert.equal(briefs.length, 1, "only the standalone brief batches as a brief");
+  assert.equal(briefs[0]!.packet.section, null);
+  // A sidebar one tier below a feature is standard, so longform is the lead
+  // plus all three sidebars.
+  assert.equal(longform.length, 4);
+  assert.ok(longform.every((p) => p.packet.section?.role !== "line"));
+}
+
+function testTheLineBatchAsksForOneSentence() {
+  const section = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
+  const lines = section.filter((p) => p.section?.role === "line");
+
+  const linePrompt = buildBriefBatchUserPrompt("bio", lines, "line");
+  assert.ok(/SECTION LINES TO WRITE/.test(linePrompt));
+  assert.ok(/One sentence — not two, and not a compressed brief/.test(linePrompt));
+
+  const briefPrompt = buildBriefBatchUserPrompt("bio", lines, "brief");
+  assert.ok(/BRIEFS TO WRITE/.test(briefPrompt));
+  assert.ok(!/SECTION LINES/.test(briefPrompt));
 }
 
 // --- the paper stays the size the editor said ---
@@ -333,6 +399,7 @@ testEveryMemberBecomesAPiece();
 testRolesFollowMemberOrder();
 testSidebarsRunOneTierBelowTheLead();
 testLinesGetTheirOwnWordTarget();
+testLinesGetTheirOwnMaterialBudget();
 testEachPieceCarriesOnlyItsOwnMembersMaterial();
 testSectionIdentityIsTheThreadNotTheMember();
 testAOneMemberThreadIsAnOrdinaryStory();
@@ -340,6 +407,8 @@ testFetchedTextReachesSectionPieces();
 testTheLeadIsToldWhatRunsBelowIt();
 testASidebarIsToldWhatTheLeadCovers();
 testALineIsToldToWriteOneSentence();
+testLinesAndBriefsNeverShareACall();
+testTheLineBatchAsksForOneSentence();
 testOverflowDisplacesTheLowestRankedStandalonePieces();
 testSectionPiecesAreNeverDisplaced();
 testAPaperUnderBudgetIsUntouched();

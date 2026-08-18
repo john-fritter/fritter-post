@@ -21,9 +21,10 @@ import type { WritersPacketConfig } from "../src/config/models.js";
 // every request — so a packet has to survive both too much material and none.
 
 const CFG: WritersPacketConfig = {
-  section: { max_sidebars: 3, line_words: [15, 30] },
+  section: { max_sidebars: 3 },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,
+  headline_only_words: [25, 60],
   tiers: {
     feature: {
       max_articles: 12,
@@ -51,6 +52,15 @@ const CFG: WritersPacketConfig = {
       target_words: [25, 45],
       thin_material_chars: 300,
       full_material_chars: 900,
+    },
+    line: {
+      max_articles: 1,
+      total_chars: 900,
+      per_article_chars: 900,
+      floor_chars: 300,
+      target_words: [15, 30],
+      thin_material_chars: 200,
+      full_material_chars: 600,
     },
   },
 };
@@ -361,6 +371,27 @@ function testMaterialLevelIsJudgedPerTier() {
   assert.equal(asFeature.materialLevel, "headline-only");
 }
 
+function testHeadlineOnlyMaterialCapsTheWordTarget() {
+  // Run #8's T1 sidebar S53521 had a headline and a lede and was asked for
+  // 120-200 words; it filled the gap with detail about the 1924 Johnson-Reed
+  // Act that no source carried. The note telling a writer not to invent
+  // competes with the length target, so the target goes instead.
+  const thin = assembleWriterPacket(story("standard", [article(1, { chars: 150 })]), new Map(), CFG);
+  assert.equal(thin.materialLevel, "headline-only");
+  assert.deepEqual(thin.targetWords, [25, 60]);
+
+  // A tier already shorter than the ceiling keeps its own target — the cap is
+  // element-wise minimum, not a replacement.
+  const thinBrief = assembleWriterPacket(story("brief", [article(1, { chars: 150 })]), new Map(), CFG);
+  assert.equal(thinBrief.materialLevel, "headline-only");
+  assert.deepEqual(thinBrief.targetWords, [25, 45]);
+
+  // Real material leaves the tier's target alone.
+  const full = assembleWriterPacket(story("standard", [article(1, { chars: 4000 })]), new Map(), CFG);
+  assert.equal(full.materialLevel, "full");
+  assert.deepEqual(full.targetWords, [120, 200]);
+}
+
 function testUntranslatedSourceIsFlaggedToTheWriter() {
   const packet = assembleWriterPacket(
     story("standard", [article(1, { chars: 600, translationFailed: true })]),
@@ -470,6 +501,7 @@ testHeadlineEchoStubsAreLeftOut();
 testAPacketIsNeverEmptied();
 testPublisherFurnitureNeverReachesThePacket();
 testMaterialLevelIsJudgedPerTier();
+testHeadlineOnlyMaterialCapsTheWordTarget();
 testUntranslatedSourceIsFlaggedToTheWriter();
 testUnresolvedSourcesAreDisclosed();
 testBriefTierStaysSmall();

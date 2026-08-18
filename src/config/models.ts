@@ -211,7 +211,6 @@ const WritersTierPacketConfigSchema = z.object({
 // become one-line entries.
 const WritersSectionConfigSchema = z.object({
   max_sidebars: z.number().int().nonnegative(),
-  line_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
 });
 
 const WritersPacketConfigSchema = z.object({
@@ -219,10 +218,14 @@ const WritersPacketConfigSchema = z.object({
   min_dedup_paragraph_chars: z.number().int().nonnegative(),
   // Sources with less usable text than this are left out of the packet.
   min_article_chars: z.number().int().nonnegative(),
+  // Length ceiling for a piece with headline-only material, whatever its tier.
+  headline_only_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
   tiers: z.object({
     feature: WritersTierPacketConfigSchema,
     standard: WritersTierPacketConfigSchema,
     brief: WritersTierPacketConfigSchema,
+    // Section lines: one source, one sentence.
+    line: WritersTierPacketConfigSchema,
   }),
 });
 

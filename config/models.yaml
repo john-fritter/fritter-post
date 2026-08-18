@@ -281,9 +281,14 @@ writers:
       # more turns the top of the paper into one subject. The tail still gets
       # lines, so this caps depth rather than coverage.
       max_sidebars: 3
-      # A line is one sentence. Shorter than a brief on purpose: it exists so a
-      # minor development is visible, not to compete with the sidebars.
-      line_words: [15, 30]
+    # Ceiling for a piece whose material is headline-only, whatever its tier.
+    #
+    # Run #8's T1 sidebar S53521 had a headline and a lede and produced detail
+    # about the 1924 Johnson-Reed Act that no source carried. Asking for 120-200
+    # words from 150 characters is asking the model to fill the gap, and the note
+    # telling it not to is competing with the length target. Removing the
+    # pressure is more reliable than instructing against it.
+    headline_only_words: [25, 60]
     # Floor for a body to be worth a packet slot at all, after furniture removal.
     # Deliberately low: run #112's Al Jazeera summary was 89 characters and
     # carried a real fact, while the Google News stub next to it was the headline
@@ -326,6 +331,19 @@ writers:
         target_words: [25, 45]
         thin_material_chars: 300
         full_material_chars: 900
+      # A section line is one sentence, and run #8 showed it will not stay one
+      # sentence if it is handed a brief's material: T3's lines came back at 40
+      # to 47 words against a 15-30 target, as compressed briefs. One source and
+      # a small budget removes the raw material for a second sentence — a
+      # shorter target on the same 2,500 characters was not enough.
+      line:
+        max_articles: 1
+        total_chars: 900
+        per_article_chars: 900
+        floor_chars: 300
+        target_words: [15, 30]
+        thin_material_chars: 200
+        full_material_chars: 600
 
 editor_pass_1:
   model: zai-org/glm-5.2:thinking
