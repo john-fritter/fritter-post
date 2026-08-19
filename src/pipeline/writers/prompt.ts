@@ -244,7 +244,7 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
     "",
     `Write the piece. ${minWords}–${maxWords} words — ${maxWords} is a ceiling, not a ` +
       "target. If the material will not fit, cut what the headline does not promise rather " +
-      "than writing longer.",
+      "than writing longer. Fewer subjects covered properly beats more covered briefly.",
   );
 
   return parts.join("\n");

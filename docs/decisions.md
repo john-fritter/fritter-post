@@ -3542,3 +3542,83 @@ The standing memo gains a section for this, because writers will now routinely b
 handed several times more text than the target can hold: *more material than the
 piece needs* is deliberate, is not a signal to write longer, and material you did
 not need is not material wasted.
+
+## 2026-08-19 — Unrationed: what it cost, and what it settled
+
+Run #19 wrote editor #114 with `max_articles` and `total_chars` null. The
+measurements, all against run #17 on identical material:
+
+- **Packets: 3,182,655 characters** across 150 stories — feature 555,679,
+  standard 1,451,416, brief 1,175,560. Largest single packet 65,105 (C15).
+  Nothing pathological. The briefs collectively carry twice what the features do,
+  because there are 75 of them.
+- **Cost: +22.4% input tokens** (421,365 → 515,829), +30.9% output. That is the
+  whole price of handing writers everything. It confirms the earlier arithmetic:
+  the standing memo and bio dominate a writer call, so rationing sources was
+  economising on the cheap half.
+- **Transport clean.** 0 failed calls, no abort, one unparseable piece recovered
+  by one repair. Bigger prompts did not move the failure rate — first-pass losses
+  went 1 → 3 → 10 → 1 across four identical runs, which settles that as noise.
+- **T2 (Iran) now carries all 17 of its articles**, 16 in the packet and one
+  dropped as a duplicate. Run #17 showed the writer 12.
+- **Rank 32 got its full 9,892 characters** and came back a 190-word piece
+  carrying the projected disenrollment, the KFF estimates and the affected
+  countries. The "does not specify which benefits" sentence is gone, because the
+  part specifying them is now in the packet.
+
+### The line question is settled, and my earlier conclusion was wrong
+
+Lines came in at **16–29 words** with their members' full material — against
+16–28 in run #17, when they were capped at one source and 900 characters. Run #8
+changed the material budget *and* split lines into a call framed for the line
+register, in the same run, and the previous entry credited the material cut. It
+was the register instruction. The cap was doing nothing and cost the writer its
+judgment for four runs.
+
+### One regression, and it is a spine problem wearing a length problem's clothes
+
+C15 (Meta) came in at **668 words against a 600 ceiling** — the only feature over,
+with leads at 463–511. Gizmo found no unsupported claim in it; the material
+genuinely supports every sentence.
+
+But look at what it covers: the four states, the platform-design allegations, the
+age and data claims, internal documents, Meta's denial, prior state cases, the
+Section 230 posture, the damages framing, and the expected appeals. **Nine
+subjects in 668 words** — 74 words each, none developed. That is the roundup
+shape the memo has always forbidden, and the length is the symptom.
+
+So the fix is guidance, as promised, and specifically guidance that is *operable*.
+"Cut what the headline does not promise" is easy to agree with and hard to apply
+against twelve sources each carrying something real. The memo now gives two
+concrete tests: finish "this piece is about ___ and it lands on ___" before
+writing, and after writing, remove any paragraph and check whether the piece
+still answers its own headline. And it names the count of subjects, not the word
+count, as the thing to watch.
+
+### The absence rule needed a sharper line
+
+Two source-meta sentences survived, both of the same shape:
+
+- "though Le Monde does not explain the terms under which it is allowed to
+  function"
+- "The Willamette Week report does not provide further details of the union's
+  account"
+
+These are not the earlier plumbing leak — nothing about feeds or truncation — so
+the previous rule did not catch them. The distinction that does:
+
+**Who withheld it decides whether it is news.** "The interior ministry did not
+say how many people were detained" is an actor withholding, and is often the most
+telling line in a piece. "Willamette Week does not provide further details" is an
+outlet's article being short, which is the paper explaining why its own piece is
+short. Name the actor; never the outlet.
+
+This also corrects a call I made last round: I told Gizmo that "La Nación did not
+specify its location" was acceptable. Under this rule it is not, and it should
+not have been waved through.
+
+### Index
+
+`REINDEX INDEX CONCURRENTLY raw_items_source_name_idx` completed and
+`bt_index_check` now passes on both indexes. The `posting list tuple` errors that
+cost collect #50 two items should not recur.

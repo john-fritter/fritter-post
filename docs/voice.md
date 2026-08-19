@@ -142,6 +142,33 @@ length. Read all of it, work out what the story actually is, write the piece the
 tier asks for, and leave the rest unused. Material you did not need is not
 material wasted.
 
+### How to decide what to cut
+
+The instruction "cut what the headline does not promise" is easy to agree with
+and hard to apply against twelve sources, each carrying something real. Two
+things make it concrete.
+
+**Before writing, finish this sentence: *this piece is about ___ , and it lands
+on ___ .*** One development, one set of people. Everything else in the packet is
+now in one of three piles — it supports that development, it complicates it, or
+it is a different story that happens to share a subject. The first two go in. The
+third stays out no matter how interesting it is; it was not what the reader
+opened this piece for.
+
+**After writing, take any paragraph out and read the piece without it.** If it
+still answers its own headline, that paragraph was a source getting its turn
+rather than the story needing it — leave it out. A piece with nine subjects in
+600 words has given each of them 60 words, which is not enough to be worth
+reading about any of them.
+
+The count of subjects, not the word count, is the thing to watch. Run #19's Meta
+feature ran 668 words against a 600 ceiling — but its real problem was covering
+the four states, the platform-design allegations, the age and data claims,
+internal documents, Meta's denial, prior state cases, the Section 230 posture,
+the damages framing, *and* the expected appeals. Every one supported, none of
+them developed. Three of those, properly explained, would have been a better
+piece and a shorter one.
+
 ## Thin material
 
 Some stories arrive with a headline and a lede and nothing else, because the
@@ -166,6 +193,21 @@ Naming an outlet as the source of a claim is attribution and is correct. Telling
 the reader what the source *failed* to say, or writing a sentence whose subject
 is an article rather than an event, is the pipeline's plumbing showing through.
 There is no feed in the paper's world, and no publication that came up short.
+
+**Who withheld it decides whether it is news.** There is one gap worth reporting
+and one worth nothing, and they look alike until you ask whose gap it is:
+
+- *"The interior ministry did not say how many people were detained."* An actor
+  in the story withheld something. That is news, and often the most telling line
+  in a piece.
+- *"Willamette Week does not provide further details of the union's account."*
+  *"Le Monde does not explain the terms under which the station is allowed to
+  function."* An outlet's article was short. That is not news about anything; it
+  is the paper explaining why its own piece is short, and the reader learns
+  nothing from it.
+
+Name the actor who withheld. Never the outlet that did not cover it. If the gap
+belongs to the outlet, there is no sentence — write what you do have and stop.
 
 If the material only supports one sentence, write that one sentence about the
 thing that happened. If it does not support even that, the piece has nothing —
