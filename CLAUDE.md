@@ -451,11 +451,17 @@ while an empty paragraph-shaped slot is an invitation to fill it, which run #13
 did twice with prose about the sources and once with an asserted development the
 packet did not contain. Neither rule touches the thread's own score or rank.
 
-**Material partitions by member, so no coordination is needed.** A thread's
-members are distinct events by construction, so each piece is assembled from its
-own member's articles alone and two pieces of a section cannot overlap. The lead
-is told what runs below it and a sidebar what the lead covers — static text, not
-a call. Writers still never see each other's work.
+**Material partitions by member, and every piece is told what the others cover.**
+Each piece is assembled from its own member's articles alone, so two pieces
+cannot draw on the same source — but that guarantees nothing about *content*: a
+live blog assigned to one member carries every other member's events, which is
+why `isLiveBlog` exists and why it accepts any separator after "EN DIRECT" (run
+#20's T1 lead was Le Monde's `EN DIRECT, guerre en Ukraine`, 45,000 characters of
+the whole war). The guarantee is the sibling list: the lead is told every piece
+below it and a sidebar or line is told the lead plus the others. It used to name
+sidebars only, which cost nothing at three members and cost two duplicated
+paragraphs at eleven. Static text, not a call — writers still never see each
+other's work.
 
 Sections make the paper longer than the editor's story count, so
 `applyPaperBudget` drops standalone pieces from the bottom of the rank order to

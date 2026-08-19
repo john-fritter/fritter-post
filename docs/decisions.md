@@ -3622,3 +3622,61 @@ not have been waved through.
 `REINDEX INDEX CONCURRENTLY raw_items_source_name_idx` completed and
 `bt_index_check` now passes on both indexes. The `posting list tuple` errors that
 cost collect #50 two items should not recur.
+
+## 2026-08-19 — Run #20: a good piece, a wrong gate, and a real defect underneath
+
+The fresh pipeline (collect #51 → editor #115) ran clean: no index errors after
+the reindex, `attach_failed_calls=0`, `split_failed_calls=0`, thread #12 formed
+11 threads with `failed_calls=0`, 3,315,290 characters of packets with a 56,182
+largest. Gizmo then stopped after the one-piece writer smoke test, judging the
+feature a roundup covering five developments, and withheld the 150-piece run.
+
+**The piece is good, and the gate was wrong.** Its five "developments" are not
+five subjects — they are a spine with evidence hung off it. A new defence
+minister promises to escalate deep strikes; the piece explains the upheaval that
+produced him, then turns to whether the strategy is working, on an explicit hinge
+— *"The strikes Khmara promises to intensify are already measurable inside
+Russia"* — and gives 15% lower oil exports, Moscow fuel rationing, 194 refinery
+strikes against 18 a year earlier, and Putin's response. That is an article.
+
+The gate misfired because of how I wrote the prompt. Run #19's Meta feature
+covered nine subjects at 74 words each with nothing connecting them, and I asked
+Gizmo to "list the distinct subjects" as the diagnosis. He applied the count as a
+threshold. **The Meta piece's defect was never the number — it was nine subjects
+with no relation between them.** Five subjects joined by an argument is what a
+feature is supposed to look like.
+
+### But there is a real defect, and neither of us named it first
+
+Two of the lead's paragraphs — Fedorov's dismissal and wartime-election demand,
+and Mudra's corruption resignation — belong to `C22` and `C21`, which are **their
+own members of T1, running as lines below the lead.** The reader would get the
+lead covering both at length, then two one-sentence lines repeating them.
+
+Two causes, both fixed:
+
+**The lead was only ever told about the sidebars.** `siblingTitles` for a lead
+was `sidebarTitles`, which did not matter when a thread had three or four members
+and matters enormously at eleven: T1 has one sidebar-eligible trio and six lines,
+so six members were invisible to the piece most likely to write them up. Every
+piece now gets the full list — the lead sees everything below it, and a sidebar
+or line sees the lead plus the others, minus itself.
+
+**`isLiveBlog` missed its own canonical case.** The lead's single source was Le
+Monde's *"EN DIRECT, guerre en Ukraine : …"* — a comma after "EN DIRECT", where
+the pattern required a colon or dash. So 45,000 characters of live blog covering
+the entire war became a section lead's whole material. The detector now accepts
+any separator.
+
+That second one also punctures a claim in the section design: "material
+partitions by member, so two pieces cannot overlap." That holds for *sources*,
+not for *content* — a live blog assigned to one member contains every other
+member's events. Detection is the mitigation; the sibling list is the guarantee.
+
+### On stopping
+
+Withholding the run was the right instinct on a wrong judgment, and it cost one
+provider call to find a real bug. Worth keeping the smoke gate; worth being
+clearer that the smoke test's job is to catch structural failures, and that a
+disagreement about editorial quality should be reported and escalated rather than
+used to halt.

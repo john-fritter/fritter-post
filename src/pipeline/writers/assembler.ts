@@ -198,7 +198,11 @@ export function dedupeParagraphs(
  * is the only source, it is still the source.
  */
 export function isLiveBlog(title: string): boolean {
-  return /^\s*(?:live|en direct|direct)\b\s*[::-]|^\s*live blog\b|\blive updates?\b/i.test(
+  // The separator is whatever the outlet felt like using. Run #20's T1 lead was
+  // Le Monde's "EN DIRECT, guerre en Ukraine : …" — a comma, which the original
+  // colon-or-dash pattern missed, so 45,000 characters of live blog became a
+  // section lead's entire material and it wrote up two other members' stories.
+  return /^\s*(?:live|en direct|direct)\b\s*[::,\-–—]|^\s*live blog\b|\blive updates?\b/i.test(
     title,
   );
 }
@@ -631,7 +635,17 @@ export function assembleSectionPackets(
     return "sidebar";
   });
 
-  const sidebarTitles = ordered.filter((_, i) => roles[i] === "sidebar").map((m) => m.title);
+  // **The lead is told about every member below it, not just the sidebars.**
+  // Run #20's T1 lead wrote a full paragraph on Fedorov's election demand and
+  // another on Mudra's corruption resignation — both of which had their own
+  // lines further down the section, and neither of which the lead had been told
+  // existed. It was only ever handed the sidebar titles, which did not matter
+  // while a thread had three or four members and matters a great deal at eleven.
+  const titlesOf = (want: SectionRole) =>
+    ordered.filter((_, i) => roles[i] === want).map((m) => m.title);
+  const sidebarTitles = titlesOf("sidebar");
+  const lineTitles = titlesOf("line");
+  const belowTheLead = [...sidebarTitles, ...lineTitles];
 
   return ordered.map((member, index) => {
     const role = roles[index]!;
@@ -653,8 +667,12 @@ export function assembleSectionPackets(
     const budgetTier = role === "line" ? "line" : role === "sidebar" ? sidebarBudget : undefined;
     const packet = packetFor(member, tier, budgetTier);
 
-    // The lead is told what runs below it; everything else is told what leads.
-    const siblingTitles = role === "lead" ? sidebarTitles : [ordered[0]!.title];
+    // The lead is told everything that runs below it; everything else is told
+    // what leads, plus the other pieces it must not step on.
+    const siblingTitles =
+      role === "lead"
+        ? belowTheLead
+        : [ordered[0]!.title, ...belowTheLead.filter((t) => t !== member.title)];
 
     return {
       ...packet,

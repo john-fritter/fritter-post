@@ -352,6 +352,32 @@ function testAThinPacketIsDirectedNotDescribed() {
   assert.equal(packet.articles.length, 2);
 }
 
+function testLiveBlogDetectionAcceptsAnySeparator() {
+  // Le Monde writes "EN DIRECT, guerre en Ukraine : …" with a comma, which the
+  // original colon-or-dash pattern missed. Run #20's T1 lead was that live blog,
+  // 45,000 characters covering the whole war, and it became a section lead's
+  // entire material.
+  for (const title of [
+    "EN DIRECT, guerre en Ukraine : le nouveau ministre promet d'intensifier",
+    "En direct : la guerre en Ukraine",
+    "Live — Ukraine war",
+    "Live: Ukraine war",
+    "Ukraine war live updates",
+    "Live blog: the strait",
+  ]) {
+    assert.ok(isLiveBlog(title), `not detected: ${title}`);
+  }
+
+  // And prose that merely contains the words is still an article.
+  for (const title of [
+    "Live music venue closes after 40 years",
+    "Direct action campaign targets data centre",
+    "A direct line to the minister",
+  ]) {
+    assert.ok(!isLiveBlog(title), `false positive: ${title}`);
+  }
+}
+
 function testThePromptNeverDescribesItsOwnPlumbing() {
   // Three layers said the same thing at three distances, and each time the
   // outer one was fixed the inner one won. The standing memo forbids writing
@@ -643,6 +669,7 @@ testTrimLeavesShortTextAlone();
 testFetchedTextIsPreferredButNeverShorterThanTheFeed();
 testAThinPacketIsDirectedNotDescribed();
 testAPartialPacketIsAlsoDirectedNotDescribed();
+testLiveBlogDetectionAcceptsAnySeparator();
 testThePromptNeverDescribesItsOwnPlumbing();
 testAnUntranslatedSourceIsStillFlaggedInThePrompt();
 testFullMaterialCarriesNoWarning();

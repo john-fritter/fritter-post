@@ -145,29 +145,34 @@ function sectionInstruction(packet: WriterPacket): string[] | null {
     return [
       "IN THIS SECTION",
       `This piece leads a section of the paper: "${section.title}".`,
-      "These related developments are written up separately, immediately below yours:",
+      "Every one of these runs separately, below yours, and each has its own writer:",
       siblings,
-      "Write the lead. Do not retell those — the reader will read them next. Mention one " +
-        "only if your own piece genuinely needs it, and then in a clause, not a paragraph.",
+      "Write the lead and leave those to them. Your source material will often cover " +
+        "them too — a live blog or a wrap-up carries the whole day — and that is not " +
+        "permission to write them up. A development on that list gets a clause from you " +
+        "at most, never a paragraph, and only where your own piece genuinely needs it.",
     ];
   }
 
   if (section.role === "sidebar") {
     return [
       "IN THIS SECTION",
-      `This piece runs inside the section "${section.title}", under a lead that covers:`,
+      `This piece runs inside the section "${section.title}". These are the other pieces ` +
+        "in it, the first being the lead:",
       siblings,
       "Write only your own development. Do not summarize the section, do not recap the " +
-        "lead, and do not open by placing your story in the wider situation — the heading " +
-        "and the lead have already done that.",
+        "lead, do not write up anything on that list, and do not open by placing your " +
+        "story in the wider situation — the heading and the lead have already done that.",
     ];
   }
 
   return [
     "IN THIS SECTION",
-    `A single sentence inside the section "${section.title}", whose lead covers:`,
+    `A single sentence inside the section "${section.title}". The other pieces in it, ` +
+      "the first being the lead:",
     siblings,
-    "One sentence. The fact, and nothing else. No context, no framing.",
+    "One sentence, on your own development only. The fact, and nothing else. No context, " +
+      "no framing.",
   ];
 }
 

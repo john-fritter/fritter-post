@@ -311,8 +311,35 @@ function testAMemberWithNothingToSayGetsALineNotASidebar() {
 
   // Demoting it must not cost the section a sidebar slot it could have used.
   assert.equal(packets.filter((p) => p.section!.role === "sidebar").length, 1);
-  // And the lead is told about the sidebar, not the line.
-  assert.deepEqual(byRef.get("S52849")!.section!.siblingTitles, ["Real sidebar"]);
+  // The lead is told about both — sidebars first, then lines. Run #20's lead was
+  // told only about sidebars and wrote up two members that had lines below it.
+  assert.deepEqual(byRef.get("S52849")!.section!.siblingTitles, [
+    "Real sidebar",
+    "Nothing to say",
+  ]);
+}
+
+function testEveryPieceKnowsWhatTheOthersCover() {
+  // The lead sees everything below it; a sidebar or line sees the lead plus the
+  // others, minus itself. Nothing in a section should be invisible to the piece
+  // most likely to write it up by accident.
+  const packets = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
+  const titles = T1_MEMBERS.map((m) => m.title);
+  const lead = packets[0]!;
+
+  assert.equal(lead.section!.role, "lead");
+  assert.equal(lead.section!.siblingTitles.length, T1_MEMBERS.length - 1);
+  assert.ok(!lead.section!.siblingTitles.includes(lead.title));
+  for (const t of titles.filter((t) => t !== lead.title)) {
+    assert.ok(lead.section!.siblingTitles.includes(t), `lead not told about "${t}"`);
+  }
+
+  for (const packet of packets.slice(1)) {
+    const siblings = packet.section!.siblingTitles;
+    assert.equal(siblings[0], lead.title, "every piece is told what leads");
+    assert.ok(!siblings.includes(packet.title), "and never about itself");
+    assert.equal(new Set(siblings).size, siblings.length, "no repeats");
+  }
 }
 
 // --- prompts ---
@@ -322,10 +349,13 @@ function testTheLeadIsToldWhatRunsBelowIt() {
   const prompt = buildWriterUserPrompt("bio", packets[0]!);
   assert.ok(prompt.includes("IN THIS SECTION"));
   assert.ok(prompt.includes("leads a section"));
-  // The three sidebars, and not the lines.
+  // Sidebars *and* lines. Run #20's lead was told only about its sidebars and
+  // wrote full paragraphs on two members that had lines below it.
   assert.ok(prompt.includes("U.S. investigated left-leaning groups during Minnesota crackdown"));
-  assert.ok(prompt.includes("electric shock gloves") === false);
-  assert.ok(/Do not retell those/.test(prompt));
+  assert.ok(prompt.includes("electric shock gloves"), "the lead must know about the lines too");
+  assert.ok(/leave those to them/.test(prompt));
+  // And it is warned that its own source may cover them anyway.
+  assert.ok(/live blog or a wrap-up/.test(prompt));
   // The thread-wide "find a spine" instruction is gone: the piece is one member.
   assert.ok(!prompt.includes("several related events"));
 }
@@ -531,6 +561,7 @@ testFetchedTextReachesSectionPieces();
 testAMemberWithNothingToSayCannotLead();
 testWhenNoMemberHasMaterialScoreOrderStands();
 testAMemberWithNothingToSayGetsALineNotASidebar();
+testEveryPieceKnowsWhatTheOthersCover();
 testTheLeadIsToldWhatRunsBelowIt();
 testASidebarIsToldWhatTheLeadCovers();
 testALineIsToldToWriteOneSentence();
