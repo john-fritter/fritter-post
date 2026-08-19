@@ -288,17 +288,41 @@ function testFetchedTextIsPreferredButNeverShorterThanTheFeed() {
   assert.equal(packet.articles[1]!.chars, 600);
 }
 
-function testBlockedSourcesProduceAHeadlineOnlyPacketThatSaysSo() {
+function testAThinPacketIsDirectedNotDescribed() {
   // The nytimes.com / oregonlive.com case: nothing fetched, teasers only.
+  //
+  // The note used to open "Material is headline-level only", and six pieces in
+  // run #13 relayed that to the reader — "No further detail was available."
+  // The standing memo forbids writing about the sourcing and sits in the system
+  // prompt; this note sits in the user prompt, about this piece, and won. It
+  // says what to do now, and nothing about what the packet lacks.
   const packet = assembleWriterPacket(
     story("standard", [article(1, { chars: 120 }), article(2, { chars: 150 })]),
     new Map(),
     CFG,
   );
   assert.equal(packet.materialLevel, "headline-only");
-  assert.ok(packet.notes.some((n) => /headline-level/i.test(n)));
+  const note = packet.notes.join(" ");
+  assert.ok(/write only what the sources below actually state/i.test(note));
+  assert.ok(/make no remark about how much they say/i.test(note));
+  assert.ok(
+    !/(headline-level|only a summary|material is|feed|unavailable)/i.test(note),
+    `note describes the packet: ${note}`,
+  );
   // It still has the material it has — degraded, not empty.
   assert.equal(packet.articles.length, 2);
+}
+
+function testAPartialPacketIsAlsoDirectedNotDescribed() {
+  const packet = assembleWriterPacket(
+    story("feature", [article(1, { chars: 5000 })]),
+    new Map(),
+    CFG,
+  );
+  assert.equal(packet.materialLevel, "partial");
+  const note = packet.notes.join(" ");
+  assert.ok(/stay inside what the sources below state/i.test(note));
+  assert.ok(!/(only a summary|material is)/i.test(note), `note describes the packet: ${note}`);
 }
 
 function testFullMaterialCarriesNoWarning() {
@@ -414,7 +438,11 @@ function testUnresolvedSourcesAreDisclosed() {
   const s = story("standard", [article(1)]);
   s.unresolved = ["C25: member item 4 not found"];
   const packet = assembleWriterPacket(s, new Map(), CFG);
-  assert.ok(packet.notes.some((n) => /could not be resolved/i.test(n)));
+  const note = packet.notes.join(" ");
+  assert.ok(/not reproduced below/i.test(note));
+  assert.ok(/do not refer to the others/i.test(note));
+  // Says what to do about them, not what the resolver could not find.
+  assert.ok(!/(could not be resolved|the editor)/i.test(note), note);
 }
 
 function testBriefTierStaysSmall() {
@@ -503,7 +531,8 @@ testTrimLandsOnAParagraphBoundary();
 testTrimFallsBackToASentenceEnd();
 testTrimLeavesShortTextAlone();
 testFetchedTextIsPreferredButNeverShorterThanTheFeed();
-testBlockedSourcesProduceAHeadlineOnlyPacketThatSaysSo();
+testAThinPacketIsDirectedNotDescribed();
+testAPartialPacketIsAlsoDirectedNotDescribed();
 testFullMaterialCarriesNoWarning();
 testPacketKeepsTheEditorsSourceCountNotTheArticleCount();
 testHeadlineEchoStubsAreLeftOut();

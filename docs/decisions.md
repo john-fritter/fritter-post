@@ -3255,3 +3255,83 @@ Google News RSS proxy whose article URLs are interstitials. Twenty-one were
 fetched in run #113 and all twenty-one extracted zero characters.
 `raw_items.raw_entry` stores the full feed entry "for future extraction"; whether
 it carries the publisher URL is the next thing to probe.
+
+## 2026-08-19 — Slots are assigned by material, and notes direct rather than describe
+
+Run #13 re-threaded and re-wrote editor #113's material on the new code. Both
+changes from the previous entry worked:
+
+- **Threading.** Seven threads, `failed_calls=0`, and every anchor names an
+  actual development with a time — "record-breaking Oregon wildfire season,
+  summer 2026", "Trump's suspension of Iran negotiations and territorial claim
+  over Strait of Hormuz, this week". **The Afghanistan bundle did not re-form**
+  and nothing Afghanistan-shaped replaced it. Six of run #10's eight threads
+  survived; the elections thread dissolved and a two-member Providence
+  Medicare-Advantage thread formed, which is a concrete same-week situation.
+- **Sidebars.** No sidebar was batched. Lines came in at 18–20 words, all one
+  sentence.
+
+Two things the run exposed instead.
+
+### A slot the material cannot fill is worse than no slot
+
+The Gaza section led with C80 — 47 words, headline-only — while C19, 180 words
+and fully sourced, ran underneath it as a sidebar. Both pieces are well written;
+the 47-word one is a perfectly good short piece. The section is still wrong,
+because the lead establishes the situation the rest hangs off and a headline
+cannot do that.
+
+Slot assignment was pure score order, and score is deliberately blind to
+material — pass-1 scores relevance before the fetch has even run. So the two now
+compose: score still decides the thread's rank and the reading order, and
+material decides which member can hold which slot.
+
+- **A headline-only member cannot lead.** The highest scorer with real material
+  leads instead. When no member has any, score order stands and the section is
+  thin in the way its material is thin — nothing here invents a lead.
+- **A headline-only member gets a line, not a sidebar.** A line is a pointer and
+  a headline is enough for one. A sidebar is a paragraph, and an empty
+  paragraph-shaped slot is an invitation to fill it: run #13 filled two with
+  prose about the sources and one — T4's `S53744` — with an asserted development
+  the packet did not contain ("Willamette Week reports additional bad news …
+  The outlet did not specify the new development in its public feed").
+
+Measuring material means building a member's packet before its role is known, so
+the pass builds provisionally, assigns roles, then builds finals. All pure, no
+I/O, three cheap builds per member.
+
+### The note was the leak
+
+The voice rule from the previous entry cut source-meta prose sharply but six
+pieces still carried it. The cause was not the memo failing to land — it was the
+packet note contradicting it.
+
+The notes opened `Material is headline-level only` and `some sources gave only a
+summary`. The memo says never write about the sourcing and lives in the **system**
+prompt; the note lives in the **user** prompt, attached to this specific piece,
+and hands over the exact vocabulary. The nearer, more specific instruction won.
+
+Notes are now directions and never a description of the packet: "Write only what
+the sources below actually state … make no remark about how much they say." The
+unresolved-sources note lost its internal vocabulary the same way — it used to
+explain what the editor had counted and the resolver had missed.
+
+This is the third instance of one pattern, and it is worth naming plainly:
+**a general rule in the system prompt loses to a specific statement in the user
+prompt.** Same lesson as `headline_only_words` (a note saying "write short" lost
+to a 120–200 word target) and the `line` tier (a 15–30 target lost to a brief's
+material). Fix the nearer thing.
+
+### Still open
+
+- **36 of 150 pieces are headline-only**, up from 29. The root cause is
+  unchanged and upstream: AP Top News (25 articles, median 103 chars), Willamette
+  Week (7, median 94) and others reach us as Google News interstitials, and all
+  22 news.google.com URLs in fetch scope extract zero characters.
+- **`C86` ran as a 45-word feature at rank 15.** The editor assigns tiers before
+  the fetch exists, so it cannot know a story has no material. Not obviously
+  worth fixing — the piece is accurate and short — but it is where thin material
+  is most visible.
+- **The `posting list tuple` errors are still unexplained.** Gizmo reports only
+  btree indexes on `raw_items` and `preprocessed_items`; that error is a GIN
+  signature, so the index involved has not been found yet. No REINDEX was run.

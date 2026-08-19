@@ -39,7 +39,7 @@
  */
 
 import type { WritersPacketConfig, WritersTierPacketConfig } from "../../config/models.js";
-import type { StoryMaterials, StoryArticle } from "./materials.js";
+import type { StoryMaterials, StoryArticle, StoryMember } from "./materials.js";
 import { stripBoilerplate, isHeadlineEcho } from "./boilerplate.js";
 
 /** Best available text for one article, and where it came from. */
@@ -431,16 +431,29 @@ export function assembleWriterPacket(
         ]
       : tierCfg.target_words;
 
+  // These notes are *directions*, not a description of the packet — a
+  // distinction run #13 made expensive. They used to open "Material is
+  // headline-level only" and "some sources gave only a summary", and six pieces
+  // relayed exactly that to the reader: "No further detail was available", "The
+  // outlet did not specify the new development in its public feed". The standing
+  // memo forbids writing about the sourcing, and the memo is in the system
+  // prompt — but the note sat in the user prompt, about this specific piece,
+  // handing over the vocabulary. The nearer instruction won.
+  //
+  // So say what to do and never what the packet is short of. The word target is
+  // already capped for a headline-only packet; the note only has to stop the
+  // writer reaching past the sources.
   const notes: string[] = [];
   if (materialLevel === "headline-only") {
     notes.push(
-      "Material is headline-level only. The word target above is already reduced " +
-        "for this — state only what the sources state, and do not supply detail " +
-        "they do not carry.",
+      "Write only what the sources below actually state. If that is two sentences, " +
+        "write two sentences and stop. Add no background, context or consequence " +
+        "they do not carry, and make no remark about how much they say.",
     );
   } else if (materialLevel === "partial") {
     notes.push(
-      "Material is partial: some sources gave only a summary. Stay close to what is here.",
+      "Stay inside what the sources below state; do not extend them, and make no " +
+        "remark about how much they say.",
     );
   }
   const duplicatesDropped = articles.reduce((sum, a) => sum + a.duplicateParagraphs, 0);
@@ -458,8 +471,8 @@ export function assembleWriterPacket(
   }
   if (story.unresolved.length > 0) {
     notes.push(
-      `${story.unresolved.length} of the editor's source(s) could not be resolved; ` +
-        "the source count above still reflects what the editor ranked.",
+      `${story.unresolved.length} source(s) counted above are not reproduced below. ` +
+        "Write from the sources you can see and do not refer to the others.",
     );
   }
 
@@ -522,28 +535,67 @@ export function assembleSectionPackets(
   // been threaded. Write it the ordinary way.
   if (members.length === 1) return [assembleWriterPacket(story, textsById, cfg)];
 
-  const sidebarCount = Math.min(cfg.section.max_sidebars, members.length - 1);
-  const roleOf = (index: number): SectionRole =>
-    index === 0 ? "lead" : index <= sidebarCount ? "sidebar" : "line";
+  const sidebarTier = tierBelow(story.tier);
+  // A sidebar that lands on brief is budgeted as a sidebar; see below.
+  const sidebarBudget = sidebarTier === "brief" ? "sidebar" : undefined;
 
-  return members.map((member, index) => {
-    const role = roleOf(index);
-    const tier =
-      role === "lead" ? story.tier : role === "sidebar" ? tierBelow(story.tier) : "brief";
+  /** One member's own material, assembled by the ordinary rules. */
+  const storyFor = (member: StoryMember, tier: string): StoryMaterials => ({
+    ...story,
+    ref: member.ref,
+    itemType: member.itemType,
+    title: member.title.length > 0 ? member.title : story.title,
+    summary: member.summary,
+    score: member.score,
+    sourceCount: member.sourceCount,
+    tier: tier as StoryMaterials["tier"],
+    members: [member],
+    articles: member.articles,
+  });
 
-    // One member's own material, assembled by the ordinary rules.
-    const memberStory: StoryMaterials = {
-      ...story,
-      ref: member.ref,
-      itemType: member.itemType,
-      title: member.title.length > 0 ? member.title : story.title,
-      summary: member.summary,
-      score: member.score,
-      sourceCount: member.sourceCount,
-      tier: tier as StoryMaterials["tier"],
-      members: [member],
-      articles: member.articles,
-    };
+  const packetFor = (member: StoryMember, tier: string, budgetTier?: string) =>
+    assembleWriterPacket(storyFor(member, tier), textsById, cfg, budgetTier);
+
+  // Slot assignment is by score *and* by material, because a slot the material
+  // cannot fill is worse than no slot. Members arrive score-ordered; these two
+  // rules move them, and neither changes the thread's own score or rank.
+  //
+  // **A member with nothing to say cannot lead.** The lead establishes the
+  // situation the rest of the section hangs off, and a headline cannot do that.
+  // Run #13's Gaza section led with a 47-word headline-only piece while a
+  // 180-word fully-sourced one ran underneath it as a sidebar. The highest
+  // scorer that has real material leads instead; if none does, score order
+  // stands and the section is thin in the way its material is thin.
+  const leadIndex = members.findIndex(
+    (m) => packetFor(m, story.tier).materialLevel !== "headline-only",
+  );
+  const ordered =
+    leadIndex > 0
+      ? [members[leadIndex]!, ...members.filter((_, i) => i !== leadIndex)]
+      : members;
+
+  // **A member with nothing to say gets a line, not a sidebar.** A line is a
+  // pointer and a headline is enough for one; a sidebar is a paragraph, and an
+  // empty paragraph-shaped slot is an invitation to fill it. Run #13 filled two
+  // of them with prose about the sources — "The outlet did not specify the new
+  // development in its public feed" — and one with an asserted development the
+  // packet did not contain.
+  let sidebarsUsed = 0;
+  const roles: SectionRole[] = ordered.map((member, index) => {
+    if (index === 0) return "lead";
+    if (sidebarsUsed >= cfg.section.max_sidebars) return "line";
+    if (packetFor(member, sidebarTier, sidebarBudget).materialLevel === "headline-only") {
+      return "line";
+    }
+    sidebarsUsed++;
+    return "sidebar";
+  });
+
+  const sidebarTitles = ordered.filter((_, i) => roles[i] === "sidebar").map((m) => m.title);
+
+  return ordered.map((member, index) => {
+    const role = roles[index]!;
+    const tier = role === "lead" ? story.tier : role === "sidebar" ? sidebarTier : "brief";
 
     // Section pieces are published at their tier and budgeted at their role.
     //
@@ -558,15 +610,11 @@ export function assembleSectionPackets(
     // 48–53 and read well — a wrong parameter rather than a writing failure,
     // since a sidebar carries one development of a situation the lead already
     // established and that is not a brief's job.
-    const budgetTier =
-      role === "line" ? "line" : role === "sidebar" && tier === "brief" ? "sidebar" : undefined;
-    const packet = assembleWriterPacket(memberStory, textsById, cfg, budgetTier);
+    const budgetTier = role === "line" ? "line" : role === "sidebar" ? sidebarBudget : undefined;
+    const packet = packetFor(member, tier, budgetTier);
 
     // The lead is told what runs below it; everything else is told what leads.
-    const siblingTitles =
-      role === "lead"
-        ? members.slice(1, sidebarCount + 1).map((m) => m.title)
-        : [members[0]!.title];
+    const siblingTitles = role === "lead" ? sidebarTitles : [ordered[0]!.title];
 
     return {
       ...packet,

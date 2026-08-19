@@ -395,16 +395,30 @@ packet is never emptied.
 
 A packet records what it could not supply: `materialLevel` is judged against the
 tier's own thresholds — the same 1,000 characters is thin for a feature and
-adequate for a standard piece — and a headline-only story carries a note telling
-the writer to write short and invent nothing. Voice comes from `docs/voice.md`
+adequate for a standard piece. **The notes are directions, never a description
+of the packet.** They used to open "Material is headline-level only", and six
+pieces in run #13 relayed that to the reader — "No further detail was available",
+"The outlet did not specify the new development in its public feed". The standing
+memo forbids writing about the sourcing and sits in the *system* prompt; the note
+sat in the user prompt, about that specific piece, and the nearer instruction won. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
 
 **Sections: a thread is not one piece.** Threading absorbs a situation's rows
 into one ranked story, and one 500-word slot cannot hold twelve events — run #3's
 T1 dropped a story scoring 81 while the paper ran a brief on one scoring 56. A
-thread now expands into a lead (the top member, at the story's tier), up to
+thread expands into a lead at the story's tier, up to
 `packet.section.max_sidebars` members one tier below, and a one-sentence line for
 every remaining member, all sharing `section_ref` and the story's rank.
+
+**Slots are assigned by score *and* by material**, because a slot the material
+cannot fill is worse than no slot. A headline-only member cannot lead — run #13's
+Gaza section led with a 47-word stub while a 180-word fully-sourced piece ran
+below it — so the highest scorer with real material leads instead, and score
+order stands only when no member has any. A headline-only member gets a line
+rather than a sidebar: a line is a pointer and a headline is enough for one,
+while an empty paragraph-shaped slot is an invitation to fill it, which run #13
+did twice with prose about the sources and once with an asserted development the
+packet did not contain. Neither rule touches the thread's own score or rank.
 
 **Material partitions by member, so no coordination is needed.** A thread's
 members are distinct events by construction, so each piece is assembled from its

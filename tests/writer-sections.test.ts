@@ -96,6 +96,16 @@ function article(id: number, memberRef: string): StoryArticle {
   };
 }
 
+/** A member whose only article is a teaser — below every tier's thin floor. */
+function thinMember(ref: string, title: string, score: number): StoryMember {
+  const teaser = "Short teaser. ".padEnd(150, "y").slice(0, 150);
+  const base = Number(ref.slice(1));
+  return {
+    ...member(ref, title, score, 1),
+    articles: [{ ...article(base, ref), feedText: teaser, feedTextChars: teaser.length }],
+  };
+}
+
 function member(ref: string, title: string, score: number, articleCount = 2): StoryMember {
   const base = ref.startsWith("C") ? Number(ref.slice(1)) * 100 : Number(ref.slice(1));
   return {
@@ -242,7 +252,69 @@ function testFetchedTextReachesSectionPieces() {
     { ...member("S53537", "Sidebar development", 81), articles: [article(5337, "S53537")] },
   ];
   const packets = assembleSectionPackets(threadStory(members), texts, CFG);
-  assert.equal(packets[1]!.articles[0]!.origin, "fetched");
+  const fetched = packets.find((p) => p.ref === "S53537")!;
+  assert.equal(fetched.articles[0]!.origin, "fetched");
+}
+
+function testAMemberWithNothingToSayCannotLead() {
+  // Run #13's Gaza section led with a 47-word headline-only piece while a
+  // 180-word fully-sourced one ran underneath it as a sidebar. The lead
+  // establishes the situation the rest of the section hangs off, and a headline
+  // cannot do that. Score still decides the thread's rank; it no longer decides
+  // this on its own.
+  const texts = new Map<number, ResolvedText>([
+    [5337, { text: "z".repeat(20000), origin: "fetched" }],
+  ]);
+  const members = [
+    thinMember("S52849", "Top scorer, headline only", 83),
+    { ...member("S53537", "Lower scorer, real material", 81), articles: [article(5337, "S53537")] },
+  ];
+  const packets = assembleSectionPackets(threadStory(members), texts, CFG);
+
+  assert.equal(packets[0]!.ref, "S53537", "the member with material leads");
+  assert.equal(packets[0]!.section!.role, "lead");
+  assert.notEqual(packets[0]!.materialLevel, "headline-only");
+  assert.equal(packets[1]!.ref, "S52849", "the top scorer still runs, below");
+}
+
+function testWhenNoMemberHasMaterialScoreOrderStands() {
+  // A section that is thin all the way down is thin; nothing here invents a
+  // lead. It just must not reorder for no reason.
+  const members = [
+    thinMember("S52849", "First", 83),
+    thinMember("S53537", "Second", 81),
+  ];
+  const packets = assembleSectionPackets(threadStory(members), new Map(), CFG);
+  assert.equal(packets[0]!.ref, "S52849");
+  assert.equal(packets[0]!.section!.role, "lead");
+}
+
+function testAMemberWithNothingToSayGetsALineNotASidebar() {
+  // A line is a pointer and a headline is enough for one. A sidebar is a
+  // paragraph, and an empty paragraph-shaped slot is an invitation to fill it:
+  // run #13 filled two with prose about the sources and one with an asserted
+  // development the packet did not contain.
+  const texts = new Map<number, ResolvedText>([
+    [5284, { text: "z".repeat(20000), origin: "fetched" }],
+    [5333, { text: "z".repeat(20000), origin: "fetched" }],
+  ]);
+  const members = [
+    { ...member("S52849", "Lead", 83), articles: [article(5284, "S52849")] },
+    { ...member("S53334", "Real sidebar", 80), articles: [article(5333, "S53334")] },
+    thinMember("S53537", "Nothing to say", 81),
+  ];
+  const packets = assembleSectionPackets(threadStory(members), texts, CFG);
+  const byRef = new Map(packets.map((p) => [p.ref, p]));
+
+  assert.equal(byRef.get("S52849")!.section!.role, "lead");
+  assert.equal(byRef.get("S53334")!.section!.role, "sidebar");
+  assert.equal(byRef.get("S53537")!.section!.role, "line", "a headline gets a line");
+  assert.deepEqual(byRef.get("S53537")!.targetWords, [15, 30]);
+
+  // Demoting it must not cost the section a sidebar slot it could have used.
+  assert.equal(packets.filter((p) => p.section!.role === "sidebar").length, 1);
+  // And the lead is told about the sidebar, not the line.
+  assert.deepEqual(byRef.get("S52849")!.section!.siblingTitles, ["Real sidebar"]);
 }
 
 // --- prompts ---
@@ -458,6 +530,9 @@ testEachPieceCarriesOnlyItsOwnMembersMaterial();
 testSectionIdentityIsTheThreadNotTheMember();
 testAOneMemberThreadIsAnOrdinaryStory();
 testFetchedTextReachesSectionPieces();
+testAMemberWithNothingToSayCannotLead();
+testWhenNoMemberHasMaterialScoreOrderStands();
+testAMemberWithNothingToSayGetsALineNotASidebar();
 testTheLeadIsToldWhatRunsBelowIt();
 testASidebarIsToldWhatTheLeadCovers();
 testALineIsToldToWriteOneSentence();
