@@ -379,10 +379,18 @@ budget. Selection takes one article per parent outlet before a second from the
 same one, capped per tier. Deduplication is **verbatim paragraph** removal across
 the packet — not embedding similarity, which would delete the corroboration a
 cluster exists to provide, since every member of a cluster is the same event by
-construction. The budget reserves `floor_chars` for every selected article before
-distributing the remainder, so a 12-member thread shows every member rather than
-three sources at full length, and trimming lands on a paragraph or sentence
-boundary. Config is `writers.packet.*`.
+construction. Trimming lands on a paragraph or sentence boundary. Config is
+`writers.packet.*`.
+
+The budget runs three passes: `floor_chars` for every article, then the
+remainder capped at `per_article_chars`, then whatever is still unspent to the
+articles still truncated. **The per-article cap is a fairness device, not a
+ceiling** — it stops one long source eating a packet several outlets should
+share, and binds only while there is competition. Run #17's rank 32 was one
+source of 9,892 characters cut to 2,573 on a 12,000-character standard budget,
+and the writer told the reader the article "does not specify which benefits …
+are now included": true of the text it held, false of the article, because the
+part naming them was in the 74% the cap discarded.
 
 **`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
 Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress

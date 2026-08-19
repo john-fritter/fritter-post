@@ -276,10 +276,27 @@ export function trimToBoundary(text: string, cap: number): string {
 /**
  * Distributes the tier's character budget across the selected articles.
  *
- * Every article gets a floor first, so a 12-member thread shows every member
- * even when the first three could fill the budget alone. The remainder is
- * handed out in order, capped per article. Anything an article does not need
- * stays in the pool for the ones that do.
+ * Three passes, in order:
+ *
+ * 1. **Floor** — every article gets `floor_chars`, so a 12-member thread shows
+ *    every member even when the first three could fill the budget alone.
+ * 2. **Fair share** — the remainder is handed out in order, capped at
+ *    `per_article_chars`. That cap is a fairness device: it stops one long
+ *    source eating a packet that several outlets should share.
+ * 3. **Leftovers** — if budget still remains after everyone has hit their cap,
+ *    it goes to the articles still truncated, in order.
+ *
+ * Pass 3 exists because the per-article cap was acting as an absolute ceiling
+ * and starving packets that had no one to be fair to. Run #17's rank 32 is one
+ * source, 9,892 characters, on a standard tier with a 12,000-character total —
+ * and it was cut to 2,573 by `per_article_chars: 3000`, using a fifth of the
+ * budget with nothing else competing for it. The writer then told the reader
+ * the article "does not specify which benefits … are now included", which was
+ * a true observation about the text it was handed and false about the article:
+ * the part naming them was in the 74% we cut.
+ *
+ * So the cap now binds only while there is competition. A 12-article feature
+ * still shares fairly first; a single-source piece gets its article.
  */
 export function allocateBudget(
   lengths: number[],
@@ -293,6 +310,14 @@ export function allocateBudget(
   for (let i = 0; i < lengths.length && remaining > 0; i++) {
     const ceiling = Math.min(lengths[i]!, cfg.per_article_chars);
     const extra = Math.min(ceiling - allocations[i]!, remaining);
+    if (extra > 0) {
+      allocations[i]! += extra;
+      remaining -= extra;
+    }
+  }
+
+  for (let i = 0; i < lengths.length && remaining > 0; i++) {
+    const extra = Math.min(lengths[i]! - allocations[i]!, remaining);
     if (extra > 0) {
       allocations[i]! += extra;
       remaining -= extra;

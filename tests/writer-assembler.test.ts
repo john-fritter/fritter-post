@@ -245,7 +245,32 @@ function testEveryArticleGetsItsFloorBeforeAnyGetsMore() {
 function testShortArticlesDoNotHoardBudget() {
   const allocations = allocateBudget([100, 100, 30000], CFG.tiers.feature);
   assert.deepEqual(allocations.slice(0, 2), [100, 100]);
-  assert.equal(allocations[2], 6000); // per_article_chars ceiling
+  // The long one takes what the short two cannot use. per_article_chars caps
+  // the fair-share pass, not the packet: with 47,800 characters of feature
+  // budget unclaimed there is nobody to be fair to.
+  assert.equal(allocations[2], 30000);
+}
+
+function testThePerArticleCapBindsOnlyWhileThereIsCompetition() {
+  // Run #17's rank 32: one source, 9,892 characters, standard tier — cut to
+  // 2,573 by per_article_chars: 3000 while using a fifth of a 12,000-character
+  // budget. The writer then told the reader the article "does not specify which
+  // benefits are now included", which was true of the text it was handed and
+  // false of the article: the part naming them was in the 74% we cut.
+  const alone = allocateBudget([9892], CFG.tiers.standard);
+  assert.deepEqual(alone, [9892]);
+
+  // With real competition the cap still does its job on the first pass.
+  const shared = allocateBudget([9892, 9892, 9892, 9892, 9892], CFG.tiers.standard);
+  assert.equal(
+    shared.reduce((a, b) => a + b, 0),
+    CFG.tiers.standard.total_chars,
+  );
+  assert.ok(
+    shared.every((a) => a <= CFG.tiers.standard.per_article_chars),
+    "no article exceeds its fair share while others still want budget",
+  );
+  assert.ok(shared.every((a) => a >= CFG.tiers.standard.floor_chars));
 }
 
 function testAllocationNeverExceedsAvailableText() {
@@ -568,6 +593,7 @@ testShortParagraphsAreExemptFromDedup();
 testDedupIgnoresWhitespaceAndCase();
 testEveryArticleGetsItsFloorBeforeAnyGetsMore();
 testShortArticlesDoNotHoardBudget();
+testThePerArticleCapBindsOnlyWhileThereIsCompetition();
 testAllocationNeverExceedsAvailableText();
 testTrimLandsOnAParagraphBoundary();
 testTrimFallsBackToASentenceEnd();

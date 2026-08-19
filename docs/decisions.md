@@ -3412,3 +3412,74 @@ database; extensions are `amcheck`, `plpgsql`, `vector 0.8.2`. So the
 `posting list tuple with N items cannot be split at offset M` errors from collect
 #50 do not come from where that message normally comes from, and my GIN
 hypothesis was wrong. Two items are still being lost per run without explanation.
+
+## 2026-08-19 — The per-article cap was a ceiling, and it was cutting the answer
+
+Run #17 was the third writer-only A/B on editor #114. The plumbing leak is
+gone: `inspect packet --rank 32` shows source blocks with no `[feed summary
+only]` or `[truncated at …]`, the `MATERIAL` audit block carries them instead,
+and all three surviving sentences from run #15 are absent. Slots came back
+identical to run #15 — 7 leads, 9 sidebars, 10 lines — so nothing regressed.
+Lines 16–28 words, brief sidebar 48, no feature over 600.
+
+One sentence survived in spirit:
+
+> "The American Prospect reports the expansion is broad but does not specify
+> which benefits beyond the 1999 categories are now included."
+
+Gizmo called it an inference from omitted packet material, which is right, and
+the packet dump shows why it happened. That story is **one source, 9,892
+characters, standard tier**. Its packet held 2,573 — cut by
+`per_article_chars: 3000` on a `total_chars: 12000` budget, using a fifth of
+what was authorised with nothing else competing for it. The visible text runs
+1882 → 1999 → 2019 → Biden and stops at a paragraph boundary before the section
+describing the new rule. The writer read that and said so. It was **true of the
+material it was handed and false of the article**, and this time nothing in the
+prompt told it — it simply noticed.
+
+So the fix is not a fifth prompt rule. `allocateBudget` gains a third pass:
+floor everyone, distribute the remainder capped per article, then hand what is
+still unspent to the articles still truncated. The cap keeps doing its real job
+— stopping one long source eating a packet several outlets should share — and
+stops acting as an absolute ceiling on packets that have nobody to be fair to.
+
+Roughly 17% of articles reach the 5,000+ bucket, so this changes the packets
+built from the best-sourced material and leaves the thin ones alone.
+
+**The pattern across the last four entries, now complete.** Each fix removed a
+place where the prompt described its own state, and each time the model's
+remaining commentary moved one layer inward: system memo → user-prompt note →
+per-source label → *the shape of the text itself*. The last one cannot be fixed
+by withholding information, because the model is reading the material directly.
+It can only be fixed by not truncating in the middle of the answer.
+
+### The index is genuinely corrupt
+
+`bt_index_check` results:
+
+- `preprocessed_items_source_name_idx` — clean.
+- `raw_items_source_name_idx` — **FAILED**: `item order invariant violated …
+  page lsn=0/BA428F00`.
+
+So the `posting list tuple with N items cannot be split at offset M` errors from
+collect #50 are real btree corruption, on the index Gizmo named in the first
+place. My GIN hypothesis was wrong and my correction sent him to a dead end;
+PostgreSQL 13's btree deduplication stores repeated keys as posting list tuples,
+and `source_name` — 111 distinct values across hundreds of thousands of rows —
+is where deduplication does the most work.
+
+Not yet repaired: the pre-authorisation named `preprocessed_items_source_name_idx`,
+which is the clean one, and Gizmo correctly declined to touch an index the
+instruction had not named. `REINDEX INDEX CONCURRENTLY raw_items_source_name_idx`
+is the repair.
+
+`amcheck` predates this project on that database.
+
+### Watch
+
+First-pass writer failures are trending up across identical runs: 1 (#13), 3
+(#15), 10 (#17). Run #17's ten were all briefs missing from batch output,
+recovered by one repair pass. Same editor run and same packets each time, so this
+is provider-side variance rather than anything in the paper — but the batch path
+is where it lands, and `brief_batch_size: 10` means one bad batch costs ten
+pieces.
