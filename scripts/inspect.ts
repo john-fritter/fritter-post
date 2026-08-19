@@ -760,6 +760,22 @@ async function main() {
               console.log(`      ${o.title.slice(0, 110)}`);
             }
           }
+          // Provenance for the same reason: the prompt used to label each source
+          // `[feed summary only]` and `[truncated at N of M chars]`, and run #15
+          // relayed both to the reader. A writer cannot act on either, but an
+          // audit cannot work without them — so they live here now.
+          console.log(`\n=== MATERIAL (${found.packet.articles.length} source(s)) ===\n`);
+          console.log(`  level: ${found.packet.materialLevel}, ${found.packet.totalChars} chars in prompt`);
+          for (const a of found.packet.articles) {
+            const marks = [
+              a.origin,
+              a.truncated ? `truncated ${a.chars}/${a.availableChars}` : `${a.chars} chars`,
+              a.duplicateParagraphs > 0 ? `${a.duplicateParagraphs} dup para` : null,
+              a.boilerplateParagraphs > 0 ? `${a.boilerplateParagraphs} furniture` : null,
+              a.translationFailed ? "UNTRANSLATED" : null,
+            ].filter((m) => m !== null);
+            console.log(`  [${a.preprocessedItemId}] ${a.sourceName} — ${marks.join(", ")}`);
+          }
           break;
         }
 

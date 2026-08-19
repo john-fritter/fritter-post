@@ -53,21 +53,42 @@ HEADLINE: <one line, plain and direct, saying what happened>
 The headline states what happened, in one clause. If it needs an "as" clause or a list of three nouns to cover the piece, the piece has no focus — find the focus first, then write the headline for that. No questions, no teasing, no "what you need to know", no colon-and-label constructions.`;
 }
 
+/**
+ * One source as the writer sees it, and **nothing about where it came from**.
+ *
+ * This line used to carry `[feed summary only]` and
+ * `[truncated at 1200 of 4800 chars]`, and run #15 relayed both to the reader:
+ * "Further detail was not available from the published portion of the report",
+ * "the source material was truncated before detailing the specific benefits".
+ * The second reads as a hallucination — the persisted article body does contain
+ * those details — but it was accurate about *the packet*, because the budget cut
+ * the text and this line said so, with numbers, inches from the text itself.
+ *
+ * That was the third and closest of three places the prompt described its own
+ * plumbing: the standing memo forbids writing about sourcing (system prompt),
+ * the packet note used to describe the material (user prompt), and this labelled
+ * every source (inline with the material). Fixing the outer two left this one
+ * winning. The general rule, learned three times: **a model relays what the
+ * prompt tells it about itself, so the fix is not to tell it.**
+ *
+ * Neither dropped flag was actionable — a writer cannot do anything differently
+ * knowing text was trimmed, since trimming lands on a paragraph boundary and
+ * reads complete. Both are still in `inspect packet`, where an audit needs them.
+ * The translation flag stays: whether the writer can read the text at all is a
+ * real decision it has to make.
+ */
 function formatArticle(article: WriterPacket["articles"][number], index: number): string {
   const when = article.publishedAt ? article.publishedAt.toISOString().slice(0, 16) + "Z" : "no timestamp";
-  const flags: string[] = [];
-  if (article.origin === "feed") flags.push("feed summary only");
-  if (article.truncated) flags.push(`truncated at ${article.chars} of ${article.availableChars} chars`);
-  if (article.translationFailed) flags.push("NOT TRANSLATED — original language");
-  const flagLine = flags.length > 0 ? ` [${flags.join("; ")}]` : "";
+  const flagLine = article.translationFailed ? " [NOT TRANSLATED — original language]" : "";
 
-  return [
+  const head = [
     `--- SOURCE ${index + 1}: ${article.sourceName} | ${when}${flagLine}`,
     `Headline: ${article.title}`,
     `URL: ${article.url}`,
-    "",
-    article.text.length > 0 ? article.text : "(no body text available for this source)",
-  ].join("\n");
+  ];
+  // No placeholder when there is no body: "(no body text available)" is the same
+  // leak in miniature, and a headline with no text under it says it already.
+  return article.text.length > 0 ? [...head, "", article.text].join("\n") : head.join("\n");
 }
 
 /**

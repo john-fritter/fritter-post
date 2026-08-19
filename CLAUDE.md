@@ -400,7 +400,21 @@ of the packet.** They used to open "Material is headline-level only", and six
 pieces in run #13 relayed that to the reader — "No further detail was available",
 "The outlet did not specify the new development in its public feed". The standing
 memo forbids writing about the sourcing and sits in the *system* prompt; the note
-sat in the user prompt, about that specific piece, and the nearer instruction won. Voice comes from `docs/voice.md`
+sat in the user prompt, about that specific piece, and the nearer instruction won.
+
+**The prompt never describes its own plumbing.** `formatArticle` used to label
+every source `[feed summary only]` and `[truncated at 1200 of 4800 chars]`, and
+run #15 relayed both — "Further detail was not available from the published
+portion of the report", "the source material was truncated before detailing the
+specific benefits". The second read as a hallucination (the persisted article
+body has those details) and was accurate about the *packet*, because the budget
+cut the text and the label said so, in numbers, inches from the text. That was
+the third and closest of three layers saying the same thing, and fixing the outer
+two left this one winning. The rule, learned three times: **a model relays what
+the prompt tells it about itself, so the fix is not to tell it.** Only the
+untranslated flag survives — whether the writer can read the text is a real
+decision. Origin, truncation, dedup and furniture counts moved to
+`inspect packet --rank`, where an audit needs them. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
 
 **Sections: a thread is not one piece.** Threading absorbs a situation's rows

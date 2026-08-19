@@ -313,6 +313,48 @@ function testAThinPacketIsDirectedNotDescribed() {
   assert.equal(packet.articles.length, 2);
 }
 
+function testThePromptNeverDescribesItsOwnPlumbing() {
+  // Three layers said the same thing at three distances, and each time the
+  // outer one was fixed the inner one won. The standing memo forbids writing
+  // about sourcing (system prompt); the packet note used to describe the
+  // material (user prompt); and every source carried `[feed summary only]` and
+  // `[truncated at N of M chars]` inline with its text. Run #15 relayed the
+  // last one to the reader — "the source material was truncated before
+  // detailing the specific benefits" — which read as a hallucination and was
+  // accurate about the packet.
+  const texts = new Map<number, ResolvedText>([[1, { text: "z".repeat(40000), origin: "fetched" }]]);
+  const packet = assembleWriterPacket(
+    story("standard", [article(1, { chars: 200 }), article(2, { chars: 80 })]),
+    texts,
+    CFG,
+  );
+  // The first source really is trimmed and the second really is a feed teaser:
+  // the packet still knows, so an audit still can.
+  assert.ok(packet.articles.some((a) => a.truncated));
+  assert.ok(packet.articles.some((a) => a.origin === "feed"));
+
+  const prompt = buildWriterUserPrompt("bio", packet);
+  for (const leak of [
+    /feed summary only/i,
+    /truncated at/i,
+    /no body text available/i,
+    /chars\)?\]/i,
+  ]) {
+    assert.ok(!leak.test(prompt), `prompt describes its own plumbing: ${leak}`);
+  }
+}
+
+function testAnUntranslatedSourceIsStillFlaggedInThePrompt() {
+  // The one flag that survives, because it is the one a writer can act on:
+  // whether it can read the text at all.
+  const packet = assembleWriterPacket(
+    story("standard", [article(1, { chars: 600, translationFailed: true })]),
+    new Map(),
+    CFG,
+  );
+  assert.ok(/NOT TRANSLATED/.test(buildWriterUserPrompt("bio", packet)));
+}
+
 function testAPartialPacketIsAlsoDirectedNotDescribed() {
   const packet = assembleWriterPacket(
     story("feature", [article(1, { chars: 5000 })]),
@@ -533,6 +575,8 @@ testTrimLeavesShortTextAlone();
 testFetchedTextIsPreferredButNeverShorterThanTheFeed();
 testAThinPacketIsDirectedNotDescribed();
 testAPartialPacketIsAlsoDirectedNotDescribed();
+testThePromptNeverDescribesItsOwnPlumbing();
+testAnUntranslatedSourceIsStillFlaggedInThePrompt();
 testFullMaterialCarriesNoWarning();
 testPacketKeepsTheEditorsSourceCountNotTheArticleCount();
 testHeadlineEchoStubsAreLeftOut();

@@ -3335,3 +3335,80 @@ material). Fix the nearer thing.
 - **The `posting list tuple` errors are still unexplained.** Gizmo reports only
   btree indexes on `raw_items` and `preprocessed_items`; that error is a GIN
   signature, so the index involved has not been found yet. No REINDEX was run.
+
+## 2026-08-19 — The prompt never describes its own plumbing
+
+Run #15 was a controlled A/B against run #13: same editor run #114, same pile,
+same threads, same `article_texts` (450 rows before and after), writers stage
+only. Both changes did what they were built to do.
+
+**Slot assignment by material worked.** Section pieces stayed at 26 while
+sidebars went 14 → 9 and lines 5 → 10 — five slots moved, no member dropped.
+Gaza's C19 leads now; Providence's `S53744` and Oregon's `S53742` / `S54035` are
+lines. Feature leads went from 47–556 words to 485–538: the 47-word lead was the
+headline-only member that can no longer take the slot.
+
+One deviation from my prediction, and the implementation was right and the
+prediction wrong. I expected Gaza's C80 to become a line too. It stayed a sidebar
+because its packet is *partial*, not headline-only — it has real material, and
+150 words is what that material supports. The rule is about material, not about
+having been outranked.
+
+**The six source-meta phrases are gone.** Three new ones took their place.
+
+### The third layer was the one that mattered
+
+`formatArticle` labelled every source in every packet:
+
+    --- SOURCE 2: The American Prospect | 2026-08-18T14:22Z [feed summary only; truncated at 1200 of 4800 chars]
+
+Run #15's `S54321` wrote "though the source material was truncated before
+detailing the specific benefits added". Gizmo checked the persisted body, found
+the details present, and called the sentence false. It is false about the
+article and *true about the packet*: the budget trimmed the text, and this label
+said so with numbers, inches from the text itself. The writer was not
+hallucinating. It was reporting what we told it.
+
+So three layers said the same thing at three distances — the standing memo in the
+system prompt, the packet note in the user prompt, the per-source label inline
+with the material — and each time I fixed the outer one, the inner one won. That
+is now four instances of one pattern (`headline_only_words`, the `line` tier, the
+packet note, this), and the general form is worth stating plainly:
+
+**A model relays what the prompt tells it about itself. The fix is never a rule
+telling it not to; the fix is not telling it.**
+
+Neither dropped flag was actionable. A writer cannot do anything differently
+knowing text was trimmed — trimming lands on a paragraph boundary and reads
+complete — and "this came from a feed rather than a fetch" has no bearing on how
+to write a sentence. The untranslated flag stays, because whether the writer can
+read the text at all is a real decision. `(no body text available for this
+source)` went too: it is the same leak in miniature, and a headline with nothing
+under it says the same thing without handing over the words.
+
+Origin, truncation, dedup and furniture counts now print in
+`inspect packet --rank`, following the precedent already set there for omitted
+sources — the prompt withholds what the writer must not use, the audit shows
+everything.
+
+### Judged and left alone
+
+`"La Nación did not specify its location beyond naming Deir Ezzor as one of the
+two sites inspected"` was flagged as a possible fourth leak. It is not the same
+thing: it reports the limit of what is publicly known about a fact, which is
+ordinary journalism, and papers write that sentence every day. The rule is about
+the paper's own machinery — feeds, fetches, budgets, extraction — not about
+attributing a gap in the public record. Tightening it to catch this would cost
+real reporting.
+
+`C86` still runs as a 45-word feature at rank 15. The editor assigns tiers before
+the fetch exists, so it cannot know a story has no material; fixing it means
+moving the fetch above the editor, which is a larger change than the defect.
+
+### Not yet explained
+
+The widened index query returned **zero GIN and zero GiST indexes** in the
+database; extensions are `amcheck`, `plpgsql`, `vector 0.8.2`. So the
+`posting list tuple with N items cannot be split at offset M` errors from collect
+#50 do not come from where that message normally comes from, and my GIN
+hypothesis was wrong. Two items are still being lost per run without explanation.
