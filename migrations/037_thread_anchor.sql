@@ -1,0 +1,26 @@
+-- The anchor: the one development a thread's situation turns on, and when.
+--
+-- Threading's criterion has always been "a concrete situation anchored in a
+-- place and a time", and the prompt has always said so — including an explicit
+-- list of topic-bundles not to form. It still produced two of them: run #8's
+-- "immigration crackdown" (at rank 1) and run #113's "Afghanistan under
+-- Taliban" (five members spanning 2021 to 2026, one of them a five-year
+-- retrospective).
+--
+-- Both slipped because a country under a regime pattern-matches the prompt's
+-- positive example, "one war, or one front of one war". The discriminator the
+-- prompt never asked for is *time*: every thread that held — Iran/Hormuz,
+-- Oregon's fire season, Ukraine, Gaza — gathers developments from the same news
+-- cycle, while both failures gather coverage of a condition that has persisted
+-- for years.
+--
+-- So the model now states the anchor before it lists refs. Writing it forces the
+-- criterion to be applied rather than pattern-matched, and storing it makes a
+-- bad thread legible: "the Taliban's rule since 2021" is visibly not an anchor,
+-- where a thread title conceals the same defect behind a front-page phrasing.
+--
+-- Deliberately not validated in software. There is no reliable signal — Ukraine
+-- and Gaza are countries too — and a heuristic here would cost real threads.
+-- The anchor exists to force the judgment and to expose it in the audit.
+
+ALTER TABLE threads ADD COLUMN anchor TEXT;

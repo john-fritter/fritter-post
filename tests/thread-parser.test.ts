@@ -37,6 +37,7 @@ const REFS = new Set(["C16", "C17", "C21", "C98", "C18", "S39242", "C44", "C43"]
 function testParsesOneThread() {
   const out =
     "Wildfires burn across Oregon as Bench and Beachcomb merge near Warm Springs;;" +
+    "the lightning fires that started in late July;;" +
     "Fires across Central and Eastern Oregon have burned over 1.1 million acres.;;" +
     "C16,C17,C21,C98,C18";
   const threads = parseThreadOutput(out, REFS);
@@ -44,6 +45,43 @@ function testParsesOneThread() {
   assert.deepEqual(threads[0]!.refs, ["C16", "C17", "C21", "C98", "C18"]);
   assert.ok(threads[0]!.title.startsWith("Wildfires burn across Oregon"));
   assert.ok(threads[0]!.summary.includes("1.1 million acres"));
+}
+
+function testTheAnchorIsItsOwnColumn() {
+  // The anchor is what forces the criterion to be applied: run #8's
+  // "immigration crackdown" and run #113's "Afghanistan under Taliban" both
+  // pattern-matched "one front of one war" and neither had one.
+  const out =
+    "Iran conflict escalates around the Strait of Hormuz;;" +
+    "Israel's strikes on Iran beginning February 28;;" +
+    "Trump halted negotiations as the 60-day window expired.;;" +
+    "C16,C17";
+  const threads = parseThreadOutput(out, REFS);
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0]!.anchor, "Israel's strikes on Iran beginning February 28");
+  assert.ok(threads[0]!.summary.startsWith("Trump halted negotiations"));
+}
+
+function testAStraySemicolonPairLandsInTheSummary() {
+  // Columns come from the first, second and last delimiter, so extra ones can
+  // only widen the summary — never shift the refs or swallow the anchor.
+  const out = "Title;;the anchor;;first half;;second half;;C16,C17";
+  const threads = parseThreadOutput(out, REFS);
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0]!.anchor, "the anchor");
+  assert.equal(threads[0]!.summary, "first half;;second half");
+  assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
+}
+
+function testAThreeFieldLineStillFormsAThread() {
+  // The output format before the anchor existed. Reading the output is
+  // forgiving: this loses the summary, not the thread.
+  const out = "Oregon fires;;Fires burned across Central Oregon.;;C16,C17";
+  const threads = parseThreadOutput(out, REFS);
+  assert.equal(threads.length, 1);
+  assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
+  assert.equal(threads[0]!.title, "Oregon fires");
+  assert.equal(threads[0]!.summary, "");
 }
 
 function testNoneMeansNoThreads() {
@@ -54,7 +92,7 @@ function testNoneMeansNoThreads() {
 }
 
 function testMultipleThreads() {
-  const out = ["Oregon fires;;Summary one.;;C16,C17", "Iran war;;Summary two.;;C44,C43"].join("\n");
+  const out = ["Oregon fires;;A.;;Summary one.;;C16,C17", "Iran war;;A.;;Summary two.;;C44,C43"].join("\n");
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads.length, 2);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
@@ -66,7 +104,7 @@ function testRefClaimedTwiceStaysWithFirstThread() {
   // entire reason this pass exists. C21 is claimed by both lines; the first
   // keeps it, which leaves the second with only C98, below the two-member
   // minimum, so it is dropped entirely.
-  const out = ["Oregon fires;;S.;;C16,C17,C21", "Something else;;S.;;C21,C98"].join("\n");
+  const out = ["Oregon fires;;A.;;S.;;C16,C17,C21", "Something else;;A.;;S.;;C21,C98"].join("\n");
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads.length, 1);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17", "C21"]);
@@ -74,7 +112,7 @@ function testRefClaimedTwiceStaysWithFirstThread() {
 
 function testContestedRefStillLeavesViableSecondThread() {
   // Same contention, but the second thread has enough members to survive it.
-  const out = ["Oregon fires;;S.;;C16,C17,C21", "Other;;S.;;C21,C98,C18"].join("\n");
+  const out = ["Oregon fires;;A.;;S.;;C16,C17,C21", "Other;;A.;;S.;;C21,C98,C18"].join("\n");
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads.length, 2);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17", "C21"]);
@@ -82,33 +120,33 @@ function testContestedRefStillLeavesViableSecondThread() {
 }
 
 function testUnknownRefsAreDropped() {
-  const out = "Oregon fires;;Summary.;;C16,C17,C999,S12345";
+  const out = "Oregon fires;;A.;;Summary.;;C16,C17,C999,S12345";
   const threads = parseThreadOutput(out, REFS);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
 }
 
 function testThreadWithFewerThanTwoMembersIsDropped() {
-  const out = "Lonely;;Summary.;;C16";
+  const out = "Lonely;;A.;;Summary.;;C16";
   assert.deepEqual(parseThreadOutput(out, REFS), []);
 }
 
 function testDroppedThreadReleasesItsMembers() {
   // C16 is claimed by a one-member thread that gets dropped, so it must remain
   // available to the thread on the next line.
-  const out = ["Dropped;;S.;;C16", "Real thread;;S.;;C16,C17"].join("\n");
+  const out = ["Dropped;;A.;;S.;;C16", "Real thread;;A.;;S.;;C16,C17"].join("\n");
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads.length, 1);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
 }
 
 function testBracketedAndSpacedRefs() {
-  const out = "Oregon fires;;Summary.;; [C16] , c17 , C21 ";
+  const out = "Oregon fires;;A.;;Summary.;; [C16] , c17 , C21 ";
   const threads = parseThreadOutput(out, REFS);
   assert.deepEqual(threads[0]!.refs, ["C16", "C17", "C21"]);
 }
 
 function testSingletonRefsWork() {
-  const out = "Bend news;;Summary.;;C16,S39242";
+  const out = "Bend news;;A.;;Summary.;;C16,S39242";
   const threads = parseThreadOutput(out, REFS);
   assert.deepEqual(threads[0]!.refs, ["C16", "S39242"]);
 }
@@ -117,8 +155,8 @@ function testMalformedLinesAreSkipped() {
   const out = [
     "no delimiters at all",
     "only;;one delimiter C16,C17",
-    "Oregon fires;;Summary.;;C16,C17",
-    ";;empty title;;C21,C98",
+    "Oregon fires;;A.;;Summary.;;C16,C17",
+    ";;A.;;empty title;;C21,C98",
   ].join("\n");
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads.length, 1);
@@ -126,7 +164,7 @@ function testMalformedLinesAreSkipped() {
 }
 
 function testSummaryMayContainCommas() {
-  const out = "Oregon fires;;Fires burned, evacuations followed, smoke spread.;;C16,C17";
+  const out = "Oregon fires;;A.;;Fires burned, evacuations followed, smoke spread.;;C16,C17";
   const threads = parseThreadOutput(out, REFS);
   assert.equal(threads[0]!.summary, "Fires burned, evacuations followed, smoke spread.");
   assert.deepEqual(threads[0]!.refs, ["C16", "C17"]);
@@ -197,6 +235,9 @@ function testSingletonsContributeOneSourceEach() {
 }
 
 testParsesOneThread();
+testTheAnchorIsItsOwnColumn();
+testAStraySemicolonPairLandsInTheSummary();
+testAThreeFieldLineStillFormsAThread();
 testNoneMeansNoThreads();
 testMultipleThreads();
 testRefClaimedTwiceStaysWithFirstThread();

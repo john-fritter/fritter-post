@@ -3178,3 +3178,80 @@ existed.
   briefs ran 19–51. Same shape as the line problem — a brief's material budget
   supports more sentences than a brief's word target asks for — and worth
   checking against the paper before changing anything.
+
+## 2026-08-19 — A sidebar is never batched; threading states its anchor
+
+Two fixes from reading run #10's paper end to end. One of them was misdiagnosed
+in the previous entry.
+
+### The section machinery was silently dropping out for standard-tier threads
+
+`partitionByCallShape` routed `tier === "brief"` into the batched-briefs pool,
+and only `buildWriterUserPrompt` renders `sectionInstruction`. A sidebar under a
+*standard* lead lands on `brief` by the tier ladder — so it was written as a
+standalone brief, with no idea it belonged to a section, no idea what the lead
+covered, and a batch prompt telling it the opposite of the truth: "Each item
+below is one brief. They are unrelated to each other."
+
+Run #10's T4 sent three sidebars through that path and got three unrelated
+briefs filed under a heading, which is precisely the failure sections were built
+to prevent. The previous entry attributed all of T4's incoherence to threading.
+Part of it was this.
+
+Every sidebar now gets its own call whatever tier it lands on. A standard-tier
+thread yields at most `max_sidebars` of them, so the cost is a few calls a paper.
+
+Separately, those four sidebars all wrote 48–53 words against a brief's 25–45,
+and read well — a wrong parameter, not a writing failure, because a sidebar
+carries one development of a situation the lead has already established and that
+is not a brief's job. `packet.tiers.sidebar` gives 45–70 words and the material
+for it, selected through the same `budgetTier` override the `line` tier uses.
+
+### Threading now names the anchor
+
+The merge criterion has been "a concrete situation anchored in a place and a
+time" since the pass was written, and the prompt has listed topic-bundles as
+forbidden the whole time. It produced two anyway: run #8's "immigration
+crackdown" at rank 1, and run #113's "Afghanistan under Taliban" — five members
+spanning 2021 to 2026, including a five-year retrospective, a 2022 document
+leak's fallout, and an ongoing feature series.
+
+Both slipped past the negative examples because they pattern-match a *positive*
+one: "one war, or one front of one war". A country under a regime looks like a
+front.
+
+What separates them is **time**, and the prompt never asked for it. Every thread
+that held — Iran/Hormuz, Oregon's fire season, Ukraine, Gaza — gathers
+developments from the same news cycle. Both failures gather coverage of a
+condition that has persisted for years.
+
+So the output is now `title;;anchor;;summary;;refs`, where the anchor is the
+development the situation turns on and roughly when. Writing it before listing
+refs forces the criterion to be applied rather than recognised, and storing it
+(migration 037) makes a bad thread legible afterwards: "the Taliban's rule since
+2021" is visibly not an anchor, where a front-page title conceals the same
+defect. Both real failures are in the prompt now as worked negative examples with
+their reasons — the junk-filter convention, rules from audit logs rather than
+speculation.
+
+**Deliberately not validated in software.** There is no reliable signal — Ukraine
+and Gaza are countries too — and a heuristic here would cost real threads. The
+anchor exists to force the judgment and expose it, not to be parsed. The parser
+takes its columns from the first, second and last delimiter, so a stray `;;` in
+the summary shifts nothing and a pre-anchor three-field line still forms a
+thread, losing the summary rather than the thread.
+
+### Also from the same read
+
+The headline-only word cap worked: 29 of 150 pieces had headline-only material,
+they came in at 19–49 words instead of 120–200, and **nothing was invented**. But
+three of them replaced invention with commentary on the material — "No further
+details were available from the publication's feed" — which is the pipeline's
+plumbing showing through into the paper. That is a voice rule now.
+
+The root cause underneath those 29 is upstream of the writers: five of them
+attribute to Willamette Week, which like AP and Reuters reaches us through a
+Google News RSS proxy whose article URLs are interstitials. Twenty-one were
+fetched in run #113 and all twenty-one extracted zero characters.
+`raw_items.raw_entry` stores the full feed entry "for future extraction"; whether
+it carries the publisher URL is the next thing to probe.

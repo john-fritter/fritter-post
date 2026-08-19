@@ -331,6 +331,20 @@ writers:
         target_words: [25, 45]
         thin_material_chars: 300
         full_material_chars: 900
+      # A sidebar under a standard-tier lead. Without this it took the brief
+      # tier, and run #10's four such sidebars all came in at 48-53 words
+      # against a 25-45 target — not a writing failure, a wrong parameter. A
+      # sidebar is doing a different job from a standalone brief: it carries one
+      # development of a situation the lead has already established, and 50
+      # words is what that takes. The target now matches what the job needs.
+      sidebar:
+        max_articles: 2
+        total_chars: 3500
+        per_article_chars: 2000
+        floor_chars: 600
+        target_words: [45, 70]
+        thin_material_chars: 400
+        full_material_chars: 1200
       # A section line is one sentence, and run #8 showed it will not stay one
       # sentence if it is handed a brief's material: T3's lines came back at 40
       # to 47 words against a 15-30 target, as compressed briefs. One source and

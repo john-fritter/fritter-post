@@ -224,7 +224,10 @@ const WritersPacketConfigSchema = z.object({
     feature: WritersTierPacketConfigSchema,
     standard: WritersTierPacketConfigSchema,
     brief: WritersTierPacketConfigSchema,
-    // Section lines: one source, one sentence.
+    // Section pieces. A sidebar under a standard lead would otherwise take the
+    // brief tier's numbers, and a line the brief tier's material; both are the
+    // wrong job. See assembleSectionPackets.
+    sidebar: WritersTierPacketConfigSchema,
     line: WritersTierPacketConfigSchema,
   }),
 });

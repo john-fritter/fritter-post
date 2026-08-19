@@ -37,18 +37,27 @@ export interface ThreadCandidate {
 
 export interface ParsedThread {
   title: string;
+  /**
+   * The development this situation turns on, and roughly when. Empty when the
+   * model emitted the older three-field line — degraded, not fatal.
+   */
+  anchor: string;
   summary: string;
   refs: string[];
 }
 
 /**
- * Parses the thread pass output: one `title;;summary;;refs` line per thread.
+ * Parses the thread pass output: one `title;;anchor;;summary;;refs` line each.
  *
  * A ref claimed by more than one thread stays with the first — an item must not
  * appear twice in the paper, which is the whole point of the pass. Refs that
  * aren't in the candidate set are dropped (the model occasionally invents one).
  * Threads left with fewer than two members are discarded, and their remaining
  * members fall back to standing alone. Exported for testing.
+ *
+ * Columns are taken from the first, second and *last* delimiter, so a stray `;;`
+ * inside the summary shifts nothing — and a three-field line from before the
+ * anchor existed still parses, losing the summary rather than the thread.
  */
 export function parseThreadOutput(
   text: string,
@@ -68,9 +77,11 @@ export function parseThreadOutput(
     if (first === -1) continue;
     const last = line.lastIndexOf(";;");
     if (last === first) continue;
+    const second = line.indexOf(";;", first + 2);
 
     const title = line.slice(0, first).trim();
-    const summary = line.slice(first + 2, last).trim();
+    const anchor = line.slice(first + 2, second).trim();
+    const summary = second === last ? "" : line.slice(second + 2, last).trim();
     const refsPart = line.slice(last + 2);
 
     if (!title) continue;
@@ -84,7 +95,7 @@ export function parseThreadOutput(
     }
 
     if (refs.length >= 2) {
-      threads.push({ title, summary, refs });
+      threads.push({ title, anchor, summary, refs });
     } else {
       // Release the members so they can stand alone or join a later thread.
       for (const ref of refs) claimed.delete(ref);
@@ -349,9 +360,10 @@ export async function runThreading(
     const { score, sourceCount } = deriveThreadScores(members);
 
     const { rows: threadRows } = await pool.query<{ id: string }>(
-      `INSERT INTO threads (thread_run_id, thread_index, title, summary, score, source_count)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [threadRunId, i, t.title, t.summary, score, sourceCount],
+      `INSERT INTO threads
+         (thread_run_id, thread_index, title, anchor, summary, score, source_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [threadRunId, i, t.title, t.anchor || null, t.summary, score, sourceCount],
     );
     const threadId = threadRows[0]!.id;
 

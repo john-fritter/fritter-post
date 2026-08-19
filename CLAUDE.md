@@ -290,6 +290,20 @@ so chunking by score would hide members of one situation from each other.
 `thread.candidate_target` (config: 220) is therefore bounded by what a single
 call can hold, not by cost.
 
+**The model states the anchor before it lists members.** The criterion has always
+been "a concrete situation anchored in a place and a time", and the prompt has
+always said so — and it still produced two topic-bundles: run #8's "immigration
+crackdown" (rank 1) and run #113's "Afghanistan under Taliban" (five members
+spanning 2021–2026). Both pattern-match the positive example "one war, or one
+front of one war". The discriminator the prompt never asked for is **time**:
+every thread that held gathers developments from the same news cycle, while both
+failures gather coverage of a condition years old. The output line is now
+`title;;anchor;;summary;;refs`, and the anchor is stored (migration 037) so a bad
+thread is legible in the audit — "the Taliban's rule since 2021" is visibly not
+an anchor, where a front-page title conceals it. Deliberately **not** validated in
+software: Ukraine and Gaza are countries too, and a heuristic would cost real
+threads.
+
 Writes `thread_runs` / `threads` / `thread_members` (migration 031). A failed
 call yields zero threads — the pass not running, rather than a wrong answer —
 recorded in `thread_runs.failed_calls`.
@@ -401,6 +415,17 @@ a call. Writers still never see each other's work.
 Sections make the paper longer than the editor's story count, so
 `applyPaperBudget` drops standalone pieces from the bottom of the rank order to
 compensate. Section pieces are never dropped and one standalone always survives.
+
+**A sidebar is never batched, and a brief-tier sidebar is budgeted as a sidebar.**
+Only `buildWriterUserPrompt` renders `sectionInstruction`, so a batched sidebar is
+written with no idea it belongs to a section and no idea what the lead covers —
+while the batch prompt tells it the items around it are unrelated. Run #10's T4
+sent three sidebars through the brief batch and got three unrelated briefs under a
+heading, the exact failure sections exist to prevent. `partitionByCallShape` now
+keeps every sidebar out of the batch pools. Separately, a sidebar under a
+standard-tier lead lands on `brief` by the tier ladder and inherited a brief's
+25–45 words; all four in run #10 wrote 48–53 and read well, so `packet.tiers.
+sidebar` gives them 45–70 and the material for it.
 
 **A line is budgeted as a line, not as a brief.** Run #8's lines came back at
 40–47 words against a 15–30 target, because a brief's three sources and 2,500
@@ -596,7 +621,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **037**.
+number is ambiguous. The next migration is **038**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

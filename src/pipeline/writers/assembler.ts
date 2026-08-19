@@ -545,17 +545,22 @@ export function assembleSectionPackets(
       articles: member.articles,
     };
 
-    // A line is published as a brief but budgeted as a line. Run #8's lines came
-    // in at 40–47 words against a 15–30 target because a brief's budget handed
-    // them 2,500 characters across several sources — enough raw material for a
-    // second and third sentence. A shorter word target on the same material was
-    // not enough; one source and 900 characters removes the material itself.
-    const packet = assembleWriterPacket(
-      memberStory,
-      textsById,
-      cfg,
-      role === "line" ? "line" : undefined,
-    );
+    // Section pieces are published at their tier and budgeted at their role.
+    //
+    // A line is published as a brief because a brief is what a reader sees, but
+    // run #8's lines came in at 40–47 words against a 15–30 target: a brief's
+    // budget handed them 2,500 characters across several sources, which is
+    // enough raw material for a second and third sentence whatever the target
+    // says. One source and 900 characters removes the material itself.
+    //
+    // A sidebar under a standard-tier lead lands on `brief` by the tier ladder
+    // and inherits a brief's 25–45 words. Run #10's four such sidebars all wrote
+    // 48–53 and read well — a wrong parameter rather than a writing failure,
+    // since a sidebar carries one development of a situation the lead already
+    // established and that is not a brief's job.
+    const budgetTier =
+      role === "line" ? "line" : role === "sidebar" && tier === "brief" ? "sidebar" : undefined;
+    const packet = assembleWriterPacket(memberStory, textsById, cfg, budgetTier);
 
     // The lead is told what runs below it; everything else is told what leads.
     const siblingTitles =

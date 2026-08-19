@@ -224,14 +224,25 @@ async function writeOnePiece(
  * and a line is one sentence, and run #8 sent them together and got briefs back
  * for both — lines at 40 to 47 words against a 15-30 target. One call, one
  * register.
+ *
+ * **A sidebar is never batched, whatever tier it lands on.** Only
+ * `buildWriterUserPrompt` renders `sectionInstruction`, so a batched sidebar is
+ * written with no idea it belongs to a section and no idea what the lead
+ * covers — and the batch prompt tells it the opposite of the truth, that the
+ * items around it are unrelated. Run #10's T4 sent three sidebars through the
+ * brief batch and got three unrelated briefs filed under a heading, which is
+ * the exact failure sections exist to prevent. A standard-tier thread yields at
+ * most `max_sidebars` of them, so the cost is a few calls per paper.
  */
 export function partitionByCallShape<T extends { packet: WriterPacket }>(
   packets: T[],
 ): { longform: T[]; briefs: T[]; lines: T[] } {
-  const isLine = (p: T) => p.packet.section?.role === "line";
+  const role = (p: T) => p.packet.section?.role ?? null;
+  const isLine = (p: T) => role(p) === "line";
+  const batchable = (p: T) => p.packet.tier === "brief" && role(p) !== "sidebar";
   return {
-    longform: packets.filter((p) => p.packet.tier !== "brief" && !isLine(p)),
-    briefs: packets.filter((p) => p.packet.tier === "brief" && !isLine(p)),
+    longform: packets.filter((p) => !isLine(p) && !batchable(p)),
+    briefs: packets.filter((p) => !isLine(p) && batchable(p)),
     lines: packets.filter(isLine),
   };
 }
@@ -434,7 +445,11 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   const results = await Promise.all(
     targets.map((rendered) =>
       limiter(async () => {
-        if (rendered.packet.tier !== "brief") {
+        // Same dispatch as the full run, so a repaired piece is written the way
+        // it would have been written the first time — a sidebar individually,
+        // with its section instruction, whatever tier it landed on.
+        const { longform } = partitionByCallShape([rendered]);
+        if (longform.length > 0) {
           return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg, breaker);
         }
         const batch = [{ rendered, storyId: rendered.packet.storyId ?? null }];

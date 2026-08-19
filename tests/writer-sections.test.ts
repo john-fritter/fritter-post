@@ -55,6 +55,15 @@ const CFG: WritersPacketConfig = {
       thin_material_chars: 300,
       full_material_chars: 900,
     },
+    sidebar: {
+      max_articles: 2,
+      total_chars: 3500,
+      per_article_chars: 2000,
+      floor_chars: 600,
+      target_words: [45, 70],
+      thin_material_chars: 400,
+      full_material_chars: 1200,
+    },
     line: {
       max_articles: 1,
       total_chars: 900,
@@ -287,6 +296,51 @@ function testLinesAndBriefsNeverShareACall() {
   assert.ok(longform.every((p) => p.packet.section?.role !== "line"));
 }
 
+function testABriefTierSidebarIsBudgetedAsASidebar() {
+  // A sidebar under a standard lead lands on `brief` by the tier ladder. Run
+  // #10's four such sidebars all wrote 48-53 words against a brief's 25-45 —
+  // the parameter was wrong, not the writing.
+  const packets = assembleSectionPackets(threadStory(T1_MEMBERS, "standard"), new Map(), CFG);
+  const sidebar = packets[1]!;
+  assert.equal(sidebar.section!.role, "sidebar");
+  assert.equal(sidebar.tier, "brief", "still published as a brief");
+  assert.deepEqual(sidebar.targetWords, [45, 70], "but budgeted as a sidebar");
+  assert.ok(sidebar.totalChars <= 3500);
+
+  // A sidebar under a feature lead is standard-tier and unaffected.
+  const underFeature = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
+  assert.equal(underFeature[1]!.tier, "standard");
+  assert.deepEqual(underFeature[1]!.targetWords, [120, 200]);
+}
+
+function testASidebarIsNeverBatched() {
+  // Only buildWriterUserPrompt renders the section instruction, so a batched
+  // sidebar is written with no idea it belongs to a section — and the batch
+  // prompt tells it the items around it are unrelated. Run #10's T4 sent three
+  // sidebars through the brief batch and got three unrelated briefs under a
+  // heading, the exact failure sections exist to prevent.
+  const section = assembleSectionPackets(threadStory(T1_MEMBERS, "standard"), new Map(), CFG);
+  const standalone = { ...section[0]!, tier: "brief", section: null };
+  const { longform, briefs, lines } = partitionByCallShape(
+    [...section, standalone].map((packet) => ({ packet })),
+  );
+
+  assert.equal(briefs.length, 1, "only the standalone brief batches");
+  assert.equal(briefs[0]!.packet.section, null);
+  assert.ok(
+    longform.every((p) => p.packet.section?.role !== "line"),
+    "no line reached the individual-call pool",
+  );
+  const sidebars = longform.filter((p) => p.packet.section?.role === "sidebar");
+  assert.equal(sidebars.length, 3, "all three sidebars get their own call");
+  assert.ok(sidebars.every((p) => p.packet.tier === "brief"), "even at brief tier");
+  assert.equal(lines.length, 2);
+
+  // And the instruction they were being denied is present on that path.
+  const prompt = buildWriterUserPrompt("bio", sidebars[0]!.packet);
+  assert.ok(/IN THIS SECTION/.test(prompt));
+}
+
 function testTheLineBatchAsksForOneSentence() {
   const section = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
   const lines = section.filter((p) => p.section?.role === "line");
@@ -409,6 +463,8 @@ testASidebarIsToldWhatTheLeadCovers();
 testALineIsToldToWriteOneSentence();
 testLinesAndBriefsNeverShareACall();
 testTheLineBatchAsksForOneSentence();
+testABriefTierSidebarIsBudgetedAsASidebar();
+testASidebarIsNeverBatched();
 testOverflowDisplacesTheLowestRankedStandalonePieces();
 testSectionPiecesAreNeverDisplaced();
 testAPaperUnderBudgetIsUntouched();

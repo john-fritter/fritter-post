@@ -53,6 +53,15 @@ const CFG: WritersPacketConfig = {
       thin_material_chars: 300,
       full_material_chars: 900,
     },
+    sidebar: {
+      max_articles: 2,
+      total_chars: 3500,
+      per_article_chars: 2000,
+      floor_chars: 600,
+      target_words: [45, 70],
+      thin_material_chars: 400,
+      full_material_chars: 1200,
+    },
     line: {
       max_articles: 1,
       total_chars: 900,
