@@ -29,8 +29,8 @@ const CFG: WritersPacketConfig = {
   headline_only_words: [25, 60],
   tiers: {
     feature: {
-      max_articles: 12,
-      total_chars: 48000,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 6000,
       floor_chars: 800,
       target_words: [400, 600],
@@ -38,8 +38,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 12000,
     },
     standard: {
-      max_articles: 6,
-      total_chars: 12000,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 3000,
       floor_chars: 500,
       target_words: [120, 200],
@@ -47,8 +47,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 3000,
     },
     brief: {
-      max_articles: 3,
-      total_chars: 2500,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 1200,
       floor_chars: 400,
       target_words: [25, 45],
@@ -56,8 +56,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 900,
     },
     sidebar: {
-      max_articles: 2,
-      total_chars: 3500,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 2000,
       floor_chars: 600,
       target_words: [45, 70],
@@ -65,8 +65,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 1200,
     },
     line: {
-      max_articles: 1,
-      total_chars: 900,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 900,
       floor_chars: 300,
       target_words: [15, 30],
@@ -194,22 +194,20 @@ function testLinesGetTheirOwnWordTarget() {
   assert.deepEqual(packets[4]!.targetWords, [15, 30]);
 }
 
-function testLinesGetTheirOwnMaterialBudget() {
-  // Run #8's lines came back at 40-47 words because they were budgeted as
-  // briefs: three sources and 2,500 characters is enough raw material for a
-  // second and third sentence, whatever the word target says. A line now gets
-  // one source and 900 characters, so the material for a second sentence is
-  // simply not there.
+function testALineStillSeesAllItsMembersSources() {
+  // Run #8's lines came back at 40-47 words against a 15-30 target, and the fix
+  // then was to cut a line's material to one source and 900 characters. That
+  // fix is reverted: a piece being short is not a reason to under-inform its
+  // writer, and the same run also introduced a separate line-register batch
+  // call, so which of the two actually worked was never established. The
+  // governor is the word target and the register instruction; the material is
+  // whatever the member has.
   const packets = assembleSectionPackets(threadStory(T1_MEMBERS), new Map(), CFG);
   const line = packets[4]!;
   assert.equal(line.section!.role, "line");
-  assert.equal(line.articles.length, 1, "a line gets one source");
-  assert.ok(line.totalChars <= 900, `line budget ${line.totalChars} exceeds 900`);
-
-  // The sidebar beside it, one tier down, still gets a brief's material.
-  const sidebar = packets[3]!;
-  assert.equal(sidebar.section!.role, "sidebar");
-  assert.ok(sidebar.articles.length > 1, "a sidebar still gets more than one source");
+  assert.deepEqual(line.targetWords, [15, 30], "still asked for one sentence");
+  assert.equal(line.articles.length, line.sourceCount, "and still shown every source");
+  assert.equal(line.omitted.length, 0);
 }
 
 function testEachPieceCarriesOnlyItsOwnMembersMaterial() {
@@ -525,7 +523,7 @@ testEveryMemberBecomesAPiece();
 testRolesFollowMemberOrder();
 testSidebarsRunOneTierBelowTheLead();
 testLinesGetTheirOwnWordTarget();
-testLinesGetTheirOwnMaterialBudget();
+testALineStillSeesAllItsMembersSources();
 testEachPieceCarriesOnlyItsOwnMembersMaterial();
 testSectionIdentityIsTheThreadNotTheMember();
 testAOneMemberThreadIsAnOrdinaryStory();

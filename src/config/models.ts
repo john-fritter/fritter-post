@@ -193,12 +193,24 @@ const WritersFetchConfigSchema = z.object({
 });
 
 // Per-tier material budget for one writer packet.
+//
+// **Source material is not rationed.** `max_articles` and `total_chars` are
+// `null` on every tier, meaning no limit: if an item survived collection,
+// prefiltering, grouping and the editor, and it is not a verbatim duplicate,
+// the writer sees it. Deciding what bears on the story is the writer's job and
+// nothing upstream can do it — which is the whole reason the pipeline gathers
+// and groups sources in the first place.
+//
+// Both remain settable because a run may one day meet a page that would blow a
+// context window, and a number in config beats a crash. Setting either is an
+// editorial decision, not a tuning knob: it discards reporting.
 const WritersTierPacketConfigSchema = z.object({
-  max_articles: z.number().int().positive(),
-  total_chars: z.number().int().positive(),
+  max_articles: z.number().int().positive().nullable(),
+  total_chars: z.number().int().positive().nullable(),
   per_article_chars: z.number().int().positive(),
-  // Reserved for every selected article before the remainder is distributed, so
-  // a 12-member thread shows every member instead of three at full length.
+  // Both of these are inert while `total_chars` is null. They only decide who
+  // gets squeezed if a limit is ever set, and they exist so that a squeeze
+  // spreads across outlets rather than letting two long sources take it all.
   floor_chars: z.number().int().nonnegative(),
   target_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
   // Judged per tier: the same 1,000 characters is thin for a feature and

@@ -129,6 +129,19 @@ has already established the situation. Name the development and nothing else —
 background, no second sentence, no "meanwhile". It is a pointer, not a small
 brief.
 
+## More material than the piece needs
+
+You will often be handed far more source text than the length you are asked for
+can hold — sometimes many times more. That is deliberate. Every source that
+survived the day's filtering is put in front of you because **deciding what bears
+on the story is your job**, and nothing upstream can make that decision for you.
+
+It is not a signal to write longer. A brief with eight sources under it is a
+better-corroborated brief, not a longer one, and the same is true at every
+length. Read all of it, work out what the story actually is, write the piece the
+tier asks for, and leave the rest unused. Material you did not need is not
+material wasted.
+
 ## Thin material
 
 Some stories arrive with a headline and a lede and nothing else, because the

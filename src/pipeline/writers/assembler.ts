@@ -10,10 +10,13 @@
  *
  * Three jobs, in this order:
  *
- * 1. **Select** — cap the article count per tier, taking one article per outlet
- *    before a second from the same one. T3 in run #112 carried 27 articles across
- *    12 members; a writer needs the range of sources, not every wire copy of the
- *    same paragraph.
+ * 1. **Select** — order the articles, one per parent outlet before a second from
+ *    the same one, so the packet reads across the story's sources rather than
+ *    down one of them. It does **not** ration: `max_articles` is null on every
+ *    tier, and an item that survived collection, prefiltering, grouping and the
+ *    editor reaches the writer. Deciding what bears on the piece is the writer's
+ *    judgment and nothing upstream can make it — which is the point of gathering
+ *    and grouping sources at all.
  *
  * 2. **Deduplicate paragraphs** — drop any paragraph an earlier article in the
  *    same packet already said, verbatim. This is what syndication actually looks
@@ -27,10 +30,17 @@
  *    packet exists to provide. Verbatim repetition is the only duplication a
  *    writer does not want.
  *
- * 3. **Budget** — every selected article gets a floor allocation so a 12-member
- *    thread still shows every member, and the remainder goes to the top-ranked
- *    articles up to a per-article cap. Trimming lands on a paragraph boundary,
- *    never mid-sentence.
+ * 3. **Budget** — normally a no-op, because `total_chars` is null. If a tier is
+ *    ever capped, every article gets a floor first so a 12-member thread still
+ *    shows every member, then the remainder is shared out under
+ *    `per_article_chars`, then whatever is left goes to the articles still
+ *    truncated. Trimming lands on a paragraph boundary, never mid-sentence.
+ *
+ *    A cap here discards reporting, and run #17 showed what that costs: one
+ *    source of 9,892 characters was cut to 2,573, and the writer told the reader
+ *    the article "does not specify which benefits … are now included" — true of
+ *    the text it held and false of the article, because the part naming them was
+ *    in the 74% the cap removed.
  *
  * The packet also records what it could *not* give the writer. A story whose
  * sources are all blocked (nytimes.com, oregonlive.com) arrives with headline
@@ -204,11 +214,12 @@ export function isLiveBlog(title: string): boolean {
  */
 export function selectArticles(
   articles: StoryArticle[],
-  maxArticles: number,
+  maxArticles: number | null,
 ): { selected: StoryArticle[]; omitted: PacketOmission[] } {
   const selected: StoryArticle[] = [];
   const takenIds = new Set<number>();
   const seenParents = new Set<string>();
+  const full = () => maxArticles !== null && selected.length >= maxArticles;
 
   // Stable: real articles keep their editorial order, live blogs keep theirs,
   // and the second group only ever fills slots the first did not want.
@@ -219,7 +230,7 @@ export function selectArticles(
 
   // First pass: one article per parent outlet, in order.
   for (const article of ordered) {
-    if (selected.length >= maxArticles) break;
+    if (full()) break;
     if (seenParents.has(article.parentSource)) continue;
     seenParents.add(article.parentSource);
     selected.push(article);
@@ -228,7 +239,7 @@ export function selectArticles(
 
   // Second pass: fill remaining slots with the rest, still in order.
   for (const article of ordered) {
-    if (selected.length >= maxArticles) break;
+    if (full()) break;
     if (takenIds.has(article.preprocessedItemId)) continue;
     selected.push(article);
     takenIds.add(article.preprocessedItemId);
@@ -302,6 +313,10 @@ export function allocateBudget(
   lengths: number[],
   cfg: WritersTierPacketConfig,
 ): number[] {
+  // No cap: every article arrives whole. This is the normal case — see the
+  // schema note in src/config/models.ts on why source material is not rationed.
+  if (cfg.total_chars === null) return [...lengths];
+
   const allocations = lengths.map((len) => Math.min(len, cfg.floor_chars));
   let remaining = cfg.total_chars - allocations.reduce((a, b) => a + b, 0);
 

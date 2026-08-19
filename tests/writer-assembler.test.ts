@@ -27,8 +27,8 @@ const CFG: WritersPacketConfig = {
   headline_only_words: [25, 60],
   tiers: {
     feature: {
-      max_articles: 12,
-      total_chars: 48000,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 6000,
       floor_chars: 800,
       target_words: [400, 600],
@@ -36,8 +36,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 12000,
     },
     standard: {
-      max_articles: 6,
-      total_chars: 12000,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 3000,
       floor_chars: 500,
       target_words: [120, 200],
@@ -45,8 +45,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 3000,
     },
     brief: {
-      max_articles: 3,
-      total_chars: 2500,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 1200,
       floor_chars: 400,
       target_words: [25, 45],
@@ -54,8 +54,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 900,
     },
     sidebar: {
-      max_articles: 2,
-      total_chars: 3500,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 2000,
       floor_chars: 600,
       target_words: [45, 70],
@@ -63,8 +63,8 @@ const CFG: WritersPacketConfig = {
       full_material_chars: 1200,
     },
     line: {
-      max_articles: 1,
-      total_chars: 900,
+      max_articles: null,
+      total_chars: null,
       per_article_chars: 900,
       floor_chars: 300,
       target_words: [15, 30],
@@ -230,11 +230,24 @@ function testDedupIgnoresWhitespaceAndCase() {
 
 // --- budget ---
 
-function testEveryArticleGetsItsFloorBeforeAnyGetsMore() {
-  // The 12-member thread case: three long articles could eat the whole budget,
-  // and then nine members would be invisible to the writer.
+/** The feature tier as it was before source material stopped being rationed. */
+const CAPPED = { ...CFG.tiers.feature, max_articles: 12, total_chars: 48000 };
+
+function testAnUncappedTierHandsOverEveryCharacter() {
+  // The normal case. Nothing survives collection, prefiltering, grouping and the
+  // editor only to be trimmed here: deciding what bears on the piece is the
+  // writer's judgment, and it cannot make it on text it never sees.
   const lengths = Array.from({ length: 12 }, () => 20000);
-  const allocations = allocateBudget(lengths, CFG.tiers.feature);
+  assert.deepEqual(allocateBudget(lengths, CFG.tiers.feature), lengths);
+}
+
+function testEveryArticleGetsItsFloorBeforeAnyGetsMore() {
+  // Only reachable when a tier is capped, which no tier is. Kept because a cap
+  // may one day be needed for a page that would blow a context window, and the
+  // rule that matters then is that the squeeze spreads: three long articles must
+  // not eat the budget and leave nine members invisible.
+  const lengths = Array.from({ length: 12 }, () => 20000);
+  const allocations = allocateBudget(lengths, CAPPED);
   assert.ok(allocations.every((a) => a >= 800));
   assert.equal(
     allocations.reduce((a, b) => a + b, 0),
@@ -257,20 +270,21 @@ function testThePerArticleCapBindsOnlyWhileThereIsCompetition() {
   // budget. The writer then told the reader the article "does not specify which
   // benefits are now included", which was true of the text it was handed and
   // false of the article: the part naming them was in the 74% we cut.
-  const alone = allocateBudget([9892], CFG.tiers.standard);
-  assert.deepEqual(alone, [9892]);
+  // Uncapped, which is how every tier ships: the whole article.
+  assert.deepEqual(allocateBudget([9892], CFG.tiers.standard), [9892]);
+
+  // The rest of this only applies if a tier is ever capped again.
+  const capped = { ...CFG.tiers.standard, max_articles: 6, total_chars: 12000 };
+  assert.deepEqual(allocateBudget([9892], capped), [9892], "nobody to be fair to");
 
   // With real competition the cap still does its job on the first pass.
-  const shared = allocateBudget([9892, 9892, 9892, 9892, 9892], CFG.tiers.standard);
-  assert.equal(
-    shared.reduce((a, b) => a + b, 0),
-    CFG.tiers.standard.total_chars,
-  );
+  const shared = allocateBudget([9892, 9892, 9892, 9892, 9892], capped);
+  assert.equal(shared.reduce((a, b) => a + b, 0), 12000);
   assert.ok(
-    shared.every((a) => a <= CFG.tiers.standard.per_article_chars),
+    shared.every((a) => a <= capped.per_article_chars),
     "no article exceeds its fair share while others still want budget",
   );
-  assert.ok(shared.every((a) => a >= CFG.tiers.standard.floor_chars));
+  assert.ok(shared.every((a) => a >= capped.floor_chars));
 }
 
 function testAllocationNeverExceedsAvailableText() {
@@ -353,9 +367,10 @@ function testThePromptNeverDescribesItsOwnPlumbing() {
     texts,
     CFG,
   );
-  // The first source really is trimmed and the second really is a feed teaser:
-  // the packet still knows, so an audit still can.
-  assert.ok(packet.articles.some((a) => a.truncated));
+  // Nothing is trimmed now that no tier is capped — but the packet still knows
+  // where each source came from, so an audit still can.
+  assert.ok(packet.articles.every((a) => !a.truncated));
+  assert.ok(packet.articles.some((a) => a.origin === "fetched"));
   assert.ok(packet.articles.some((a) => a.origin === "feed"));
 
   const prompt = buildWriterUserPrompt("bio", packet);
@@ -404,13 +419,20 @@ function testFullMaterialCarriesNoWarning() {
 }
 
 function testPacketKeepsTheEditorsSourceCountNotTheArticleCount() {
-  // The editor ranked T3 on 27 sources; the packet holds 12. The writer must be
-  // told the real prominence, not the budget's shadow of it.
+  // The editor ranked T3 on 27 sources and the writer now sees all 27. The two
+  // numbers can still diverge — a source can be dropped for having no usable
+  // body, or for echoing its own headline — so the count stays the editor's.
   const articles = Array.from({ length: 27 }, (_, i) => article(i + 1, { chars: 300 }));
   const packet = assembleWriterPacket(story("feature", articles), new Map(), CFG);
   assert.equal(packet.sourceCount, 27);
-  assert.equal(packet.articles.length, 12);
-  assert.equal(packet.omitted.length, 15);
+  assert.equal(packet.articles.length, 27);
+  assert.equal(packet.omitted.length, 0);
+
+  // An unresolvable source still leaves the editor's count intact.
+  const withStub = story("feature", [...articles, article(99, { chars: 0 })]);
+  const stubbed = assembleWriterPacket(withStub, new Map(), CFG);
+  assert.equal(stubbed.sourceCount, 27);
+  assert.equal(stubbed.omitted.length, 1);
 }
 
 function testHeadlineEchoStubsAreLeftOut() {
@@ -512,16 +534,35 @@ function testUnresolvedSourcesAreDisclosed() {
   assert.ok(!/(could not be resolved|the editor)/i.test(note), note);
 }
 
-function testBriefTierStaysSmall() {
+function testABriefIsShortButNotUnderInformed() {
+  // A brief is short because the *piece* is short, not because the writer was
+  // given less to read. All eight sources reach it; the 25-45 word target is
+  // what makes it a brief.
   const articles = Array.from({ length: 8 }, (_, i) => article(i + 1, { chars: 5000 }));
   const packet = assembleWriterPacket(story("brief", articles), new Map(), CFG);
-  assert.equal(packet.articles.length, 3);
-  assert.ok(packet.totalChars <= CFG.tiers.brief.total_chars);
+  assert.equal(packet.articles.length, 8);
+  assert.equal(packet.omitted.length, 0);
+  assert.equal(packet.totalChars, 40000);
   assert.deepEqual(packet.targetWords, [25, 45]);
-  // A brief is short by design, not for want of material: its 2,500-char budget
-  // must not read as thin sourcing and must not warn the writer about it.
+  // Short by design must not read as thin sourcing or warn about it.
   assert.equal(packet.materialLevel, "full");
   assert.deepEqual(packet.notes, []);
+}
+
+function testNoSourceIsEverDroppedForBeingTheNthOne() {
+  // Run #114's Iran thread carried 17 articles and the writer saw 12 of them —
+  // five whole sources discarded by max_articles, which was a third mechanism
+  // aimed at redundancy that selection and dedupeParagraphs already handle.
+  const articles = Array.from({ length: 17 }, (_, i) =>
+    article(i + 1, { chars: 4000, parentSource: `Outlet ${i % 9}` }),
+  );
+  const { selected, omitted } = selectArticles(articles, null);
+  assert.equal(selected.length, 17);
+  assert.equal(omitted.length, 0);
+
+  // Ordering still reads across outlets before down one of them.
+  const firstNine = selected.slice(0, 9).map((a) => a.parentSource);
+  assert.equal(new Set(firstNine).size, 9);
 }
 
 // --- prompts ---
@@ -591,6 +632,7 @@ testArticlesBeyondTheCapAreRecordedNotLost();
 testVerbatimParagraphsAcrossSourcesAreDroppedOnce();
 testShortParagraphsAreExemptFromDedup();
 testDedupIgnoresWhitespaceAndCase();
+testAnUncappedTierHandsOverEveryCharacter();
 testEveryArticleGetsItsFloorBeforeAnyGetsMore();
 testShortArticlesDoNotHoardBudget();
 testThePerArticleCapBindsOnlyWhileThereIsCompetition();
@@ -612,7 +654,8 @@ testMaterialLevelIsJudgedPerTier();
 testHeadlineOnlyMaterialCapsTheWordTarget();
 testUntranslatedSourceIsFlaggedToTheWriter();
 testUnresolvedSourcesAreDisclosed();
-testBriefTierStaysSmall();
+testABriefIsShortButNotUnderInformed();
+testNoSourceIsEverDroppedForBeingTheNthOne();
 testUserPromptCarriesBioMaterialAndSources();
 testThreadPromptTellsTheWriterToFindASpine();
 testASingleSourceStoryGetsNoFocusBlock();

@@ -3483,3 +3483,62 @@ recovered by one repair pass. Same editor run and same packets each time, so thi
 is provider-side variance rather than anything in the paper — but the batch path
 is where it lands, and `brief_batch_size: 10` means one bad batch costs ten
 pieces.
+
+## 2026-08-19 — Source material is not rationed
+
+Reverses part of the original writers design. `max_articles` and `total_chars`
+are now `null` on every tier: if an item survived collection, prefiltering,
+grouping and the editor, and it is not a verbatim duplicate, the writer sees it.
+
+**The principle, in John's words:** if it is news and not a duplicate then it
+should inform the story, and the writer is the one to judge whether a detail
+belongs. It reads multiple sources and decides what the story is — that is the
+job. When a piece comes out too long the fix is guidance on how to editorialize,
+never less to read.
+
+### Why the caps were wrong
+
+They were justified as redundancy control, and redundancy already had two
+mechanisms: `selectArticles` reads one article per parent outlet before a second
+from the same one, and `dedupeParagraphs` drops what another source in the packet
+already said verbatim. `max_articles` was a third mechanism for a solved problem
+— and unlike the other two it discarded **whole sources** rather than repeated
+text. Run #114's Iran thread carried 17 articles and the writer saw 12.
+
+The cost argument was also weaker than it was presented. Run #17 spent 376,425
+input tokens across 84 longform calls, ~4,480 each, of which roughly 3,300 is
+fixed scaffolding — the standing memo alone is 10,258 characters. **The memo
+costs about three times what the source material does.** The whole post-fetch
+corpus is ~1,002,000 characters. Economising on sources was economising on the
+cheap half.
+
+And the caps were actively producing errors. Run #17's rank 32 was one source of
+9,892 characters cut to 2,573, and the piece told the reader the article "does
+not specify which benefits … are now included" — true of the text it held, false
+of the article, because the part naming them was in the 74% the cap removed.
+
+### What stays
+
+`per_article_chars` and `floor_chars` remain in config and are inert while
+`total_chars` is null. They exist for the day a page would blow a context window:
+if a cap must be set, the squeeze should spread across outlets rather than let
+two long sources take everything. Setting either is an editorial decision that
+discards reporting, not a tuning knob.
+
+Word targets stay. A brief is short because the *piece* is short, and
+`headline_only_words` still caps the target when the material genuinely is a
+headline. The short tiers (`line`, `sidebar`) now exist only to set targets.
+
+### A conclusion that was never really established
+
+Run #8's lines came back at 40–47 words against a 15–30 target, and the fix
+recorded here was cutting a line's material to one source and 900 characters.
+That same run also split section lines out of the brief batch into a call framed
+for the line register. Two changes, one measurement — and the material cut got
+the credit. Removing it is now also the experiment: if lines stay at 15–30 words
+without it, the register instruction was doing the work all along.
+
+The standing memo gains a section for this, because writers will now routinely be
+handed several times more text than the target can hold: *more material than the
+piece needs* is deliberate, is not a signal to write longer, and material you did
+not need is not material wasted.

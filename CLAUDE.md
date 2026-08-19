@@ -382,15 +382,24 @@ cluster exists to provide, since every member of a cluster is the same event by
 construction. Trimming lands on a paragraph or sentence boundary. Config is
 `writers.packet.*`.
 
-The budget runs three passes: `floor_chars` for every article, then the
-remainder capped at `per_article_chars`, then whatever is still unspent to the
-articles still truncated. **The per-article cap is a fairness device, not a
-ceiling** — it stops one long source eating a packet several outlets should
-share, and binds only while there is competition. Run #17's rank 32 was one
-source of 9,892 characters cut to 2,573 on a 12,000-character standard budget,
-and the writer told the reader the article "does not specify which benefits …
-are now included": true of the text it held, false of the article, because the
-part naming them was in the 74% the cap discarded.
+**Source material is not rationed.** `max_articles` and `total_chars` are `null`
+on every tier: an item that survived collection, prefiltering, grouping and the
+editor reaches the writer, and nothing is dropped for being the 13th source or
+the 48,001st character. They were 12/48,000 for a feature, justified as
+redundancy control — wrong twice over, because selection already reads one
+article per outlet before a second from the same one and `dedupeParagraphs`
+already removes what another source said verbatim, so the caps were a third
+mechanism for a solved problem that discarded whole sources rather than repeated
+text. Run #114's Iran thread lost 5 of 17 articles that way, and run #17's rank
+32 printed a false statement because `per_article_chars` cut the article before
+the part that answered the question. **Deciding what bears on a piece is the
+writer's judgment** — it reads the sources and works out what the story is, which
+is why the pipeline gathers and groups them at all. When a piece comes out too
+long the fix is guidance on how to editorialize, never less to read.
+
+`per_article_chars` and `floor_chars` are inert while `total_chars` is null. If a
+cap is ever needed — a page that would blow a context window — they make the
+squeeze spread across outlets instead of letting two long sources take it all.
 
 **`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
 Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
@@ -463,16 +472,16 @@ standard-tier lead lands on `brief` by the tier ladder and inherited a brief's
 25–45 words; all four in run #10 wrote 48–53 and read well, so `packet.tiers.
 sidebar` gives them 45–70 and the material for it.
 
-**A line is budgeted as a line, not as a brief.** Run #8's lines came back at
-40–47 words against a 15–30 target, because a brief's three sources and 2,500
-characters are enough raw material for a second and third sentence whatever the
-target says. The `line` tier in `packet.tiers` gives one source and 900
-characters; `assembleWriterPacket` takes a `budgetTier` override so the piece is
-still published as a brief. Same lesson as `headline_only_words`: **when a prompt
-instruction contradicts a prompt parameter, fix the parameter.** A headline-only
-packet's word target is capped element-wise against `packet.headline_only_words`
-whatever its tier, because a note saying "write short" competes with a number and
-loses — run #8's T1 sidebar filled a 120–200-word ask with detail about the 1924
+**A short piece is short in its target, not in what its writer may read.** The
+`line` and `sidebar` tiers exist to set word targets — 15–30 and 45–70 —
+selected through `assembleWriterPacket`'s `budgetTier` override so the piece is
+still published as a brief. They no longer ration material: run #8's lines came
+back at 40–47 words and the fix then was to cut them to one source and 900
+characters, but the same run also introduced a separate line-register batch call,
+so which of the two worked was never established. A headline-only packet's word
+target is still capped element-wise against `packet.headline_only_words` whatever
+its tier — a note saying "write short" competes with a number and loses, and run
+#8's T1 sidebar filled a 120–200-word ask with detail about the 1924
 Johnson–Reed Act that no source carried.
 
 **`index.ts` — the writer calls.** One call per feature and standard piece;

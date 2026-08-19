@@ -285,6 +285,10 @@ export function buildBriefBatchUserPrompt(
         "already established the situation, so give the development itself and " +
         "no background. One sentence — not two, and not a compressed brief.",
       "",
+      "You will usually have far more material than a line can hold. That is " +
+        "normal and it is not an invitation to write longer: read it, find the " +
+        "single development the line is for, and leave the rest.",
+      "",
       "They are unrelated to each other — do not connect them, and do not let " +
         "one line's subject colour another's.",
       "",

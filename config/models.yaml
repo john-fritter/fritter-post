@@ -297,62 +297,70 @@ writers:
     # is a stub, the best one stays.
     min_article_chars: 60
     tiers:
-      # 48k chars is roughly 12k tokens of source text — large, and deliberately
-      # so: T3 in run #112 had 27 articles under it and the feature tier is where
-      # the paper earns its keep. floor_chars is what guarantees a 12-member
-      # thread still shows every member rather than three sources at full length.
-      # thin/full material thresholds are per tier because the same 1,000
-      # characters is thin for a 600-word feature and adequate for a 150-word
-      # standard. A single global pair labelled a Guardian standard story
-      # "headline-only" in run #112 while it carried four usable facts.
+      # **Source material is not rationed.** max_articles and total_chars are
+      # null everywhere: if an item survived collection, prefiltering, grouping
+      # and the editor, and it is not a verbatim duplicate, the writer sees it.
+      #
+      # They used to be 12 articles / 48,000 chars for a feature and 6 / 12,000
+      # for a standard, justified as redundancy control. That was wrong twice
+      # over. Redundancy is already handled — selection reads one article per
+      # outlet before a second from the same one, and dedupeParagraphs removes
+      # what another source said verbatim — so the caps were a third mechanism
+      # for a solved problem, and unlike those two they discarded whole sources
+      # rather than repeated text. Run #114's Iran thread lost 5 of its 17
+      # articles that way, and run #17's rank 32 printed a false statement
+      # because per_article_chars cut the article before the part that answered
+      # the question.
+      #
+      # Deciding what bears on a piece is the writer's judgment. It reads the
+      # sources and decides what the story is; that is the job, and it is the
+      # reason the pipeline gathers and groups sources in the first place. When
+      # a piece comes out too long the fix is guidance on how to editorialize,
+      # never less to read.
+      #
+      # per_article_chars and floor_chars are inert while total_chars is null.
+      # They exist so that if a cap ever has to be set — a page that would blow
+      # a context window — the squeeze spreads across outlets instead of letting
+      # two long sources take everything.
       feature:
-        max_articles: 12
-        total_chars: 48000
+        max_articles: null
+        total_chars: null
         per_article_chars: 6000
         floor_chars: 800
         target_words: [400, 600]
         thin_material_chars: 3000
         full_material_chars: 12000
       standard:
-        max_articles: 6
-        total_chars: 12000
+        max_articles: null
+        total_chars: null
         per_article_chars: 3000
         floor_chars: 500
         target_words: [120, 200]
         thin_material_chars: 900
         full_material_chars: 3000
-      # A brief is a line or two. It gets the top sources and nothing more; the
-      # fetcher does not even fetch for this tier.
+      # The short forms are short because the *piece* is short, not because the
+      # writer is given less to read. Their thin/full thresholds still describe
+      # how much material a piece of that size needs before it counts as
+      # well-sourced.
       brief:
-        max_articles: 3
-        total_chars: 2500
+        max_articles: null
+        total_chars: null
         per_article_chars: 1200
         floor_chars: 400
         target_words: [25, 45]
         thin_material_chars: 300
         full_material_chars: 900
-      # A sidebar under a standard-tier lead. Without this it took the brief
-      # tier, and run #10's four such sidebars all came in at 48-53 words
-      # against a 25-45 target — not a writing failure, a wrong parameter. A
-      # sidebar is doing a different job from a standalone brief: it carries one
-      # development of a situation the lead has already established, and 50
-      # words is what that takes. The target now matches what the job needs.
       sidebar:
-        max_articles: 2
-        total_chars: 3500
+        max_articles: null
+        total_chars: null
         per_article_chars: 2000
         floor_chars: 600
         target_words: [45, 70]
         thin_material_chars: 400
         full_material_chars: 1200
-      # A section line is one sentence, and run #8 showed it will not stay one
-      # sentence if it is handed a brief's material: T3's lines came back at 40
-      # to 47 words against a 15-30 target, as compressed briefs. One source and
-      # a small budget removes the raw material for a second sentence — a
-      # shorter target on the same 2,500 characters was not enough.
       line:
-        max_articles: 1
-        total_chars: 900
+        max_articles: null
+        total_chars: null
         per_article_chars: 900
         floor_chars: 300
         target_words: [15, 30]
