@@ -3894,3 +3894,66 @@ from an already-described one, and the first attempt filtered on `notes === null
 it null and describe never touches it. That would have re-described the entire
 run after any re-split instead of the handful of new pieces. The pass now returns
 the member-id keys of the clusters it created and only those are relabelled.
+
+## 2026-08-20 — Run #51: the re-split ran, and mostly did nothing
+
+The pass executed cleanly — `describe_flagged=34`, `resplit_calls=34`,
+`resplit_failed_calls=0`, digest accounting balanced at 671 clustered + 740
+singleton = 1,411 items with no duplicate member ids. And it changed **six**
+clusters out of thirty-four.
+
+The six it did change were right: the FDA-nomination / $40-trillion-debt cluster
+of 34 articles split cleanly in two; the Central African Republic and Colombian
+mine collapses separated; a 39-article Korea cluster became eight coherent
+groups. That is the class the pass was built for, and on those it works.
+
+**The other 28 were my bug.** `applyResplitPartitions` bailed out on
+`partition.length <= 1`, treating a single-group response as "leave it alone".
+But a single group is not a no-op — it says *those* members are the event and the
+rest are not. Case 2 of the audit is the clearest: eight members covering the USS
+Lincoln's deployment plus a South China Sea breakdown plus energy markets plus
+farm tariffs, and the model answered `1,2,3`. The correct action is to keep three
+and free five. Mine kept all eight and freed nobody.
+
+`splitLowDensityComponents` has always applied a partition whenever the call
+succeeded, freeing every unplaced member — I wrote the new pass without matching
+the tested one. The application logic is now extracted as
+`applyResplitPartitions`, pure and exported, with six tests including the
+single-group case, `none` (which dissolves), and a failed call (which does not).
+
+### The run's numbers are not comparable, and that is separate
+
+`cross_run_dedup_skipped=true` on preprocessor #45, with 0 cross-run drops and
+2,444 items kept from 2,496 considered. Previous runs dropped 1,100–1,600
+cross-run. Collector #53 inserted 301 new items, so the other ~2,100 were
+already-processed items from earlier days re-entering the pipeline.
+
+That is why grouping #51 shows 197 clusters and 1,411 kept-news against run #50's
+68 and 560, and why the digest carries Peru earthquake coverage and Florida
+primary roundups. **Run #51 is a valid test of whether the code executes and a
+poor test of whether grouping improved**, because the input is two-and-a-half
+days of news at once. The over-merges Gizmo found (`C5` Alaska runoff candidates,
+`C9` mine collapses) are real, but their frequency cannot be compared to run #50.
+
+### Two audit findings that are not defects
+
+**Sixteen "sidebar length outliers" are an artifact of the audit, not the paper.**
+Gizmo checked every section sidebar against 45–70 words. That band belongs to the
+`sidebar` *budget tier*, which applies only when a sidebar lands on `brief` — a
+sidebar under a feature-tier lead is standard-tier and gets 120–200. All sixteen
+are standard-tier, and fifteen of them are inside 120–200. Only `S59541` at 107
+is genuinely short.
+
+**Thirteen standalone briefs at 47–72 words against 25–45 are real**, and are the
+predicted cost of unrationing: a brief with five sources and 20,000 characters
+writes 52 words instead of 35. Roughly 30% of briefs, overshooting by ~15%. The
+memo's "more material than the piece needs" section exists for exactly this and
+is not landing on the batched path. Not yet acted on — the fix is guidance, per
+the standing principle, and one polluted run is thin evidence for rewording it.
+
+### Source-meta down from five to two
+
+The floor fix worked. `S57832` still says "No further details were available from
+the source" at 27 words, and `S57492` says "a separate question the sources do
+not address" — a 143-word piece flagging the limit of its own analysis, which is
+a different shape from the headline-only padding and may want its own rule.

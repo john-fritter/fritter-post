@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { parseDescribeOutput } from "../src/pipeline/grouping/index.js";
+import { parseDescribeOutput, applyResplitPartitions } from "../src/pipeline/grouping/index.js";
+import type { Cluster } from "../src/lib/cluster.js";
 
 // The describe pass writes the label every downstream stage ranks and reads, and
 // since run #50 it also answers whether the cluster is really one story. That
@@ -84,6 +85,97 @@ function testFirstLineForAnIndexWins() {
   assert.equal(out.get(0)!.oneEvent, true);
 }
 
+// --- applying a re-split partition ---
+
+function cluster(ids: number[]): Cluster {
+  return { title: "auto label", item_ids: ids, summary: "s", notes: null };
+}
+
+const ITEMS = new Map(
+  Array.from({ length: 12 }, (_, i) => [
+    i + 1,
+    { id: String(i + 1), title: `Article ${i + 1}` } as never,
+  ]),
+);
+
+function testASingleGroupIsNotANoOp() {
+  // The bug run #51 exposed: 34 clusters flagged, 6 changed. A response naming
+  // one group says those members are the event and the rest are not — a
+  // response of "1,2,3" against eight members must keep three and free five,
+  // not keep all eight. splitLowDensityComponents has always worked this way.
+  const out = applyResplitPartitions(
+    [cluster([1, 2, 3, 4, 5, 6, 7, 8])],
+    new Map([[0, [[1, 2, 3]]]]),
+    ITEMS,
+  );
+  assert.deepEqual(out.clusters.length, 1);
+  assert.deepEqual(out.clusters[0]!.item_ids, [1, 2, 3]);
+  assert.deepEqual(out.freedSingletonIds.sort((a, b) => a - b), [4, 5, 6, 7, 8]);
+  assert.equal(out.split, 1);
+}
+
+function testTwoGroupsBecomeTwoClusters() {
+  const out = applyResplitPartitions(
+    [cluster([1, 2, 3, 4, 5, 6])],
+    new Map([[0, [[1, 2, 3], [4, 5, 6]]]]),
+    ITEMS,
+  );
+  assert.equal(out.clusters.length, 2);
+  assert.deepEqual(out.clusters[0]!.item_ids, [1, 2, 3]);
+  assert.deepEqual(out.clusters[1]!.item_ids, [4, 5, 6]);
+  assert.deepEqual(out.freedSingletonIds, []);
+  assert.equal(out.newClusterKeys.size, 2, "both pieces need fresh labels");
+}
+
+function testNoneDissolvesTheCluster() {
+  // parseSplitOutput returns [] for "none": no two of these are the same event.
+  const out = applyResplitPartitions([cluster([1, 2, 3])], new Map([[0, []]]), ITEMS);
+  assert.equal(out.clusters.length, 0);
+  assert.deepEqual(out.freedSingletonIds.sort((a, b) => a - b), [1, 2, 3]);
+  assert.equal(out.split, 1);
+}
+
+function testAFailedCallLeavesTheClusterIntact() {
+  // No entry in the map means the call failed. The pass not running is not the
+  // same as the model saying "leave it alone".
+  const original = cluster([1, 2, 3]);
+  const out = applyResplitPartitions([original], new Map(), ITEMS);
+  assert.deepEqual(out.clusters, [original]);
+  assert.deepEqual(out.freedSingletonIds, []);
+  assert.equal(out.split, 0);
+  assert.equal(out.newClusterKeys.size, 0, "an untouched cluster keeps its label");
+}
+
+function testAWholeClusterConfirmedIsNotCountedAsSplit() {
+  const out = applyResplitPartitions(
+    [cluster([1, 2, 3])],
+    new Map([[0, [[1, 2, 3]]]]),
+    ITEMS,
+  );
+  assert.deepEqual(out.clusters[0]!.item_ids, [1, 2, 3]);
+  assert.deepEqual(out.freedSingletonIds, []);
+  assert.equal(out.split, 0, "nothing moved");
+}
+
+function testUnflaggedClustersPassThroughUntouched() {
+  const keep = cluster([7, 8]);
+  const out = applyResplitPartitions(
+    [cluster([1, 2, 3, 4]), keep],
+    new Map([[0, [[1, 2]]]]),
+    ITEMS,
+  );
+  assert.equal(out.clusters.length, 2);
+  assert.deepEqual(out.clusters[0]!.item_ids, [1, 2]);
+  assert.deepEqual(out.clusters[1]!, keep);
+  assert.deepEqual(out.freedSingletonIds.sort((a, b) => a - b), [3, 4]);
+}
+
+testASingleGroupIsNotANoOp();
+testTwoGroupsBecomeTwoClusters();
+testNoneDissolvesTheCluster();
+testAFailedCallLeavesTheClusterIntact();
+testAWholeClusterConfirmedIsNotCountedAsSplit();
+testUnflaggedClustersPassThroughUntouched();
 testFourFieldLineCarriesTheVerdict();
 testMultiIsFlagged();
 testVerdictIsCaseInsensitive();

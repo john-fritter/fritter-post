@@ -1058,6 +1058,64 @@ interface ResplitResult {
  * running, rather than a wrong answer — which is the same contract as everywhere
  * else in this stage.
  */
+/**
+ * Applies re-split partitions to the cluster list. Pure, and exported because
+ * the bug it now encodes was invisible without a test.
+ *
+ * **A partition naming one group is not a no-op.** It says those members are the
+ * event and the rest are not. The first version bailed out whenever the model
+ * returned a single group, so run #51 flagged 34 clusters and changed 6: a
+ * response of "1,2,3" against eight members kept all eight together and freed
+ * nobody. `splitLowDensityComponents` has always applied a partition whenever
+ * the call succeeded, and this matches it — including `none`, where no two
+ * members are the same event and the cluster dissolves into singletons.
+ *
+ * A cluster with no entry in `partitions` had a failed call and is left alone.
+ */
+export function applyResplitPartitions(
+  clusters: Cluster[],
+  partitions: Map<number, number[][]>,
+  itemById: Map<number, PreprocessedItemRow>,
+): { clusters: Cluster[]; newClusterKeys: Set<string>; freedSingletonIds: number[]; split: number } {
+  const out: Cluster[] = [];
+  const newClusterKeys = new Set<string>();
+  const freedSingletonIds: number[] = [];
+  let split = 0;
+
+  for (let i = 0; i < clusters.length; i++) {
+    const cluster = clusters[i]!;
+    const partition = partitions.get(i);
+    if (partition === undefined) {
+      out.push(cluster);
+      continue;
+    }
+
+    const placed = new Set<number>();
+    for (const group of partition) {
+      // parseSplitOutput returns 1-based member positions within the cluster,
+      // and only ever groups of two or more.
+      const ids = group
+        .map((pos) => cluster.item_ids[pos - 1])
+        .filter((id): id is number => id !== undefined);
+      if (ids.length === 0) continue;
+      for (const id of ids) placed.add(id);
+      const items = ids
+        .map((id) => itemById.get(id))
+        .filter((it): it is PreprocessedItemRow => it !== undefined);
+      // Labels are stale the moment a cluster is re-partitioned, so the pieces
+      // go back to fallback labels and are described again by the caller.
+      newClusterKeys.add(ids.join(","));
+      out.push(items.length > 0 ? buildAutoCluster(items) : { ...cluster, item_ids: ids });
+    }
+    for (const id of cluster.item_ids) {
+      if (!placed.has(id)) freedSingletonIds.push(id);
+    }
+    if (partition.length !== 1 || placed.size !== cluster.item_ids.length) split++;
+  }
+
+  return { clusters: out, newClusterKeys, freedSingletonIds, split };
+}
+
 async function resplitFlaggedClusters(
   clusters: Cluster[],
   flagged: number[],
@@ -1143,51 +1201,15 @@ async function resplitFlaggedClusters(
     if (o.partition !== null) partitions.set(o.clusterIdx, o.partition);
   }
 
-  const out: Cluster[] = [];
-  const newClusterKeys = new Set<string>();
-  const freedSingletonIds: number[] = [];
-  let split = 0;
-
-  for (let i = 0; i < clusters.length; i++) {
-    const cluster = clusters[i]!;
-    const partition = partitions.get(i);
-    if (!partition || partition.length <= 1) {
-      out.push(cluster);
-      continue;
-    }
-    split++;
-    // parseSplitOutput returns 1-based member positions within the cluster.
-    for (const group of partition) {
-      const ids = group
-        .map((pos) => cluster.item_ids[pos - 1])
-        .filter((id): id is number => id !== undefined);
-      if (ids.length === 0) continue;
-      if (ids.length === 1) {
-        freedSingletonIds.push(ids[0]!);
-        continue;
-      }
-      const items = ids
-        .map((id) => itemById.get(id))
-        .filter((it): it is PreprocessedItemRow => it !== undefined);
-      // Labels are stale the moment a cluster is re-partitioned, so the pieces
-      // go back to fallback labels and are described again by the caller.
-      newClusterKeys.add(ids.join(","));
-      out.push(items.length > 0 ? buildAutoCluster(items) : { ...cluster, item_ids: ids });
-    }
-    // Any member the partition failed to place is not silently dropped.
-    const placed = new Set(partition.flat().map((pos) => cluster.item_ids[pos - 1]));
-    for (const id of cluster.item_ids) {
-      if (!placed.has(id)) freedSingletonIds.push(id);
-    }
-  }
+  const applied = applyResplitPartitions(clusters, partitions, itemById);
 
   return {
-    clusters: out,
-    newClusterKeys,
-    freedSingletonIds,
+    clusters: applied.clusters,
+    newClusterKeys: applied.newClusterKeys,
+    freedSingletonIds: applied.freedSingletonIds,
     calls,
     failedCalls,
-    split,
+    split: applied.split,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     firstGenerationLogId,
