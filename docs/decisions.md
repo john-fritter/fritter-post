@@ -3807,3 +3807,71 @@ call and is the only pass that reads a whole cluster's material with a question
 in mind. Not yet acted on; proposed rather than shipped, because clustering is
 the pipeline's primary lever and the dissolve-versus-re-split choice is a real
 design decision.
+
+## 2026-08-20 — Describe asks whether the cluster is one story
+
+Run #50's grouping produced four clear over-merges, and they share a shape the
+split pass cannot see:
+
+- `C9` — gold mine collapses in the Central African Republic **and** Colombia
+- `C5` — Florida **and** Alaska primary results
+- `C19` — a graft probe plus a separate election demand
+- `C30` — a membership surge plus separate Irkutsk and Tyumen disputes
+
+Step 2b's split exists to repair **chaining**: union-find joins A~B~C when A and
+C are unrelated, so it suspects components that are large (`min_size: 3`) and
+**loosely** connected (`cohesion < 0.55`). Two mine collapses on different
+continents are the opposite — *tightly* connected, because they are the same kind
+of event described in the same words. High cohesion, never suspected, never
+examined. No value of `density_floor` reaches them.
+
+`similarity_threshold` is not the lever either. Gizmo's audit found two
+under-merges alongside the four over-merges (`C0`/`C48`, `C31`/`C55`), so raising
+it fixes one class and worsens the other.
+
+**But the describe pass already produced the evidence.** Its own title for `C9`
+named both countries. Describe reads every multi-item cluster's full material in
+one batched call, and it is the only pass positioned to answer the question — it
+just was not being asked. Same shape as the thread anchor: the model writes the
+defect into its own output and nothing reads it.
+
+So describe now emits `index;;verdict;;title;;summary`, and clusters it calls
+`MULTI` go through the split prompt again at a new step 4b. The freed members
+rejoin the singleton pool and the re-partitioned pieces are described a second
+time, since a label is stale the moment the cluster under it changes.
+
+**Re-partition, not dissolve.** John's call, and the right one: a flagged cluster
+of ten may hold two real groups of five, and breaking it into ten singletons
+would throw away the corroboration grouping exists to find. The split prompt is
+already built for exactly this partition, and it needs only member titles — the
+cohesion machinery it normally sits behind is *suspect selection*, which describe
+now does instead.
+
+Contracts kept from the rest of the stage: a failed re-split call leaves the
+cluster intact and increments `resplit_failed_calls`; every call goes through
+`callWithBackoff`; counters persist to `grouping_runs` (migration 038) so a run
+can be judged from the database. An unrecognisable verdict is read as `ONE`,
+because a wrongly split cluster loses corroboration while a wrongly merged one
+publishes two stories under one headline — only the first failure is caused by
+guessing here.
+
+### The relation test held on fresh material
+
+Run #52's seven threads, read against the criterion:
+
+- **T1** (child immigration detention) is the best thread the pass has produced:
+  a judge's order, the collapse of the protection system that prompted it, and
+  the scrapped effort to recruit lawyers for migrant children. Three members,
+  each a mechanism of the others.
+- **T0, T2, T3, T6** hold. T3's members are diplomatic, military and human-cost
+  dimensions of one week's Gaza strikes.
+- **T4** is marginal: its anchor is "Record-setting 2026 wildfire season", which
+  is a season rather than a dated development — the weak anchor shape.
+- **T5** is the one failure, and it is legible in its own anchor: "Russian
+  missile barrage on Kyiv **and** Ukrainian drone strike on Tatarstan". An anchor
+  needing "and" to join two events is a self-declared two-situation thread. That
+  is the third appearance of this shape, after run #113's T4 and run #22's T1.
+
+Worth noting the anchor is doing exactly the job it was added for — making a bad
+thread visible without a software check. Whether to say so in the prompt, or keep
+relying on a human reading the column, is not yet decided.

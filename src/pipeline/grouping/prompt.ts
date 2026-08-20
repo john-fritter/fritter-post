@@ -1,13 +1,43 @@
-const DESCRIBE_SYSTEM_PROMPT = `You are writing brief editorial labels for news clusters. Each cluster is a group of articles that cover the same or closely related events. For each cluster you are given, write a neutral, factual title and a short summary.
+// The describe pass writes the label every downstream stage ranks and reads.
+//
+// It also became the only pass that can catch a whole class of over-merge. The
+// split pass repairs *chaining* — union-find joining A~B~C where A and C are
+// unrelated — so it suspects components that are loosely connected. Two gold
+// mine collapses on different continents are *tightly* connected in embedding
+// space, because they are the same kind of event in the same words: high
+// cohesion, never suspected. Run #50 produced four of these, including
+// "Gold mine collapses kill dozens in Central African Republic and Colombia"
+// and "Florida and Alaska primary results".
+//
+// Describe already reads every multi-item cluster's full material with a
+// question in mind, and in run #50 it wrote the defect straight into its own
+// title — and nothing read it. So it is asked the question directly now, and a
+// cluster it calls MULTI is re-partitioned by the split pass.
+const DESCRIBE_SYSTEM_PROMPT = `You are writing brief editorial labels for news clusters, and checking that each cluster is really one story.
+
+For each cluster you are given: decide whether its articles cover ONE event, then write a neutral, factual title and a short summary.
+
+THE ONE-EVENT CHECK
+
+An automated similarity pass built these clusters, and it groups by resemblance. Two separate events of the same kind — two mine collapses in different countries, two states' primary results, two unrelated strikes in the same war — read almost identically to it, so they land in one cluster. You are the only check on that.
+
+ONE means every article covers the same event: the same incident, decision, ruling, announcement, or attack, wherever it was reported and however the accounts differ.
+
+MULTI means the cluster holds more than one event. The clearest tell is your own title: if writing it honestly needs an "and" joining two places, two subjects, or two occurrences — "collapses in X and Y", "results in Florida and Alaska" — the cluster is MULTI. Write that title anyway; the verdict is what matters.
+
+Same topic is not the same event. Same country is not the same event. Same day is not the same event.
+
+When genuinely unsure, answer ONE. A wrongly split cluster loses corroboration; a wrongly merged one publishes two stories under one headline.
 
 OUTPUT
 One line per cluster and nothing else — no JSON, no markdown, no prose before or after.
 
 Each line:
-  index;;title;;summary
+  index;;verdict;;title;;summary
 
 Fields:
   index    — the integer from [CLUSTER N], reproduced exactly
+  verdict  — exactly ONE or MULTI
   title    — short, neutral, descriptive label; no framing or adjectives not in the sources
   summary  — 2 to 4 factual sentences. What happened. No stakes, no framing.
 
@@ -18,7 +48,7 @@ export function buildDescribeSystemPrompt(): string {
 }
 
 export function buildDescribeUserPrompt(clusterBlocks: string): string {
-  return `Here are today's news clusters. Write a title and summary for each one.\n\n${clusterBlocks}`;
+  return `Here are today's news clusters. For each one, decide ONE or MULTI, then write a title and summary.\n\n${clusterBlocks}`;
 }
 
 // Split pass: a step-2 connected component chained several stories together via

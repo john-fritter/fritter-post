@@ -200,9 +200,21 @@ steps:
    candidate singletons (title-cosine ≥ `candidate_floor`) in one LLM call;
    Phase B forms new clusters from leftover singletons via proto-groups. One
    bounded cascade re-pass follows. Controlled by `grouping.attach.*`.
-4. **Describe** — batched LLM call that writes a neutral `title;;summary` for
-   every multi-item cluster. Singletons skip this pass. Controlled by
+4. **Describe** — batched LLM call over every multi-item cluster. It emits
+   `index;;verdict;;title;;summary`: a neutral label, plus whether the cluster is
+   really **one event**. Singletons skip this pass. Controlled by
    `grouping.describe.*`.
+4b. **Re-split** — the clusters describe called `MULTI` go through the split
+   prompt again and are re-partitioned; freed members rejoin the singleton pool
+   and the new pieces are re-described. **This exists because step 2b cannot see
+   this class of over-merge.** Split selects suspects by *cohesion*, since it was
+   built to repair chaining; two gold mine collapses on different continents are
+   the opposite shape — tightly connected, because they are the same kind of
+   event in the same words. Run #50 produced four of these, and describe wrote
+   one straight into its own title ("Gold mine collapses kill dozens in Central
+   African Republic **and** Colombia") where nothing read it. Deliberately a
+   re-partition, not a dissolve: a flagged cluster of ten may hold two real
+   groups of five. A failed call leaves the cluster intact.
 
 All three LLM passes go through `callWithBackoff`. This is not optional: a
 failed attach call returns an empty set, which is indistinguishable from the
@@ -211,9 +223,11 @@ the run still reports success.
 
 Per-pass counters are persisted onto `grouping_runs` (migration 030) so a
 report regenerated from the database can judge a run without the console log:
-`cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`, and
+`cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`,
 `split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
-`split_components_split` / `split_freed_singletons`.
+`split_components_split` / `split_freed_singletons`, and (migration 038)
+`describe_flagged` / `resplit_calls` / `resplit_failed_calls` /
+`resplit_clusters_split` / `resplit_freed_singletons`.
 
 **If `attach_failed_calls` is non-zero, the cluster/singleton split understates
 real grouping and the run must not be used to judge cluster quality or tune
@@ -689,7 +703,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **038**.
+number is ambiguous. The next migration is **039**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
