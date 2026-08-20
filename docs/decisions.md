@@ -3743,3 +3743,67 @@ tuning blind from one day's output.
 defect only — Gizmo confirmed the Le Monde source states it directly. It is the
 article-as-subject shape the memo already forbids, so it joins the named
 examples with its corrected form.
+
+## 2026-08-20 — The floor was the last thing asking for it
+
+Run #24 (fresh pipeline, collect #52 → editor #116 → writer #24) produced five
+pieces ending in some form of "No further details were available from the
+source". Every one is headline-only.
+
+This is the fifth appearance of one defect and the fourth attempted fix. The
+standing memo forbids writing about the sourcing; the packet note was rewritten
+to direct rather than describe; `formatArticle` stopped labelling every source
+with its origin and truncation. All three held — the sweep found no "the feed",
+no "truncated", no "paywall". What was left was a **number**.
+
+`headline_only_words` is `[25, 60]`, rendered as a range. A range has a floor,
+and a floor is an instruction to keep writing. A piece whose material supports
+fifteen words was being asked for twenty-five, and it met the number the only way
+available to it: by describing the gap.
+
+A headline-only packet is now told "up to 60 words, and fewer is correct — stop
+when the sources do". No minimum. Pieces with real material keep their range,
+where the floor does useful work and a 40-word feature is a different failure.
+
+Same lesson as `headline_only_words` itself, the `line` tier, the packet note and
+the source labels: **when an instruction contradicts a parameter, the parameter
+wins.** Four of the five instances of this defect were caused by a number.
+
+### Threading: the relation test worked
+
+Seven threads, down from run #12's eleven, and 19 section pieces down from 42 —
+the expected direction, and not an over-correction. Gizmo flagged one survivor:
+T5 pairs a Russian strike on Kyiv with Ukrainian drones hitting Tatarstan. That
+is the weakest of the seven, though "exchange strikes" is arguably a real
+relation — one is an answer to the other.
+
+### Grouping: over-merging is the more common failure, and the split pass cannot see it
+
+Gizmo's count, which is what the audit was for:
+
+**Clear over-merges (4):** `C5` Florida *and* Alaska primary results; `C9` gold
+mine collapses in the Central African Republic *and* Colombia; `C19` a graft
+probe plus a separate election demand; `C30` a membership surge plus separate
+Irkutsk and Tyumen disputes.
+
+**Plausible under-merges (2):** `C0`/`C48` (debt milestone, Treasury
+intervention); `C31`/`C55` (one Walmart earnings cycle split in two).
+
+**The split pass is structurally blind to this class.** It exists to repair
+*chaining* — union-find joining A~B~C where A and C are unrelated — so it
+suspects components that are large (`min_size: 3`) and **loosely** connected
+(`cohesion < 0.55`). Two gold-mine collapses on different continents are
+*tightly* connected in embedding space, because they are the same kind of event
+described in the same words. High cohesion, never suspected, never examined.
+
+Raising `similarity_threshold` would attack the over-merges and worsen the
+under-merges. It is not the lever.
+
+**But the describe pass already produces the evidence.** Its own title for `C9`
+is "Gold mine collapses kill dozens in Central African Republic **and** Colombia"
+— the model wrote the defect into its label, exactly as a bad thread anchor does,
+and nothing reads it. Describe runs on every multi-item cluster in one batched
+call and is the only pass that reads a whole cluster's material with a question
+in mind. Not yet acted on; proposed rather than shipped, because clustering is
+the pipeline's primary lever and the dissolve-versus-re-split choice is a real
+design decision.

@@ -176,6 +176,28 @@ function sectionInstruction(packet: WriterPacket): string[] | null {
   ];
 }
 
+/**
+ * The word target as the writer is told it.
+ *
+ * A range has a floor, and a floor is an instruction to keep writing. Run #24
+ * produced five pieces ending "No further details were available from the
+ * source" — every one of them headline-only, where the material supported about
+ * fifteen words and `headline_only_words` asked for twenty-five. The writer met
+ * the number the only way left to it.
+ *
+ * The standing memo, the packet note and the source labels had all already been
+ * cleaned of this; the floor was the last thing still asking for it. So a
+ * headline-only piece gets a ceiling and no floor, and is told plainly that
+ * short is the right answer.
+ */
+function targetPhrase(packet: WriterPacket): string {
+  const [minWords, maxWords] = packet.targetWords;
+  if (packet.materialLevel === "headline-only") {
+    return `up to ${maxWords} words, and fewer is correct — stop when the sources do`;
+  }
+  return `${minWords}–${maxWords} words`;
+}
+
 export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string {
   const [minWords, maxWords] = packet.targetWords;
   const parts: string[] = [];
@@ -184,7 +206,7 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
 
   parts.push("THIS PIECE");
   parts.push(`Position in today's paper: rank ${packet.rank} of the ranked list, ${packet.tier} tier.`);
-  parts.push(`Target length: ${minWords}–${maxWords} words.`);
+  parts.push(`Target length: ${targetPhrase(packet)}.`);
   parts.push(
     `Sources behind this story: ${packet.sourceCount}` +
       (packet.articles.length !== packet.sourceCount
@@ -247,7 +269,7 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   parts.push(
     "---",
     "",
-    `Write the piece. ${minWords}–${maxWords} words — ${maxWords} is a ceiling, not a ` +
+    `Write the piece. ${targetPhrase(packet)} — ${maxWords} is a ceiling, not a ` +
       "target. If the material will not fit, cut what the headline does not promise rather " +
       "than writing longer. Fewer subjects covered properly beats more covered briefly.",
   );
@@ -309,8 +331,7 @@ export function buildBriefBatchUserPrompt(
   }
 
   for (const packet of packets) {
-    const [minWords, maxWords] = packet.targetWords;
-    parts.push(`=== ${packet.ref} — rank ${packet.rank}, ${minWords}–${maxWords} words`);
+    parts.push(`=== ${packet.ref} — rank ${packet.rank}, ${targetPhrase(packet)}`);
     if (packet.notes.length > 0) {
       for (const note of packet.notes) parts.push(`Note: ${note}`);
     }

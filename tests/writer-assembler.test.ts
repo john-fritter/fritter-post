@@ -421,6 +421,26 @@ function testAnUntranslatedSourceIsStillFlaggedInThePrompt() {
   assert.ok(/NOT TRANSLATED/.test(buildWriterUserPrompt("bio", packet)));
 }
 
+function testAThinPieceIsGivenACeilingAndNoFloor() {
+  // Run #24 produced five pieces ending "No further details were available from
+  // the source", every one of them headline-only. The memo, the packet note and
+  // the source labels had all been cleaned of that already; what was left asking
+  // for it was the floor. Fifteen words of material against a 25-word minimum
+  // leaves ten words to fill, and the writer filled them the only way it could.
+  const thin = assembleWriterPacket(story("standard", [article(1, { chars: 150 })]), new Map(), CFG);
+  assert.equal(thin.materialLevel, "headline-only");
+  const prompt = buildWriterUserPrompt("bio", thin);
+  assert.ok(/up to 60 words, and fewer is correct/.test(prompt));
+  assert.ok(!/25–60/.test(prompt), "a range states a floor");
+  assert.ok(!/25-60/.test(prompt));
+
+  // A piece with real material keeps its range: the floor is doing useful work
+  // there, and a 40-word feature is a different failure.
+  const full = assembleWriterPacket(story("feature", [article(1, { chars: 40000 })]), new Map(), CFG);
+  assert.equal(full.materialLevel, "full");
+  assert.ok(/400–600 words/.test(buildWriterUserPrompt("bio", full)));
+}
+
 function testAPartialPacketIsAlsoDirectedNotDescribed() {
   const packet = assembleWriterPacket(
     story("feature", [article(1, { chars: 5000 })]),
@@ -669,6 +689,7 @@ testTrimLeavesShortTextAlone();
 testFetchedTextIsPreferredButNeverShorterThanTheFeed();
 testAThinPacketIsDirectedNotDescribed();
 testAPartialPacketIsAlsoDirectedNotDescribed();
+testAThinPieceIsGivenACeilingAndNoFloor();
 testLiveBlogDetectionAcceptsAnySeparator();
 testThePromptNeverDescribesItsOwnPlumbing();
 testAnUntranslatedSourceIsStillFlaggedInThePrompt();
