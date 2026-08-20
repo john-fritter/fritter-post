@@ -500,7 +500,12 @@ so which of the two worked was never established. A headline-only packet's word
 target is still capped element-wise against `packet.headline_only_words` whatever
 its tier — a note saying "write short" competes with a number and loses, and run
 #8's T1 sidebar filled a 120–200-word ask with detail about the 1924
-Johnson–Reed Act that no source carried.
+Johnson–Reed Act that no source carried. **It renders as a ceiling with no
+floor**: run #24 produced five pieces ending "No further details were available
+from the source", all headline-only, because fifteen words of material against a
+25-word minimum leaves ten words to fill. The memo, the packet note and the
+source labels had all been cleaned of that already; the floor was the last thing
+still asking for it.
 
 **`index.ts` — the writer calls.** One call per feature and standard piece;
 briefs go in batches of `brief_batch_size`, because 75 separate calls would each
