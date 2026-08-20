@@ -188,6 +188,11 @@ sentences from run #10 that must never appear again:
   largely burning this summer."
 - "...though the article does not explain how they operate without being shut
   down."
+- "The article reports that hairdressers, mechanics, and other trades are being
+  recorded under similar arrangements." — the source supports the claim; the
+  sentence just makes an article its subject instead of the people. Write "Workers
+  in other trades, including hairdressers and mechanics, are recording their tasks
+  for the same robot-training data."
 
 Naming an outlet as the source of a claim is attribution and is correct. Telling
 the reader what the source *failed* to say, or writing a sentence whose subject

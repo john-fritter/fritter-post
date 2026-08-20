@@ -3680,3 +3680,66 @@ provider call to find a real bug. Worth keeping the smoke gate; worth being
 clearer that the smoke test's job is to catch structural failures, and that a
 disagreement about editorial quality should be reported and escalated rather than
 used to halt.
+
+## 2026-08-20 — Sections work on dimensions, not items
+
+Run #22 rewrote editor #115 with every section piece told what the others cover.
+The paper came out 150/150 after one repair, lines all 15–28 words and one
+sentence each, no absence-based source claims. Then Gizmo read all eleven
+sections against a hypothesis I had formed from three of them, and broke it.
+
+**My hypothesis:** a section works when its lead sits one level above its
+members, and fails when the lead is itself one of the members. It explained T1
+(low-altitude lead reaching sideways into two siblings), T0 and T3.
+
+**It has four counter-examples.** T2's lead is a statewide cost figure and the
+section works on a specific flare-up. T5's is a single rainfall warning and works.
+T9's is a Canadian aid announcement and works. T7's is one candidate's removal and
+works. Altitude describes the good cases without predicting them.
+
+**The better predictor, and it is Gizmo's:** a member belongs when it answers
+*"what does this change about the situation the lead established?"* — as a
+consequence, a mechanism, a scale, a human cost, or another instance of the same
+emergency. That is a **dimension**. A member that says "another thing happened in
+the same war" is an **item**, and a section built from items is a list.
+
+- T0: blockade → the diesel margin it drove to a record, the carriers straining
+  to hold it open. Dimensions.
+- T3: Pacific drawdown → the exercise it cancelled, the summit it enabled.
+- T10: outbreak's case count → its strain has no approved treatment. The second
+  answers the question the first raises.
+- T1: a defence minister's appointment, a prisoner exchange, a drone strike on a
+  police station, a family's story from the occupied east. Items.
+
+**Member count predicts nothing.** T0 works with nine, T1 fails with eleven; T3
+works with four, T8 fails with three.
+
+So the answer to "one article or a section?" is neither — **it is a threading
+question, and the section design stays as it is.** The thread prompt now carries
+both tests explicitly, with T1 named as the real thread that passed the first and
+failed the second.
+
+### What this reframes
+
+Three of the four failures are not the writers' fault and two are not threading's:
+
+- **T6** ran two sidebars that near-duplicate each other — "Treasury doubles debt
+  buyback" and "Bond market pressure prompts policy action" are one story that
+  grouping did not cluster.
+- **C32** ran 250 words as a sidebar because its *cluster* holds four separate
+  accountability cases — Hind Rajab, the paramedics, World Central Kitchen, two
+  MSF cases. Selection, not sourcing; and the selection was made by grouping.
+- **T4**'s second member is a procedural footnote about a comment deadline
+  already in the lead.
+
+That is three defects tracing to grouping being loose, surfacing at the writers
+because that is where they become visible. Worth a look at
+`grouping.embedding.similarity_threshold` on the next full run, but not worth
+tuning blind from one day's output.
+
+### Also
+
+`S55939`'s "The article reports that hairdressers, mechanics…" is a phrasing
+defect only — Gizmo confirmed the Le Monde source states it directly. It is the
+article-as-subject shape the memo already forbids, so it joins the named
+examples with its corrected form.

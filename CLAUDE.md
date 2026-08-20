@@ -273,6 +273,18 @@ an abstract theme spanning unrelated places and actors (data centers straining
 grids in three states is a topic, not a situation). Most items belong to no
 thread; that is the expected answer. Reads `docs/bio.md`.
 
+**Two tests, and time alone is not enough.** Run #22's T1 passed the time test —
+a defence minister's appointment, a prisoner exchange, a strike on a police
+station and a family's story from the occupied east are all current developments
+in one war — and produced a section its reviewer preferred as a single article. A
+survey of all eleven of that run's sections found the second test: a member
+belongs when it **changes what the reader understands about the rest** — as a
+consequence, a mechanism, a scale, a human cost, or another instance of the same
+emergency. A member that merely also happened is an *item*, not a *dimension*.
+Four of the eleven sections were built from items. Member count predicted
+nothing: T0 worked with nine and T1 failed with eleven, T3 worked with four and
+T8 failed with three.
+
 A thread's numbers are derived in software, never asked of the model:
 
 ```

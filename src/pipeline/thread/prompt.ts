@@ -23,6 +23,19 @@
 // the situation turns on, and roughly when, forces the criterion to be applied
 // rather than recognised — and it makes a bad thread legible afterwards, where
 // a front-page title conceals the defect.
+//
+// Time alone was not enough. Run #22's T1 passed it — a defence minister's
+// appointment, a prisoner exchange, a strike on a police station and a family's
+// story from the occupied east are all current developments in one war — and
+// still produced a section its own reviewer preferred as a single article. A
+// survey of all eleven of that run's sections found the discriminator: a member
+// belongs when it *changes what the reader understands about the rest*, as a
+// consequence, a mechanism, a scale, a human cost, or another instance of the
+// same emergency. A member that merely also happened is an item, not a
+// dimension, and four of the eleven sections were built from items.
+//
+// Notably, member count predicted nothing: T0 worked with nine members and T1
+// failed with eleven, T3 worked with four and T8 failed with three.
 
 const THREAD_SYSTEM_PROMPT = `You are a newspaper editor deciding which of today's stories are really the same continuing story.
 
@@ -34,7 +47,18 @@ A THREAD is a single concrete situation, anchored in a place and a time:
 - One city or county's fight over one project or policy.
 - One outbreak, one disaster, one strike, one investigation and its fallout.
 
-THE TEST IS TIME, and it is the one most often failed. Every item in a thread must be a development in a situation that is moving *now*. A subject that has been true for years is a condition, not a situation, however serious it is. Before grouping anything, name the ANCHOR: the specific development this situation turns on, and roughly when it happened. If the honest answer is "for the last five years" or "since the administration took office", these items are a topic and must not be threaded.
+THERE ARE TWO TESTS. An item must pass both.
+
+THE FIRST TEST IS TIME, and it is the one most often failed. Every item in a thread must be a development in a situation that is moving *now*. A subject that has been true for years is a condition, not a situation, however serious it is. Before grouping anything, name the ANCHOR: the specific development this situation turns on, and roughly when it happened. If the honest answer is "for the last five years" or "since the administration took office", these items are a topic and must not be threaded.
+
+THE SECOND TEST IS RELATION. Time gets you a set of things happening at once; it does not make them one story. Ask of every item: does it change what a reader understands about the rest — as a consequence, a mechanism, a scale, a human cost, or another instance of the same emergency — or did it merely also happen? Put it in only if you can finish the sentence "this changes the picture because ___".
+
+- A blockade of a strait, the diesel price it drove to a record, and the carrier deployments straining to keep it open: one situation. Each explains the others.
+- A drawdown of forces from the Pacific, the exercise it cancelled, and the summit it made possible: one situation.
+- An outbreak's case count and the fact that its strain has no approved treatment: one situation. The second answers the question the first raises.
+- A defence minister's appointment, a prisoner exchange, a drone strike on a police station, and a family's story from the occupied east: four stories that share a war. They are all true, all current, and none of them changes what the reader understands about the others. Do not thread them.
+
+The last of those is a real thread this pass produced. It passed the time test and failed this one.
 
 NOT a thread — do not group these:
 - A subject or trend that spans unrelated places and actors. Data centers straining power grids in three different states is a topic, not a situation. Several countries separately regulating AI is a topic. Two unrelated shootings are not one story.
