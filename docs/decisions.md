@@ -3872,6 +3872,25 @@ Run #52's seven threads, read against the criterion:
   needing "and" to join two events is a self-declared two-situation thread. That
   is the third appearance of this shape, after run #113's T4 and run #22's T1.
 
-Worth noting the anchor is doing exactly the job it was added for — making a bad
-thread visible without a software check. Whether to say so in the prompt, or keep
-relying on a human reading the column, is not yet decided.
+**T5 is not a failure — John's call, and it corrects both of us.** Gizmo flagged
+it and I agreed; the reader who wants this paper does not. It is the
+Russia–Ukraine war, two members, a barrage and the drone strike answering it, and
+he wants that as its own section. The lesson is not "same war is fine" either:
+run #22's T1 was also one war and he preferred it as a single article. The
+difference is size and shape — two reciprocal strikes cohere, eleven assorted war
+items do not.
+
+So the anchor rule I was about to add — an anchor needing "and" means two threads
+— **does not get written.** It would have cut this thread. Three appearances of
+the shape turned out to be two failures and one thread the reader wants. The
+anchor stays what it was built to be: a column that makes a thread legible to a
+human, not a test a machine applies.
+
+### Fixed on the way out
+
+`resplitFlaggedClusters` returned no way to tell a freshly re-partitioned cluster
+from an already-described one, and the first attempt filtered on `notes === null`
+— which is true of *every* cluster in this stage, since `buildAutoCluster` sets
+it null and describe never touches it. That would have re-described the entire
+run after any re-split instead of the handful of new pieces. The pass now returns
+the member-id keys of the clusters it created and only those are relabelled.

@@ -1027,6 +1027,12 @@ async function describeGroups(
 
 interface ResplitResult {
   clusters: Cluster[];
+  /**
+   * The clusters this pass created, keyed by their member ids. Only these need
+   * describing again — `notes` is null on every cluster in this stage, so it
+   * cannot be used to tell a fresh piece from an already-labelled one.
+   */
+  newClusterKeys: Set<string>;
   freedSingletonIds: number[];
   calls: number;
   failedCalls: number;
@@ -1061,6 +1067,7 @@ async function resplitFlaggedClusters(
 ): Promise<ResplitResult> {
   const empty: ResplitResult = {
     clusters,
+    newClusterKeys: new Set(),
     freedSingletonIds: [],
     calls: 0,
     failedCalls: 0,
@@ -1137,6 +1144,7 @@ async function resplitFlaggedClusters(
   }
 
   const out: Cluster[] = [];
+  const newClusterKeys = new Set<string>();
   const freedSingletonIds: number[] = [];
   let split = 0;
 
@@ -1163,6 +1171,7 @@ async function resplitFlaggedClusters(
         .filter((it): it is PreprocessedItemRow => it !== undefined);
       // Labels are stale the moment a cluster is re-partitioned, so the pieces
       // go back to fallback labels and are described again by the caller.
+      newClusterKeys.add(ids.join(","));
       out.push(items.length > 0 ? buildAutoCluster(items) : { ...cluster, item_ids: ids });
     }
     // Any member the partition failed to place is not silently dropped.
@@ -1174,6 +1183,7 @@ async function resplitFlaggedClusters(
 
   return {
     clusters: out,
+    newClusterKeys,
     freedSingletonIds,
     calls,
     failedCalls,
@@ -1597,8 +1607,11 @@ export async function runGrouping(
       accumulateTokens(resplit.inputTokens, resplit.outputTokens, resplit.firstGenerationLogId);
 
       // Re-partitioned pieces carry fallback labels; describe them again. Only
-      // the new multi-item clusters go, so this is a small second pass.
-      const needLabels = finalClusters.filter((c) => c.notes === null && c.item_ids.length > 1);
+      // the clusters this pass created go — every cluster in this stage has
+      // `notes === null`, so that field cannot distinguish them.
+      const needLabels = finalClusters.filter(
+        (c) => c.item_ids.length > 1 && resplit.newClusterKeys.has(c.item_ids.join(",")),
+      );
       const relabelled = new Map<string, Cluster>();
       if (resplit.split > 0 && needLabels.length > 0) {
         const second = await describeGroups(needLabels, itemById, groupingConfig.describe, runId);
