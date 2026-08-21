@@ -343,9 +343,15 @@ function testAThinPacketIsDirectedNotDescribed() {
   assert.equal(packet.materialLevel, "headline-only");
   const note = packet.notes.join(" ");
   assert.ok(/write only what the sources below actually state/i.test(note));
-  assert.ok(/make no remark about how much they say/i.test(note));
+  // And it names nothing about the sourcing, not even to forbid writing about
+  // it. The note used to end "and make no remark about how much they say";
+  // run #30's C187 still wrote "No further details were available from the
+  // source" with that clause present. A prohibition that names the topic
+  // plants the topic.
   assert.ok(
-    !/(headline-level|only a summary|material is|feed|unavailable)/i.test(note),
+    !/(headline-level|only a summary|material is|feed|unavailable|how much they say|remark)/i.test(
+      note,
+    ),
     `note describes the packet: ${note}`,
   );
   // It still has the material it has — degraded, not empty.
@@ -453,6 +459,28 @@ function testAnEmptySourceIsNotReportedAsLeftOutForLength() {
   assert.ok(packet.omitted.some((o) => o.kind === "no-text"));
   assert.ok(!packet.omitted.some((o) => o.kind === "length"));
   assert.ok(!/left out for length/i.test(buildWriterUserPrompt("bio", packet)));
+}
+
+function testTheWriterIsToldNothingAboutSourcesItCannotSee() {
+  // "Sources behind this story: 2 (1 included below)" is the editor's count plus
+  // a parenthetical naming the gap. C187 read it and wrote "No further details
+  // were available from the source" in run #28 and again in run #30, after the
+  // packet's omission note had already been fixed.
+  const packet = assembleWriterPacket(
+    story("standard", [article(1, { chars: 300 }), article(2, { chars: 0 })]),
+    new Map(),
+    CFG,
+  );
+  // The story was ranked on 27 sources and the packet holds one usable article.
+  assert.equal(packet.sourceCount, 27);
+  assert.equal(packet.articles.length, 1);
+  const prompt = buildWriterUserPrompt("bio", packet);
+  assert.ok(!/sources behind this story/i.test(prompt));
+  assert.ok(!/included below/i.test(prompt));
+  assert.ok(!/not reproduced below/i.test(prompt));
+  assert.ok(!/\b27\b/.test(prompt), "the editor's source count reached the writer");
+  // The count is still on the packet, for `inspect packet` and the audit.
+  assert.ok(/SOURCE MATERIAL \(1 article/.test(prompt));
 }
 
 function testAnUntranslatedSourceIsStillFlaggedInThePrompt() {
@@ -614,15 +642,21 @@ function testUntranslatedSourceIsFlaggedToTheWriter() {
   assert.ok(packet.notes.some((n) => /original language/i.test(n)));
 }
 
-function testUnresolvedSourcesAreDisclosed() {
+function testUnresolvedSourcesAreNotDisclosed() {
+  // This note used to say "N source(s) counted above are not reproduced below."
+  // It was the counterpart to the source-count line, and both were the prompt
+  // pointing at a gap. A writer cannot act on the existence of a source it
+  // cannot read; being told one exists is only an invitation to write about the
+  // sourcing, which is what C187 did in runs #28 and #30.
+  //
+  // The resolver still records them on the story, and `inspect materials`
+  // reports them, which is where a missing item is actually diagnosed.
   const s = story("standard", [article(1)]);
   s.unresolved = ["C25: member item 4 not found"];
   const packet = assembleWriterPacket(s, new Map(), CFG);
-  const note = packet.notes.join(" ");
-  assert.ok(/not reproduced below/i.test(note));
-  assert.ok(/do not refer to the others/i.test(note));
-  // Says what to do about them, not what the resolver could not find.
-  assert.ok(!/(could not be resolved|the editor)/i.test(note), note);
+  const prompt = buildWriterUserPrompt("bio", packet);
+  assert.ok(!/not reproduced below/i.test(prompt));
+  assert.ok(!/counted above/i.test(prompt));
 }
 
 function testABriefIsShortButNotUnderInformed() {
@@ -669,7 +703,9 @@ function testUserPromptCarriesBioMaterialAndSources() {
   assert.ok(prompt.includes("Meduza"));
   assert.ok(prompt.includes("400–600 words"));
   assert.ok(prompt.includes("rank 3"));
-  assert.ok(prompt.includes("Sources behind this story: 27"));
+  // The editor's source count does not reach the writer. See
+  // testTheWriterIsToldNothingAboutSourcesItCannotSee.
+  assert.ok(!prompt.includes("Sources behind this story"));
   // The upstream title is a machine label, and the prompt says so — including
   // that it is not evidence, because a cluster label routinely names events the
   // included sources do not cover.
@@ -739,6 +775,7 @@ testLiveBlogDetectionAcceptsAnySeparator();
 testThePromptNeverDescribesItsOwnPlumbing();
 testFurnitureComesOffBeforeEitherCandidateIsMeasured();
 testAnEmptySourceIsNotReportedAsLeftOutForLength();
+testTheWriterIsToldNothingAboutSourcesItCannotSee();
 testAnUntranslatedSourceIsStillFlaggedInThePrompt();
 testFullMaterialCarriesNoWarning();
 testPacketKeepsTheEditorsSourceCountNotTheArticleCount();
@@ -748,7 +785,7 @@ testPublisherFurnitureNeverReachesThePacket();
 testMaterialLevelIsJudgedPerTier();
 testHeadlineOnlyMaterialCapsTheWordTarget();
 testUntranslatedSourceIsFlaggedToTheWriter();
-testUnresolvedSourcesAreDisclosed();
+testUnresolvedSourcesAreNotDisclosed();
 testABriefIsShortButNotUnderInformed();
 testNoSourceIsEverDroppedForBeingTheNthOne();
 testUserPromptCarriesBioMaterialAndSources();

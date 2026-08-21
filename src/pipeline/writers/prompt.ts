@@ -207,12 +207,18 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   parts.push("THIS PIECE");
   parts.push(`Position in today's paper: rank ${packet.rank} of the ranked list, ${packet.tier} tier.`);
   parts.push(`Target length: ${targetPhrase(packet)}.`);
-  parts.push(
-    `Sources behind this story: ${packet.sourceCount}` +
-      (packet.articles.length !== packet.sourceCount
-        ? ` (${packet.articles.length} included below)`
-        : ""),
-  );
+  // **The writer is told nothing about sources it cannot see.** This line used to
+  // read "Sources behind this story: 2 (1 included below)" — the editor's count,
+  // plus a parenthetical naming the gap between that count and the packet. C187
+  // read exactly that and wrote "No further details were available from the
+  // source" in run #28 and again in run #30, after the packet's omission note had
+  // already been fixed. It is the same failure as the packet note, the source
+  // labels and the word-target floor, in its fifth form: a model relays what the
+  // prompt tells it about itself, and the fix is not to tell it.
+  //
+  // Nothing is lost. The SOURCE MATERIAL header counts what is actually below,
+  // `focusInstruction` says what to do with several outlets on one event, and the
+  // editor's own count is on the packet for `inspect packet` to report.
   if (packet.summary.length > 0) {
     parts.push(`What upstream clustering called it: ${packet.title} — ${packet.summary}`);
     // The label is generated from every article in the cluster, including the

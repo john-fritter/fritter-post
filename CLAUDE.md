@@ -492,6 +492,21 @@ decision. Origin, truncation, dedup and furniture counts moved to
 `inspect packet --rank`, where an audit needs them. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
 
+**The writer is told nothing about sources it cannot see.** The prompt used to
+open with `Sources behind this story: 2 (1 included below)` — the editor's count
+plus a parenthetical naming the gap — and the notes used to say how many sources
+were counted but not reproduced. Both are gone, along with the two note clauses
+ending "and make no remark about how much they say": a prohibition that names the
+sourcing plants the sourcing. Run #30's C187 wrote "No further details were
+available from the source" with all three present and the omission note already
+fixed, and S57910 wrote "The source material cuts off mid-sentence; the accounts
+of the other three services are not available." The editor's count stays on the
+packet for `inspect packet`, and `inspect materials` is where an unresolved item
+is diagnosed. **This is the fifth form of one failure** — the packet note, the
+source labels, the word-target floor, the omission note, and now the source count
+— and the rule has not changed: a model relays what the prompt tells it about
+itself, so the fix is not to tell it.
+
 **An omission the writer is told about must be one that withheld something.**
 `PacketOmission.kind` splits the two cases: `length` is a source with reporting
 in it that a cap could not fit, worth naming so the writer does not go looking

@@ -508,17 +508,24 @@ export function assembleWriterPacket(
   // So say what to do and never what the packet is short of. The word target is
   // already capped for a headline-only packet; the note only has to stop the
   // writer reaching past the sources.
+  // **A note says what to do, never what the packet is or is not.** Two clauses
+  // here used to end "and make no remark about how much they say", and an
+  // unresolved-sources note used to say how many sources were counted but not
+  // reproduced. Both name the sourcing in order to forbid writing about it, which
+  // is how the topic gets planted: run #30's C187 still wrote "No further details
+  // were available from the source" after the omission note was fixed. What
+  // remains is about the writing — stay inside the sources, add nothing they do
+  // not carry, stop when they do.
   const notes: string[] = [];
   if (materialLevel === "headline-only") {
     notes.push(
       "Write only what the sources below actually state. If that is two sentences, " +
         "write two sentences and stop. Add no background, context or consequence " +
-        "they do not carry, and make no remark about how much they say.",
+        "they do not carry.",
     );
   } else if (materialLevel === "partial") {
     notes.push(
-      "Stay inside what the sources below state; do not extend them, and make no " +
-        "remark about how much they say.",
+      "Stay inside what the sources below state; do not extend them.",
     );
   }
   const duplicatesDropped = articles.reduce((sum, a) => sum + a.duplicateParagraphs, 0);
@@ -532,12 +539,6 @@ export function assembleWriterPacket(
     notes.push(
       "One or more sources are in their original language — translation failed. " +
         "Use them only if you can read them.",
-    );
-  }
-  if (story.unresolved.length > 0) {
-    notes.push(
-      `${story.unresolved.length} source(s) counted above are not reproduced below. ` +
-        "Write from the sources you can see and do not refer to the others.",
     );
   }
 
