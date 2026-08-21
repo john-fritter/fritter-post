@@ -66,6 +66,31 @@ function testBatchPromptCarriesEveryBriefAndItsRef() {
   assert.ok(/unrelated to each other/.test(prompt));
 }
 
+function testTheBriefBatchSaysWhatToDoWithTooMuchMaterial() {
+  // Run #34 is the natural experiment: its 7 section lines all landed inside
+  // 15–30 words and 22 of its 52 standalone briefs were over their band or
+  // ceiling, two of them at 99 and 116 words. The line branch of this prompt
+  // carried a "far more material than a line can hold" paragraph and a closing
+  // instruction; the brief branch carried neither, and stated each target once
+  // in a header that a 20,000-character packet then buried.
+  const prompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100), packet("S2", 101)]);
+  assert.ok(/far more material than a brief can hold/i.test(prompt));
+  assert.ok(/not an invitation to write longer/i.test(prompt));
+  // And the target is restated where the writing happens, not only in a header.
+  assert.ok(/ceiling rather than something to reach/i.test(prompt));
+  // The fixture is partial material, so its target renders as a ceiling.
+  const targetLine = prompt.indexOf("up to 45 words");
+  const closing = prompt.indexOf("ceiling rather than something to reach");
+  assert.ok(targetLine !== -1 && closing > targetLine);
+}
+
+function testTheLineBatchKeepsItsOwnGuidance() {
+  const prompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100)], "line");
+  assert.ok(/far more material than a line can hold/i.test(prompt));
+  assert.ok(/One sentence — not two/.test(prompt));
+  assert.ok(/ceiling rather than something to reach/i.test(prompt));
+}
+
 function testParsesOneLinePerBrief() {
   const out = [
     "S1;;Oregon bans fireworks in Redmond;;The city council voted Tuesday to ban all fireworks.",
@@ -291,6 +316,8 @@ function testWordCount() {
 }
 
 testBatchPromptCarriesEveryBriefAndItsRef();
+testTheBriefBatchSaysWhatToDoWithTooMuchMaterial();
+testTheLineBatchKeepsItsOwnGuidance();
 testParsesOneLinePerBrief();
 testBracketedAndLowercaseRefsStillMatch();
 testSemicolonsInsideTheBodySurvive();

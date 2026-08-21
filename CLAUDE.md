@@ -626,6 +626,16 @@ writing. Batched briefs come back as `ref;;headline;;body` lines, keyed on ref s
 a brief cannot be written against the wrong story, and a ref missing from the
 output becomes a failed piece rather than a silent gap.
 
+**The batch prompt tells briefs what to do with too much material, because the
+line branch already did and the briefs behaved differently.** Run #34 is the
+natural experiment: all 7 section lines landed inside 15–30 words, and 22 of 52
+standalone briefs were over their band or ceiling, two of them at 99 and 116
+words. The `line` branch carried a "far more material than a line can hold"
+paragraph; the `brief` branch carried nothing, and stated each target once in a
+header that a 20,000-character packet then buried. Both branches now close by
+restating that every target is a ceiling — the individual prompt has always ended
+that way, and only the batch did not.
+
 **One call, one register.** `partitionByCallShape` returns three pools — longform,
 briefs, section lines — and lines never batch with briefs. The batch prompt frames
 the whole set, so a mixed call asks for one register and gets it for both; run #8

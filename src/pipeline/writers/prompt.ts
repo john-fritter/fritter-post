@@ -353,8 +353,23 @@ export function buildBriefBatchUserPrompt(
     parts.push(
       `BRIEFS TO WRITE (${packets.length})`,
       "",
-      "Each item below is one brief. They are unrelated to each other — do not " +
-        "connect them, and do not let one brief's subject colour another's.",
+      "Each item below is one brief: the fact, said plainly, and then a stop. " +
+        "A brief that tries to be clever is worse than one that is merely accurate.",
+      "",
+      // **The brief branch had no material paragraph and the line branch did.**
+      // Run #34 is the natural experiment: 7 lines, zero length outliers; 52
+      // standalone briefs, 22 of them over their band or ceiling, several at
+      // two and four times it. A brief with five sources and 20,000 characters
+      // under it writes 55 words instead of 35, and the only place its target
+      // appeared was one header line thousands of tokens up the prompt.
+      "You will usually have far more material than a brief can hold — sometimes " +
+        "many times more. That is deliberate and it is not an invitation to write " +
+        "longer. A brief with eight sources under it is a better-corroborated " +
+        "brief, not a longer one: read all of it, work out the one thing that " +
+        "happened, write that, and leave the rest unused.",
+      "",
+      "They are unrelated to each other — do not connect them, and do not let " +
+        "one brief's subject colour another's.",
       "",
     );
   }
@@ -371,8 +386,17 @@ export function buildBriefBatchUserPrompt(
   }
 
   const noun = kind === "line" ? "line" : "brief";
+  // **The target is restated at the end, where the writing happens.** The
+  // individual prompt closes with "200 is a ceiling, not a target"; the batch
+  // stated each target once, inline in a header that a 20,000-character packet
+  // then buried. Run #34's briefs came back 46–116 words against 25–45 while its
+  // lines, which had their own closing guidance, all landed inside 15–30.
   parts.push(
     "---",
+    "",
+    `Every ${noun} has its own target above, and every one of those targets is a ` +
+      `ceiling rather than something to reach. If the material will not fit, cut ` +
+      `what the headline does not promise rather than writing longer.`,
     "",
     `Output one output line per ${noun}, in this exact format, and nothing else:`,
     "",
