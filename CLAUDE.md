@@ -582,6 +582,26 @@ standard-tier lead lands on `brief` by the tier ladder and inherited a brief's
 25–45 words; all four in run #10 wrote 48–53 and read well, so `packet.tiers.
 sidebar` gives them 45–70 and the material for it.
 
+**Thin material gets a ceiling; only a full packet gets a band.** A floor is a
+number and a number beats an instruction, which is the lesson this stage has now
+learned at two material levels. Run #24's five "No further details were
+available" pieces were headline-only against a 25-word minimum, and rendering
+that level as a ceiling with no floor fixed them; `partial` kept its tier's full
+band, so run #32's S60167 was asked for 120–200 words from one thin source and
+filled the gap with "The source material does not specify the legal mechanism of
+the guidance…". The note beside it said to stay inside the sources. The ceiling
+is unchanged, so a partial packet with 2,900 characters still writes to length —
+the floor only ever bound the pieces that had nothing to reach it with.
+
+**Every repaired piece is an individual call, briefs included.** `--repair` used
+to send a brief through the batch path as a batch of one, which kept the batch's
+own failure mode: the parser is keyed on the ref, so a model that does not echo
+`S60468;;` exactly produces no row and the piece fails again for the same reason.
+Run #31's S60468 survived two repair passes that way. Every packet carries a full
+individual prompt whatever its tier, and `parseWriterOutput` reads it back with
+no ref to echo. The batch exists to amortise the bio and the memo across 75
+briefs; at one piece there is nothing to amortise and only the risk left.
+
 **A short piece is short in its target, not in what its writer may read.** The
 `line` and `sidebar` tiers exist to set word targets — 15–30 and 45–70 —
 selected through `assembleWriterPacket`'s `budgetTier` override so the piece is

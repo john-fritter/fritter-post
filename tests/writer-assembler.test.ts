@@ -512,6 +512,21 @@ function testAThinPieceIsGivenACeilingAndNoFloor() {
   const full = assembleWriterPacket(story("feature", [article(1, { chars: 40000 })]), new Map(), CFG);
   assert.equal(full.materialLevel, "full");
   assert.ok(/400–600 words/.test(buildWriterUserPrompt("bio", full)));
+
+  // **Partial material gets the ceiling too.** Run #32's S60167 was asked for
+  // 120–200 words from one thin source and filled the gap with "The source
+  // material does not specify the legal mechanism of the guidance, which states
+  // might act on it first…". The note beside it said to stay inside the sources;
+  // the number won, the same way it won at headline-only in run #24.
+  const partial = assembleWriterPacket(
+    story("standard", [article(1, { chars: 1200 })]),
+    new Map(),
+    CFG,
+  );
+  assert.equal(partial.materialLevel, "partial");
+  const partialPrompt = buildWriterUserPrompt("bio", partial);
+  assert.ok(/up to 200 words, and fewer is correct/.test(partialPrompt));
+  assert.ok(!/120–200/.test(partialPrompt), "a range states a floor");
 }
 
 function testAPartialPacketIsAlsoDirectedNotDescribed() {
@@ -694,7 +709,7 @@ function testNoSourceIsEverDroppedForBeingTheNthOne() {
 
 function testUserPromptCarriesBioMaterialAndSources() {
   const packet = assembleWriterPacket(
-    story("feature", [article(1, { chars: 3000, sourceName: "Meduza" })]),
+    story("feature", [article(1, { chars: 40000, sourceName: "Meduza" })]),
     new Map(),
     CFG,
   );

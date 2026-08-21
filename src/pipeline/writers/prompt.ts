@@ -190,12 +190,26 @@ function sectionInstruction(packet: WriterPacket): string[] | null {
  * headline-only piece gets a ceiling and no floor, and is told plainly that
  * short is the right answer.
  */
+/**
+ * Thin material gets a ceiling; only a full packet gets a band.
+ *
+ * A floor is a number, and a number beats an instruction — the lesson this stage
+ * has learned at every layer. Run #24's five "No further details were available"
+ * pieces were headline-only against a 25-word minimum, and rendering that level
+ * as a ceiling with no floor fixed them. `partial` kept its tier's full band, so
+ * run #32's S60167 was asked for 120–200 words from one thin source and filled
+ * the gap the only way the material allowed: "The source material does not
+ * specify the legal mechanism of the guidance, which states might act on it
+ * first…". The note beside it said to stay inside the sources. The number won.
+ *
+ * The ceiling is unchanged, so a partial packet with 2,900 characters under it
+ * still writes to length; the floor only ever bound the pieces that had nothing
+ * to reach it with.
+ */
 function targetPhrase(packet: WriterPacket): string {
   const [minWords, maxWords] = packet.targetWords;
-  if (packet.materialLevel === "headline-only") {
-    return `up to ${maxWords} words, and fewer is correct — stop when the sources do`;
-  }
-  return `${minWords}–${maxWords} words`;
+  if (packet.materialLevel === "full") return `${minWords}–${maxWords} words`;
+  return `up to ${maxWords} words, and fewer is correct — stop when the sources do`;
 }
 
 export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string {

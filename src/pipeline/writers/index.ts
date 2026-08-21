@@ -488,29 +488,24 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   const limiter = pLimit(cfg.concurrency);
   const breaker = new FailureBreaker(cfg.abort_after_consecutive_failures);
 
-  // Briefs are re-asked individually here rather than in a batch: a repair is a
-  // handful of pieces, and one call each removes the batch's own failure mode.
+  // **Every repaired piece is an individual call, briefs included.** This used to
+  // send a brief through `writeBriefBatch` as a batch of one, which kept the
+  // batch's own failure mode: the parser is keyed on the ref, so a model that
+  // does not echo `S60468;;` exactly produces no row at all and the piece fails
+  // again for the same reason it failed the first time. Run #31's S60468
+  // survived two repair passes that way, both recording "not present in the
+  // batch output".
+  //
+  // Every packet carries a full individual prompt from `buildWriterUserPrompt`
+  // whatever its tier, complete with its target length and its section
+  // instruction, and `parseWriterOutput` reads that back forgivingly with no ref
+  // to echo. The batch exists to amortise the bio and the standing memo across
+  // 75 briefs; at one piece there is nothing to amortise and only the risk left.
   const results = await Promise.all(
     targets.map((rendered) =>
-      limiter(async () => {
-        // Same dispatch as the full run, so a repaired piece is written the way
-        // it would have been written the first time — a sidebar individually,
-        // with its section instruction, whatever tier it landed on.
-        const { longform } = partitionByCallShape([rendered]);
-        if (longform.length > 0) {
-          return writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg, breaker);
-        }
-        const batch = [{ rendered, storyId: rendered.packet.storyId ?? null }];
-        const kind: BriefBatchKind =
-          rendered.packet.section?.role === "line" ? "line" : "brief";
-        const batchResult = await writeBriefBatch(batch, 0, bio, runId, cfg, breaker, kind);
-        return {
-          piece: batchResult.pieces[0]!,
-          inputTokens: batchResult.inputTokens,
-          outputTokens: batchResult.outputTokens,
-          failed: batchResult.failed,
-        };
-      }),
+      limiter(() =>
+        writeOnePiece(rendered, rendered.packet.storyId ?? null, runId, cfg, breaker),
+      ),
     ),
   );
 
