@@ -20,6 +20,166 @@ Entry format:
 
 ---
 
+## 2026-08-21 — Source-meta has reached its noise floor; stop pulling layers
+
+**Decision:** Stop treating "the paper writing about its own sourcing" as a
+mechanism with a remaining fix. Keep the two interventions that measured, record
+what did not, and do not remove or add another prompt layer on this theory
+without a controlled A/B that shows more than two pieces moving.
+
+**Context:** Three controlled runs against the same editor run (#119) and the
+same 73 standard-tier packets, one variable each:
+
+| run | change | outlet defects |
+|---|---|---|
+| #31 | baseline: three layers removed | 4 |
+| #32 | the gap clause restored, as the actionable rule | 2 |
+| #33 | `partial` material gets a ceiling, not a band | 2 |
+
+The count is flat between #32 and #33 but the *identity* changed. S60167 — the
+piece the ceiling was built for — dropped its gap sentence and went from 156
+words to 77, exactly the intended behaviour on one thin source. A different
+piece, S60563, drifted in with "The report did not name specific ASEAN member
+states approached by either side". S59935 has now survived all three.
+
+Two pieces in seventy-three, with different pieces each run, is not a defect
+with a cause. It is variance.
+
+**Rationale:** The four earlier removals were made on the theory that a prompt
+layer naming the sourcing plants the sourcing, and each one was followed by an
+*increase*: 1 → 2 → 4 as the packet note, the source count and the "make no
+remark" clauses came off. The controlled A/B then reversed it, 4 → 2, by putting
+one clause back in its actionable form. So the theory was wrong in the direction
+it predicted and right about where the instruction has to sit — near the piece,
+saying what to do rather than what not to write.
+
+The second intervention is kept on its own evidence rather than on the flat
+count. A floor is a number and a number beats an instruction; that was already
+established at `headline-only` in run #24, and S60167 is the same mechanism one
+level up. The length guard says it cost nothing: **zero** `full` pieces fell
+below their 120-word floor in #33 having been above it in #32, and the `full`
+mean moved 179.4 → 178.3. Only the pieces with nothing to reach the floor with
+got shorter, which is the point.
+
+Anything further would be a fifth guess tested at n=2, and the last four rounds
+of that produced a different pair of pieces each time.
+
+**Supersedes:** the source-meta half of "Source-meta down from five to two"
+(2026-08-20), which read the count as a trend when the population was changing
+under it.
+
+---
+
+## 2026-08-21 — Every repaired piece is an individual call
+
+**Decision:** `--repair` always writes through the individual-piece path, whatever
+the tier. The brief batch is for full runs only.
+
+**Context:** Run #31's S60468 failed the full run and then failed two successive
+repair passes, all three recording "not present in the batch output". The repair
+path's own comment said briefs were re-asked individually "to remove the batch's
+own failure mode"; it did not. It built a batch of one and sent it through
+`writeBriefBatch`, keeping the ref-keyed parser, so a model that did not echo
+`S60468;;` exactly produced no row and failed again for the same reason it failed
+the first time. On the individual path it recovered on the first attempt.
+
+**Rationale:** Every packet already carries a full individual prompt from
+`buildWriterUserPrompt` — its target length, its section instruction, its focus —
+and `parseWriterOutput` reads that back forgivingly with no ref to echo. The
+batch exists to amortise the bio and the standing memo across 75 briefs. At one
+piece there is nothing to amortise and only the failure mode left.
+
+---
+
+## 2026-08-21 — A non-empty extraction is not article-shaped prose
+
+**Decision:** `loadFetchedTexts` returns `thin` rows as well as `ok` ones, and the
+guard against template junk is the rules that read the text — `stripBoilerplate`
+plus the packet's longer-of-the-two comparison — not `min_extracted_chars`.
+
+**Context:** Demanding `status = 'ok'` threw away reporting the fetch had already
+paid for: run #28's C20 was a feature lead written on 49 words while 1,035
+characters of one source's extracted text sat unused, and letting it through took
+that piece to 388. But the argument for relaxing the floor was wrong. It ran:
+`extractArticle` returns `""` when Readability finds no article and has no
+whole-document fallback, therefore any non-empty extraction is article-shaped.
+Readability returns the best article-shaped *block*, and on a page whose article
+it cannot see that block is a template module. Cascade PBS supplied its house
+promo for a different programme — "In this episode of 'Beyond the CANVAS,' we sit
+down with novelist Margaret Atwood…" — as the article body for an ABC-versus-FCC
+lawsuit and, identically, for a South Korea military-drills feature. The
+1,200-character floor had been rejecting that by accident.
+
+**Rationale:** A length threshold cannot tell a short article from a short
+template, and both exist. Two rules that read the text can: paragraphs repeated
+inside one document are furniture by construction (no article says the same
+paragraph twice; a page template does, once per slot), and a named rule for the
+promo itself. They accrete from audit evidence the way the junk filter does. The
+same repeated-paragraph rule immediately removed six subscribe blocks from a
+Public Notice source nobody had complained about.
+
+---
+
+## 2026-08-21 — A wrapper is not a host
+
+**Decision:** `canonicalizeUrl` unwraps an absolute URL embedded in a redirector's
+**path**. Query strings are excluded, and Google News is left alone.
+
+**Context:** Folha publishes every feed item as
+`redir.folha.com.br/redir/…/rss091/*https://www1.folha.uol.com.br/…`. Storing the
+wrapper sent the fetch to the redirector and taught the per-host cooldown against
+a host that is not a publisher — 42 of run #118's article rows. After the fix,
+`redir.folha.com.br` holds 0 preprocessed items, `www1.folha.uol.com.br` holds
+96, and all 8 Folha fetches succeeded on a host that had never been fetchable.
+
+**Rationale:** The rule is the shape, not the outlet. Query strings are excluded
+because `…/article?ref=https://other.example` is one outlet's article carrying a
+referrer, not a redirect to another, and unwrapping it would replace the story.
+Google News's `/rss/articles/CBMi…` token is an opaque identifier with no URL
+inside it, so there is nothing to unwrap and those items stay headline-only by
+construction.
+
+---
+
+## 2026-08-21 — The parser publishes the last draft, not the workings
+
+**Decision:** `parseWriterOutput` rescans the body it produced and returns the
+last re-labelled draft. Draft bodies are bounded at the next label.
+
+**Context:** Run #28's C187 published 233 words against a 60-word ceiling: a first
+draft asserting a subsidy figure, the model catching that the figure came from the
+cluster label rather than a source, a second draft, the model catching itself
+writing about the sourcing, and a third draft that was correct — fifteen words,
+attributed, nothing the headline did not support.
+
+**Rationale:** Every guardrail worked. The memo stopped the source-meta, the
+cluster-label-is-not-evidence rule stopped the subsidy claim, and the ceiling was
+never the problem. The parser took the first headline it recognised and everything
+after it, so what reached the paper was all three drafts plus the reasoning
+between them. A writer that restates the contract mid-output has said which draft
+it stands behind. The opening label stays case-insensitive and a restart matches
+only the literal `HEADLINE:`, because missing the opening label costs a whole
+piece while mistaking prose for a restart truncates one that parsed correctly.
+
+---
+
+## 2026-08-21 — A killed run costs the calls in flight, not the calls answered
+
+**Decision:** Each piece is written to `writer_pieces` as its call returns.
+
+**Context:** Writer run #29 made 94 attempts, 90 of them successful, and persisted
+**zero** rows when it was stopped. The stage held every piece in memory and
+inserted them after the last call finished. The tokens were spent, the writing
+existed, and none of it was recoverable — not even by `--repair`, because there
+were no failed rows to repair.
+
+**Rationale:** The stage already treats a failed call as a row rather than an
+exception, for exactly this reason: one call that times out must cost one piece,
+not the edition. The same logic applies to the process. Insert order is free —
+every reader of `writer_pieces` sorts by rank and section_rank explicitly.
+
+---
+
 ## 2026-08-15 — A run stops asking when the provider stops answering
 
 **Decision:** the writers stage aborts after `abort_after_consecutive_failures`
