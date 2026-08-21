@@ -103,6 +103,54 @@ interface WrittenPiece {
   generationLogId: bigint | null;
 }
 
+/**
+ * Writes one piece to the database as soon as its call returns.
+ *
+ * The run used to hold every piece in memory and insert them all after the last
+ * call finished, which meant anything that killed the process first — a SIGTERM,
+ * a crash, an operator stopping a run that looked stuck — threw away every
+ * completed call. Run #29 made 94 attempts, 90 of them successful, and persisted
+ * **zero** rows: the tokens were spent, the writing existed, and none of it could
+ * be recovered, not even by `--repair`, because there were no failed rows to
+ * repair and no run to repair them into.
+ *
+ * That is the same rule the stage already applies to a failed call — a row, not
+ * an exception — extended to the process itself. A killed run should cost the
+ * calls still in flight, never the calls already answered.
+ *
+ * Insert order no longer matters: every reader of `writer_pieces` sorts by rank
+ * and section_rank explicitly.
+ */
+async function persistPiece(runId: number, piece: WrittenPiece): Promise<void> {
+  await getPool().query(
+    `INSERT INTO writer_pieces
+       (run_id, editor_story_id, rank, tier, ref, headline, body, word_count,
+        material_level, source_count, articles_used, status, detail, generation_log_id,
+        section_ref, section_title, section_role, section_rank)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+    [
+      runId,
+      piece.storyId,
+      piece.rank,
+      piece.tier,
+      piece.ref,
+      piece.headline,
+      piece.body,
+      piece.wordCount,
+      piece.materialLevel,
+      piece.sourceCount,
+      piece.articlesUsed,
+      piece.status,
+      piece.detail,
+      piece.generationLogId !== null ? piece.generationLogId.toString() : null,
+      piece.sectionRef,
+      piece.sectionTitle,
+      piece.sectionRole,
+      piece.sectionRank,
+    ],
+  );
+}
+
 function failedPiece(
   packet: WriterPacket,
   storyId: number | null,
@@ -592,7 +640,11 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
 
   const longformResults = await Promise.all(
     longform.map((rendered) =>
-      limiter(() => writeOnePiece(rendered, storyIdOf(rendered), runId, cfg, breaker)),
+      limiter(async () => {
+        const result = await writeOnePiece(rendered, storyIdOf(rendered), runId, cfg, breaker);
+        await persistPiece(runId, result.piece);
+        return result;
+      }),
     ),
   );
   for (const r of longformResults) {
@@ -625,7 +677,11 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
 
   const batchResults = await Promise.all(
     batches.map((batch, i) =>
-      limiter(() => writeBriefBatch(batch.items, i, bio, runId, cfg, breaker, batch.kind)),
+      limiter(async () => {
+        const result = await writeBriefBatch(batch.items, i, bio, runId, cfg, breaker, batch.kind);
+        for (const piece of result.pieces) await persistPiece(runId, piece);
+        return result;
+      }),
     ),
   );
   for (const r of batchResults) {
@@ -634,39 +690,6 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
     if (r.failed) failedCalls++;
     inputTokens += r.inputTokens;
     outputTokens += r.outputTokens;
-  }
-
-  // Paper order: the story's rank, then position within its section.
-  pieces.sort((a, b) => a.rank - b.rank || a.sectionRank - b.sectionRank);
-
-  for (const piece of pieces) {
-    await pool.query(
-      `INSERT INTO writer_pieces
-         (run_id, editor_story_id, rank, tier, ref, headline, body, word_count,
-          material_level, source_count, articles_used, status, detail, generation_log_id,
-          section_ref, section_title, section_role, section_rank)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-      [
-        runId,
-        piece.storyId,
-        piece.rank,
-        piece.tier,
-        piece.ref,
-        piece.headline,
-        piece.body,
-        piece.wordCount,
-        piece.materialLevel,
-        piece.sourceCount,
-        piece.articlesUsed,
-        piece.status,
-        piece.detail,
-        piece.generationLogId !== null ? piece.generationLogId.toString() : null,
-        piece.sectionRef,
-        piece.sectionTitle,
-        piece.sectionRole,
-        piece.sectionRank,
-      ],
-    );
   }
 
   const written = pieces.filter((p) => p.status === "ok").length;

@@ -399,14 +399,19 @@ export function assembleWriterPacket(
     // The longer of the two, not simply the fetched one: a `thin` extraction can
     // come back shorter than the feed teaser, and then the teaser is the better
     // material. The fetcher records the status; the packet just takes the best.
-    const best =
-      fetched && fetched.text.length > article.feedText.length
-        ? { text: fetched.text, origin: fetched.origin }
-        : { text: article.feedText, origin: "feed" as const };
-    // Furniture comes off before anything measures the text, so a source is not
-    // judged usable on the strength of a copyright line.
-    const stripped = stripBoilerplate(best.text);
-    return { article, text: stripped.text, origin: best.origin, boilerplate: stripped.dropped };
+    //
+    // **Both are stripped before either is measured**, because furniture is not
+    // material and a comparison of raw lengths picks the text that loses more of
+    // itself to stripping. Run #28's four cascadepbs.org sources each had a
+    // 574-character extraction beat a ~390-character feed body and then strip
+    // down to 286 — worse than the teaser it replaced, and worse in a way the
+    // raw comparison could not see.
+    const feed = stripBoilerplate(article.feedText);
+    const fetchedText = fetched ? stripBoilerplate(fetched.text) : null;
+    const useFetched = fetchedText !== null && fetchedText.text.length > feed.text.length;
+    const stripped = useFetched ? fetchedText : feed;
+    const origin = useFetched ? fetched!.origin : ("feed" as const);
+    return { article, text: stripped.text, origin, boilerplate: stripped.dropped };
   });
 
   // A source whose body says nothing the headline did not adds a slot and no

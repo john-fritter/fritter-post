@@ -410,6 +410,35 @@ function testThePromptNeverDescribesItsOwnPlumbing() {
   }
 }
 
+function testFurnitureComesOffBeforeEitherCandidateIsMeasured() {
+  // Run #28's four cascadepbs.org sources each had a 574-character extraction
+  // beat a ~390-character feed body on raw length, then strip down to 286 —
+  // worse than the teaser it replaced. Comparing raw lengths picks the text that
+  // loses more of itself to stripping, which the raw comparison cannot see.
+  const furniture = ["The-CNN-Wire", "© 2026 Example Media. All rights reserved."].join("\n\n");
+  const texts = new Map<number, ResolvedText>([
+    [1, { text: `Two short real sentences.\n\n${"z".repeat(700)}\n\n${furniture}`, origin: "fetched" }],
+    // Longer raw than the 600-char feed body, shorter once the furniture is off.
+    [
+      2,
+      {
+        text: ["A single real sentence.", ...Array.from({ length: 12 }, () => furniture)].join("\n\n"),
+        origin: "fetched",
+      },
+    ],
+  ]);
+  const packet = assembleWriterPacket(
+    story("standard", [article(1, { chars: 200 }), article(2, { chars: 600 })]),
+    texts,
+    CFG,
+  );
+  assert.equal(packet.articles[0]!.origin, "fetched");
+  // The teaser wins on stripped length, so the packet keeps all 600 characters
+  // rather than falling to the fetched text's one surviving sentence.
+  assert.equal(packet.articles[1]!.origin, "feed");
+  assert.equal(packet.articles[1]!.chars, 600);
+}
+
 function testAnEmptySourceIsNotReportedAsLeftOutForLength() {
   // Run #28's C187: both its Hankyoreh items came back with zero characters, one
   // kept its packet slot empty and one was omitted for "no usable body text" —
@@ -708,6 +737,7 @@ testAPartialPacketIsAlsoDirectedNotDescribed();
 testAThinPieceIsGivenACeilingAndNoFloor();
 testLiveBlogDetectionAcceptsAnySeparator();
 testThePromptNeverDescribesItsOwnPlumbing();
+testFurnitureComesOffBeforeEitherCandidateIsMeasured();
 testAnEmptySourceIsNotReportedAsLeftOutForLength();
 testAnUntranslatedSourceIsStillFlaggedInThePrompt();
 testFullMaterialCarriesNoWarning();

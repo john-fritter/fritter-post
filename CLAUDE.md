@@ -132,7 +132,8 @@ log the feed body is gone. `parseFeedText` prints the surrounding lines before
 rethrowing (run #47: Labor Notes, "Unexpected close tag, Line 64").
 
 ### preprocessor
-URL canonicalization, exact-URL dedup within-source, junk-filter (deterministic
+Redirector unwrapping, URL canonicalization, exact-URL dedup within-source,
+junk-filter (deterministic
 pattern rules in `junk-filter.ts`), track/group assignment from source config.
 Writes `preprocessed_items`. The assembler (`assembler.ts`) queries the kept set
 for downstream stages, composing prefilter and junk-filter results by
@@ -147,6 +148,16 @@ Security's daily "Early Edition" reach the feature tier in run #109. Rules are
 high-precision and evidence-driven — extend them from audit logs, never
 speculatively, and add a `tests/junk-filter.test.ts` case for both the cut and
 the near-miss that must survive.
+
+**A wrapper is not a host.** `canonicalizeUrl` unwraps a redirector that carries
+its destination in its **path** — Folha publishes every feed item as
+`redir.folha.com.br/redir/…/rss091/*https://www1.folha.uol.com.br/…`, and storing
+the wrapper sent the fetch to the redirector and taught the host cooldown against
+a host that is not a publisher (42 of run #118's article rows). Query strings are
+excluded: `…/article?ref=https://other.example` is one outlet's article with a
+referrer, not a redirect. Google News is deliberately left alone — its
+`/rss/articles/CBMi…` token is an opaque identifier with no URL in it, so those
+items stay headline-only by construction.
 
 **Aggregator title suffixes are stripped.** Google News RSS appends the
 publisher's domain to every headline, and run #112 published nine of them
@@ -441,6 +452,13 @@ long the fix is guidance on how to editorialize, never less to read.
 cap is ever needed — a page that would blow a context window — they make the
 squeeze spread across outlets instead of letting two long sources take it all.
 
+**Furniture comes off both candidates before either is measured.** The packet
+takes whichever of the fetched text and the feed body is longer, and comparing
+them raw picks the text that loses more of itself to stripping: run #28's four
+cascadepbs.org sources each had a 574-character extraction beat a ~390-character
+feed body and then strip down to 286, worse than the teaser it replaced and worse
+in a way the raw comparison could not see.
+
 **`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
 Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
 "appeared first on" footer, a `READ ALSO` list or Le Monde's live-blog comment box
@@ -598,6 +616,15 @@ that times out must cost one piece, not the edition. Failures are stored as
 `status='failed'` pieces with the reason, and `writer_runs.failed_calls` says how
 much of the paper is missing without anyone reading stdout. Every call goes
 through `callWithBackoff`.
+
+**And a piece is written to the database as its call returns, not at the end.**
+The same rule, extended to the process itself: a killed run should cost the calls
+still in flight, never the calls already answered. The stage used to hold every
+piece in memory and insert them after the last call finished, so run #29 made 94
+attempts, 90 of them successful, and persisted **zero** rows when it was stopped
+— the tokens spent, the writing done, and nothing recoverable, not even by
+`--repair`, because there were no failed rows to repair. Insert order is free:
+every reader of `writer_pieces` sorts by rank and section_rank explicitly.
 
 Writes `writer_runs` / `writer_pieces` (migration 035). `editor_story_id` anchors
 each piece to the ranked story, and from there the existing keys reach the
