@@ -41,18 +41,29 @@ function loadDoc(name: string, fallback: string): string {
  * longer.
  *
  * This loader used to demand `status = 'ok'`, which threw away real article
- * prose the fetcher had already paid for. `thin` is a *length* verdict laid on
- * top of a structural one that already passed: `extractArticle` returns "" when
- * Readability finds nothing article-shaped and deliberately has no
- * whole-document fallback, so a non-empty `thin` row is a short article, not nav
- * soup. Run #28's C20 was a feature lead written on 49 words: one of its sources
- * was dropped from the packet entirely while 1,035 characters of its extracted
- * text sat in this table, and another used a 395-character feed teaser over a
- * 574-character extraction of the same story.
+ * prose the fetcher had already paid for. Run #28's C20 was a feature lead
+ * written on 49 words while 1,035 characters of one source's extracted text sat
+ * in this table marked `thin`; letting it through took that piece to 388 words.
+ * S59004 gained 610 characters the same way.
  *
- * The paywall stub this filter was built for is handled by the comparison rather
- * than by exclusion — a stub shorter than the feed teaser loses to it, and one
- * longer than the teaser carries more of the article than the teaser did.
+ * **What `min_extracted_chars` was really catching, though, is not shortness.**
+ * The premise for relaxing it was that a non-empty extraction must be
+ * article-shaped, since `extractArticle` returns "" when Readability finds
+ * nothing and has no whole-document fallback. That is wrong: Readability finds
+ * the best article-shaped block on the page, and on a page whose article it
+ * cannot see, the best block is a template module. Cascade PBS returned its
+ * house promo for a different programme — "In this episode of 'Beyond the
+ * CANVAS,' we sit down with novelist Margaret Atwood…" — as the article body for
+ * an ABC-versus-FCC lawsuit and for a South Korea military-drills feature, in
+ * run #118's ranks 65 and 8. The 1,200-character floor had been rejecting that
+ * by accident.
+ *
+ * So the length floor is gone and the defences are the ones that read the text:
+ * `stripBoilerplate` collapses a paragraph repeated inside one document and
+ * carries a rule for that promo, and the assembler takes whichever of the
+ * stripped candidates is longer, so a template module that survives both still
+ * loses to a real teaser. Those rules accrete from audit evidence, the way the
+ * junk filter does; a length threshold never could.
  */
 export async function loadFetchedTexts(itemIds: number[]): Promise<Map<number, ResolvedText>> {
   if (itemIds.length === 0) return new Map();

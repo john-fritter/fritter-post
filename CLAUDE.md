@@ -400,19 +400,27 @@ and standard tiers, only where the feed body is under
 **no whole-document fallback** — a page with no article extracts to `""` rather
 than to nav soup.
 
-**`thin` is a length verdict on top of a structural one that already passed, so
-its text is used.** `min_extracted_chars` marks a short extraction, but the
-no-fallback rule already guarantees that any *non-empty* extraction is
-article-shaped prose: a page with no article comes back empty, not short. So a
-non-empty `thin` row is a short article, and `loadFetchedTexts` returns `ok` and
-`thin` alike; the assembler's existing rule — take whichever of the fetched text
-and the feed body is longer — decides. It used to demand `status = 'ok'` and
-threw away reporting the fetch had already paid for: run #28's C20 was a feature
-lead written on 49 words while one of its sources sat omitted from the packet
-with 1,035 characters of extracted text in `article_texts`, and another used a
-395-character feed teaser over a 574-character extraction of the same story. The
-paywall stub the filter was built for is handled by the comparison instead of by
-exclusion — a stub shorter than the teaser loses to it.
+**`thin` text is used, and the length floor was never the right guard.**
+`loadFetchedTexts` used to demand `status = 'ok'`, which threw away reporting the
+fetch had already paid for: run #28's C20 was a feature lead written on 49 words
+while 1,035 characters of one source's extracted text sat in `article_texts`
+marked `thin`. Letting it through took that piece to 388 words. It now returns
+`ok` and `thin` alike and the assembler's rule — whichever of the stripped
+candidates is longer — decides.
+
+**A non-empty extraction is not a guarantee of article-shaped prose.** The
+premise for relaxing the floor was that the no-fallback rule already made one:
+Readability returns "" when it finds no article. Wrong — it returns the best
+article-shaped *block*, and on a page whose article it cannot see, that is a
+template module. Cascade PBS handed run #118 its house promo for a different
+programme ("In this episode of 'Beyond the CANVAS,' we sit down with novelist
+Margaret Atwood…") as the article body for an ABC-versus-FCC lawsuit at rank 65
+and a South Korea military-drills feature at rank 8. `min_extracted_chars` had
+been rejecting that by accident. The defences are now the ones that read the
+text: `stripBoilerplate` collapses a paragraph repeated inside one document —
+no article says the same paragraph twice, a page template does, once per slot —
+and carries a rule for that promo. They accrete from audit evidence, the way the
+junk filter does; a length threshold never could.
 
 Politeness is per host, not per source: hosts run concurrently, each host's own
 URLs run sequentially with `per_host_delay_ms` between them. The honest UA goes

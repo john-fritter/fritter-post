@@ -41,6 +41,16 @@ const LINE_RULES: Array<{ pattern: RegExp; note: string }> = [
   { pattern: /^the post .{1,200} appeared first on .{1,60}\.?$/i, note: "syndication footer" },
   // Guardian feed teasers end with this, rank 17.
   { pattern: /^continue reading\.\.\.$/i, note: "feed teaser marker" },
+  // Cascade PBS's house promo for a different programme, which Readability
+  // returns as the article on every cascadepbs.org page. Run #118's rank 65 was
+  // an ABC-v-FCC story whose first source read "In this episode of 'Beyond the
+  // CANVAS,' we sit down with novelist Margaret Atwood…", and rank 8's
+  // South Korea feature carried the identical paragraph. Matched on the show
+  // name so a genuine article *about* the programme keeps its sentences.
+  {
+    pattern: /^finding one['’]s voice as a writer takes dedication\b.*$/i,
+    note: "Cascade PBS house promo",
+  },
   // NPR feed items, rank 3 source 10.
   { pattern: /^\(image credit:.{0,120}\)$/i, note: "image credit" },
   // Le Monde live blog chrome, rank 3 source 4.
@@ -122,6 +132,7 @@ export function stripBoilerplate(text: string): StripResult {
 
   const paragraphs = text.split(PARAGRAPH_SPLIT);
   const kept: string[] = [];
+  const seen = new Set<string>();
   let dropped = 0;
 
   outer: for (let i = 0; i < paragraphs.length; i++) {
@@ -149,7 +160,24 @@ export function stripBoilerplate(text: string): StripResult {
       keptLines.push(line);
     }
 
-    if (keptLines.length > 0) kept.push(keptLines.join("\n"));
+    if (keptLines.length === 0) continue;
+
+    // **A paragraph repeated inside one document is furniture by construction.**
+    // No article says the same paragraph twice; a page template does, once per
+    // slot. Cascade PBS's extraction carried its "Beyond the CANVAS" promo twice
+    // and nothing else, which measured 574 characters against a 390-character
+    // feed teaser and won the packet's longer-of-the-two comparison — the
+    // comparison happens before the packet-wide dedup that later cut it to 286.
+    // Collapsing the repeat here means the candidate is measured at what it
+    // actually carries.
+    const paragraph = keptLines.join("\n");
+    const key = paragraph.replace(/\s+/g, " ").trim().toLowerCase();
+    if (seen.has(key)) {
+      dropped++;
+      continue;
+    }
+    seen.add(key);
+    kept.push(paragraph);
   }
 
   return { text: kept.join("\n\n"), dropped };

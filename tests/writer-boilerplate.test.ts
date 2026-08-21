@@ -161,4 +161,56 @@ testGoogleNewsStubIsAnEcho();
 testAShortRealSummaryIsNotAnEcho();
 testHeadlineFollowedByRealTextIsNotAnEcho();
 testEmptyBodyIsAnEcho();
+
+// Run #118's ranks 65 and 8: Readability returned Cascade PBS's house promo for
+// a different programme as the article body, twice over, for an ABC-v-FCC
+// lawsuit and a South Korea military-drills feature. A non-empty extraction is
+// not a guarantee of article-shaped prose — it is the best block on a page whose
+// article Readability could not see.
+
+const CASCADE_PROMO =
+  "Finding one\u2019s voice as a writer takes dedication, courage, and a willingness to " +
+  "reimagine the world through words on a page. In this episode of \u201cBeyond the CANVAS,\u201d " +
+  "we sit down with novelist Margaret Atwood, playwright Danai Gurira, and others to talk " +
+  "about finding meaning as a writer.";
+
+function testCascadePbsHousePromoIsRemoved() {
+  const out = stripBoilerplate(`${CASCADE_PROMO}\n\nABC sued the FCC on Tuesday.`);
+  assert.ok(!out.text.includes("Margaret Atwood"));
+  assert.ok(out.text.includes("ABC sued the FCC"));
+  assert.equal(out.dropped, 1);
+}
+
+function testAnArticleAboutWritersSurvives() {
+  // The near-miss: a real piece that discusses finding a voice as a writer.
+  const prose =
+    "Finding one\u2019s voice as a writer is what the workshop teaches, its director said, " +
+    "and the state has now cut its funding.";
+  assert.equal(stripBoilerplate(prose).text, prose);
+}
+
+function testAParagraphRepeatedInsideOneDocumentIsDropped() {
+  // No article says the same paragraph twice; a page template does, once per
+  // slot. The cascadepbs extraction was this promo twice and nothing else, which
+  // measured 574 characters against a 390-character feed teaser and won the
+  // packet's longer-of-the-two comparison.
+  const para = "The commission voted on Tuesday to open the proceeding, according to the filing.";
+  const out = stripBoilerplate([para, para].join("\n\n"));
+  assert.equal(out.text, para);
+  assert.equal(out.dropped, 1);
+}
+
+function testDistinctParagraphsAreAllKept() {
+  const a = "The commission voted on Tuesday to open the proceeding.";
+  const b = "The company said it would appeal the decision.";
+  const out = stripBoilerplate([a, b].join("\n\n"));
+  assert.equal(out.text, [a, b].join("\n\n"));
+  assert.equal(out.dropped, 0);
+}
+
+testCascadePbsHousePromoIsRemoved();
+testAnArticleAboutWritersSurvives();
+testAParagraphRepeatedInsideOneDocumentIsDropped();
+testDistinctParagraphsAreAllKept();
+
 console.log("writer boilerplate tests passed");
