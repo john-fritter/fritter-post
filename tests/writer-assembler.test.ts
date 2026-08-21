@@ -343,15 +343,15 @@ function testAThinPacketIsDirectedNotDescribed() {
   assert.equal(packet.materialLevel, "headline-only");
   const note = packet.notes.join(" ");
   assert.ok(/write only what the sources below actually state/i.test(note));
-  // And it names nothing about the sourcing, not even to forbid writing about
-  // it. The note used to end "and make no remark about how much they say";
-  // run #30's C187 still wrote "No further details were available from the
-  // source" with that clause present. A prohibition that names the topic
-  // plants the topic.
+  // It says what to do about a gap rather than describing the packet. The
+  // bare prohibition "make no remark about how much they say" was removed on
+  // the theory that naming the sourcing plants it; run #31 produced four
+  // source-meta sentences, all in the material levels whose clause had gone,
+  // so the actionable form of the memo's actor-versus-outlet rule is here
+  // instead.
+  assert.ok(/a gap is worth a sentence only when someone in the story withheld/i.test(note));
   assert.ok(
-    !/(headline-level|only a summary|material is|feed|unavailable|how much they say|remark)/i.test(
-      note,
-    ),
+    !/(headline-level|only a summary|material is|feed|unavailable|how much they say)/i.test(note),
     `note describes the packet: ${note}`,
   );
   // It still has the material it has — degraded, not empty.

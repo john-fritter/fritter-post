@@ -500,6 +500,18 @@ decision. Origin, truncation, dedup and furniture counts moved to
 `inspect packet --rank`, where an audit needs them. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
 
+**A note says what to do about a gap, and the bare prohibition did not work.**
+Two material notes used to end "and make no remark about how much they say",
+removed on the theory that a prohibition naming the sourcing plants the sourcing.
+Run #31 did not support that theory: genuine source-meta sentences went 1 → 2 → 4
+as layers came off, and all four of run #31's were in the two material levels
+whose clause had just been removed. The clause is back as the *actionable* rule
+rather than the prohibition — "a gap is worth a sentence only when someone in the
+story withheld something", the memo's actor-versus-outlet distinction restated at
+the near distance where the winning instruction keeps turning out to live. That
+comparison is across different editor runs and is not controlled; the controlled
+form is a single-tier re-run against one editor run.
+
 **The writer is told nothing about sources it cannot see.** The prompt used to
 open with `Sources behind this story: 2 (1 included below)` — the editor's count
 plus a parenthetical naming the gap — and the notes used to say how many sources

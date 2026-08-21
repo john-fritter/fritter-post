@@ -508,24 +508,35 @@ export function assembleWriterPacket(
   // So say what to do and never what the packet is short of. The word target is
   // already capped for a headline-only packet; the note only has to stop the
   // writer reaching past the sources.
-  // **A note says what to do, never what the packet is or is not.** Two clauses
-  // here used to end "and make no remark about how much they say", and an
+  // **A note says what to do, never what the packet is or is not.** The
   // unresolved-sources note used to say how many sources were counted but not
-  // reproduced. Both name the sourcing in order to forbid writing about it, which
-  // is how the topic gets planted: run #30's C187 still wrote "No further details
-  // were available from the source" after the omission note was fixed. What
-  // remains is about the writing — stay inside the sources, add nothing they do
-  // not carry, stop when they do.
+  // reproduced; that named the plumbing and is gone.
+  //
+  // The two clauses ending "and make no remark about how much they say" went with
+  // it, on the theory that a prohibition naming the sourcing plants the sourcing.
+  // **Run #31 did not support that theory.** Genuine source-meta sentences went
+  // from one piece to two to four as layers came off, and all four of run #31's
+  // were in the two material levels whose clause had just been removed —
+  // "The article did not specify how many states are expected to act",
+  // "The source material previews a broadcast discussion". So a clause comes
+  // back, but as the actionable rule rather than the bare prohibition: the memo's
+  // actor-versus-outlet distinction, restated at the near distance where this
+  // session has repeatedly found the winning instruction lives.
   const notes: string[] = [];
+  const gapRule =
+    "If a source stops short, the sentence stops with it — write what you have and " +
+    "go no further. A gap is worth a sentence only when someone in the story " +
+    "withheld something.";
   if (materialLevel === "headline-only") {
     notes.push(
       "Write only what the sources below actually state. If that is two sentences, " +
         "write two sentences and stop. Add no background, context or consequence " +
-        "they do not carry.",
+        "they do not carry. " +
+        gapRule,
     );
   } else if (materialLevel === "partial") {
     notes.push(
-      "Stay inside what the sources below state; do not extend them.",
+      `Stay inside what the sources below state; do not extend them. ${gapRule}`,
     );
   }
   const duplicatesDropped = articles.reduce((sum, a) => sum + a.duplicateParagraphs, 0);
