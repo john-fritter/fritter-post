@@ -199,6 +199,91 @@ function testHeadlineWithNoBodyIsAFailure() {
   assert.equal(parseWriterOutput(""), null);
 }
 
+// Run #28's C187: the model wrote a draft, caught itself asserting a figure that
+// came from the cluster label rather than a source, wrote a second, caught
+// itself writing about the sourcing, and wrote a third that was correct. All
+// three drafts and the reasoning between them reached the paper — 233 words on a
+// 60-word ceiling — because the parser took the first headline and everything
+// after it.
+
+const C187_OUTPUT = `HEADLINE: SK Hynix plans to build a semiconductor factory in Japan
+
+SK Hynix will construct a semiconductor factory in Japan, the Korean newspaper Hankyoreh reported. The company expects substantial subsidies from the Japanese government as part of the plan.
+
+---
+
+I'm going to stop here. The source material I have is extremely thin — only a headline. The piece above includes the subsidy claim, which appears in the clustering summary but not in the actual source text I was given. Let me correct that.
+
+---
+
+HEADLINE: SK Hynix plans to build a semiconductor factory in Japan
+
+SK Hynix will construct a semiconductor factory in Japan, Hankyoreh reported. No further details were available from the source.
+
+---
+
+No — I must not write about the sourcing or what was unavailable. Let me write only what the source headline states.
+
+---
+
+HEADLINE: SK Hynix plans semiconductor factory in Japan
+
+Korean newspaper Hankyoreh reports that SK Hynix will build a semiconductor factory in Japan.`;
+
+function testTheLastDraftWins() {
+  const parsed = parseWriterOutput(C187_OUTPUT);
+  assert.equal(parsed!.headline, "SK Hynix plans semiconductor factory in Japan");
+  assert.equal(
+    parsed!.body,
+    "Korean newspaper Hankyoreh reports that SK Hynix will build a semiconductor factory in Japan.",
+  );
+  // The failures the drafts were revising away must not survive into the piece.
+  assert.ok(!parsed!.body.includes("subsidies"));
+  assert.ok(!parsed!.body.includes("No further details"));
+  assert.ok(!parsed!.body.includes("I must not"));
+}
+
+function testAnUnlabelledFirstDraftStillYieldsTheLastOne() {
+  // The opening draft skipped the label; the revisions did not.
+  const parsed = parseWriterOutput(
+    "A first attempt at the headline\n\nA first attempt at the body.\n\n---\n\nHEADLINE: The second attempt\n\nThe second body.",
+  );
+  assert.equal(parsed!.headline, "The second attempt");
+  assert.equal(parsed!.body, "The second body.");
+}
+
+function testARevisionWithNoBodyFallsBackToTheDraftBefore() {
+  // A trailing label with nothing under it is an abandoned start, not the piece.
+  const parsed = parseWriterOutput(
+    "HEADLINE: The real headline\n\nThe real body.\n\n---\n\nHEADLINE: Abandoned restart",
+  );
+  assert.equal(parsed!.headline, "The real headline");
+  assert.equal(parsed!.body, "The real body.");
+}
+
+function testTheRescanOnlyLooksInsideTheBody() {
+  // A "Headline:" deep in prose is not a restart — the lookahead guard that
+  // stopped it being read as the headline must keep stopping it.
+  const body = [
+    "The paper ran the story under a bland label.",
+    "",
+    "Headline: writing is not the reporter's job at that outlet, an editor said.",
+    "",
+    "The desk has since changed hands.",
+  ].join("\n");
+  const parsed = parseWriterOutput(`HEADLINE: A newsroom changes hands\n\n${body}`);
+  assert.equal(parsed!.headline, "A newsroom changes hands");
+  assert.ok(parsed!.body.startsWith("The paper ran"));
+}
+
+function testAThematicBreakInsideAPieceSurvives() {
+  // Only leading and trailing rules are plumbing.
+  const parsed = parseWriterOutput(
+    "HEADLINE: A feature with a break\n\nFirst movement.\n\n---\n\nSecond movement.",
+  );
+  assert.equal(parsed!.body, "First movement.\n\n---\n\nSecond movement.");
+}
+
 function testWordCount() {
   assert.equal(countWords("The city council voted Tuesday to ban fireworks."), 8);
   assert.equal(countWords("  spaced   out \n words  "), 3);
@@ -222,5 +307,10 @@ testAnUnlabelledShortFirstLineIsTheHeadline();
 testMarkdownHeadingAsHeadline();
 testProseFirstLineIsNotAHeadline();
 testHeadlineWithNoBodyIsAFailure();
+testTheLastDraftWins();
+testAnUnlabelledFirstDraftStillYieldsTheLastOne();
+testARevisionWithNoBodyFallsBackToTheDraftBefore();
+testTheRescanOnlyLooksInsideTheBody();
+testAThematicBreakInsideAPieceSurvives();
 testWordCount();
 console.log("writer briefs tests passed");

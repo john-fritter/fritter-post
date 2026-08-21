@@ -540,6 +540,22 @@ ignores code fences, and falls back to a short unlabelled first line, while stil
 refusing a first line that is plainly prose. A brief missing from a batch gets
 one follow-up call for the stragglers.
 
+**When the writer revises in the stream, the last draft is the piece.** Run #28's
+C187 drafted, caught itself asserting a subsidy figure that came from the cluster
+label rather than a source, drafted again, caught itself writing about the
+sourcing, and produced a third draft that was correct — fifteen words, attributed,
+nothing the headline did not support. All three drafts and the reasoning between
+them reached the paper, 233 words against a 60-word ceiling, because the parser
+took the first headline it recognised and everything after it. **Every guardrail
+worked and the parser published the workings.** So `parseWriterOutput` rescans the
+body it produced and the *last* re-labelled draft wins. Bodies are bounded at the
+next label, so an abandoned final restart falls back to a clean earlier draft
+rather than one with a stray label in it. The opening label is matched
+case-insensitively and a restart only against the contract's literal `HEADLINE:`:
+missing the opening label costs a whole piece, mistaking prose for a restart
+truncates one that parsed correctly. A revision that never re-labels is
+undetectable, and the label is the only signal there is.
+
 **`npm run write -- --repair <run>`** re-writes only the failed pieces of a run,
 in place. A paper is one run: filling three holes must not cost 150 calls.
 

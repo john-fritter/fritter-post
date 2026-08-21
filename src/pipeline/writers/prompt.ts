@@ -414,6 +414,22 @@ export interface ParsedWriterOutput {
  * treat a short first line as the headline. A first line that is clearly prose —
  * long, or with no body after it — still yields null, because publishing a
  * paragraph as a headline is worse than recording a failed piece.
+ *
+ * **When the writer revises in the stream, the last draft is the piece.** Run
+ * #28's C187 wrote a draft, caught itself asserting a subsidy figure that came
+ * from the cluster label rather than a source, wrote a second draft, caught
+ * itself writing about the sourcing, and wrote a third that was correct: fifteen
+ * words, attributed, nothing the headline did not support. What reached the
+ * paper was all three drafts plus the reasoning between them — 233 words on a
+ * 60-word ceiling — because this parser takes the first headline it recognises
+ * and everything after it. The model did the job and the parser published its
+ * workings. A writer that restates the contract mid-output has told us which
+ * draft it stands behind, so the *last* labelled headline wins.
+ *
+ * The re-scan runs only over the body the primary parse produced and matches the
+ * contract's literal `HEADLINE:` rather than the forgiving form, so a normal
+ * piece is read exactly as before. A revision that never re-labels is
+ * undetectable and still publishes whole; the label is the only signal there is.
  */
 export function parseWriterOutput(text: string): ParsedWriterOutput | null {
   const lines = text
@@ -434,25 +450,88 @@ export function parseWriterOutput(text: string): ParsedWriterOutput | null {
   // A labelled headline anywhere in the opening lines, past any preamble.
   const LOOKAHEAD = 5;
   for (let i = firstContentIndex; i < Math.min(lines.length, firstContentIndex + LOOKAHEAD); i++) {
-    const match = lines[i]!.trim().match(/^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*(.+)$/i);
-    if (!match) continue;
-    const headline = clean(match[1]!);
-    const body = lines.slice(i + 1).join("\n").trim();
-    if (headline.length === 0 || body.length === 0) return null;
-    return { headline, body };
+    const match = matchHeadlineLabel(lines[i]!);
+    if (match === null) continue;
+    const headline = clean(match);
+    const body = lines.slice(i + 1);
+    if (headline.length === 0) return null;
+    return lastDraft(headline, body, clean);
   }
 
   // No label. A short first line followed by a body is a headline.
   const MAX_UNLABELLED_HEADLINE_CHARS = 160;
   const candidate = clean(lines[firstContentIndex]!.replace(/^#{1,3}\s*/, ""));
-  const body = lines.slice(firstContentIndex + 1).join("\n").trim();
-  if (
-    candidate.length > 0 &&
-    candidate.length <= MAX_UNLABELLED_HEADLINE_CHARS &&
-    body.length > 0
-  ) {
-    return { headline: candidate, body };
+  const body = lines.slice(firstContentIndex + 1);
+  if (candidate.length > 0 && candidate.length <= MAX_UNLABELLED_HEADLINE_CHARS) {
+    return lastDraft(candidate, body, clean);
   }
 
   return null;
+}
+
+/**
+ * The opening label is read forgivingly and a restart label strictly, because
+ * the two mistakes cost different things. Failing to recognise the opening label
+ * loses a whole piece (run #3), so any casing will do. Mistaking a line of prose
+ * for a restart truncates a piece that parsed correctly, so a restart must be
+ * the contract's own literal `HEADLINE:` — which a body will not contain, since
+ * the same prompt forbids colon-and-label constructions in the writing.
+ */
+function matchHeadlineLabel(line: string, strict = false): string | null {
+  const pattern = strict
+    ? /^#{0,3}\s*\**\s*HEADLINE\s*\**\s*[::]\s*(.+)$/
+    : /^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*(.+)$/i;
+  const match = line.trim().match(pattern);
+  return match ? match[1]! : null;
+}
+
+/**
+ * Given the headline and body the primary parse found, returns the last
+ * re-labelled draft inside that body if there is one, and the original
+ * otherwise. Yields null when nothing has a body, which is what makes a bare
+ * headline with no piece under it a failed piece rather than a published stub.
+ */
+function lastDraft(
+  headline: string,
+  bodyLines: string[],
+  clean: (value: string) => string,
+): ParsedWriterOutput | null {
+  const restarts: number[] = [];
+  for (let i = 0; i < bodyLines.length; i++) {
+    if (matchHeadlineLabel(bodyLines[i]!, true) !== null) restarts.push(i);
+  }
+
+  // Each draft ends where the next one starts. Without that bound an abandoned
+  // final restart would leave its own label sitting in the previous draft's body.
+  const drafts: ParsedWriterOutput[] = [
+    { headline, body: trimBody(bodyLines.slice(0, restarts[0] ?? bodyLines.length)) },
+  ];
+  for (let k = 0; k < restarts.length; k++) {
+    const start = restarts[k]!;
+    drafts.push({
+      headline: clean(matchHeadlineLabel(bodyLines[start]!, true)!),
+      body: trimBody(bodyLines.slice(start + 1, restarts[k + 1] ?? bodyLines.length)),
+    });
+  }
+
+  for (let i = drafts.length - 1; i >= 0; i--) {
+    const draft = drafts[i]!;
+    if (draft.headline.length > 0 && draft.body.length > 0) return draft;
+  }
+
+  return null;
+}
+
+/**
+ * Joins body lines, dropping the horizontal rules a revising model puts between
+ * its drafts. Only leading and trailing rules go — a thematic break inside a
+ * feature is the writer's, not the plumbing's.
+ */
+function trimBody(lines: string[]): string {
+  const isRule = (line: string): boolean => /^\s*([-*_])\1{2,}\s*$/.test(line);
+  let start = 0;
+  let end = lines.length;
+  while (start < end && (lines[start]!.trim().length === 0 || isRule(lines[start]!))) start++;
+  while (end > start && (lines[end - 1]!.trim().length === 0 || isRule(lines[end - 1]!))) end--;
+  return lines.slice(start, end).join("\n").trim();
 }
