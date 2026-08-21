@@ -237,7 +237,11 @@ async function writeOnePiece(
         sectionTitle: packet.section?.title ?? null,
         sectionRole: packet.section?.role ?? null,
         sectionRank: packet.section?.rank ?? 0,
-        headline: parsed.headline,
+        // A section line has no headline on either path. The individual prompt
+        // asks for one because every other tier needs it; a line that is one
+        // sentence would just repeat itself, which is what all 7 of run #34's
+        // batched lines did before the batch contract dropped the field.
+        headline: packet.section?.role === "line" ? null : parsed.headline,
         body: parsed.body,
         wordCount: countWords(parsed.body),
         materialLevel: packet.materialLevel,
@@ -343,7 +347,7 @@ async function writeBriefBatch(
 
     breaker.record(true);
 
-    const parsed = parseBriefBatchOutput(result.text, refs);
+    const parsed = parseBriefBatchOutput(result.text, refs, kind);
     let missing = refs.filter((r) => !parsed.has(r));
     let inputTokens = result.inputTokens ?? 0;
     let outputTokens = result.outputTokens ?? 0;
@@ -379,7 +383,7 @@ async function writeBriefBatch(
         );
         inputTokens += retry.inputTokens ?? 0;
         outputTokens += retry.outputTokens ?? 0;
-        for (const [ref, brief] of parseBriefBatchOutput(retry.text, missing)) {
+        for (const [ref, brief] of parseBriefBatchOutput(retry.text, missing, kind)) {
           parsed.set(ref, brief);
         }
         missing = refs.filter((r) => !parsed.has(r));

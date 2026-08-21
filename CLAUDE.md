@@ -636,6 +636,15 @@ header that a 20,000-character packet then buried. Both branches now close by
 restating that every target is a ceiling — the individual prompt has always ended
 that way, and only the batch did not.
 
+**A section line has no headline, so the contract stops asking for one.** A line
+is one sentence at the foot of a section whose lead has established the
+situation — its own pointer, with no second thing to write — and `ref;;headline;;
+body` made the model write that sentence twice. All 7 of run #34's lines came
+back with the headline and body identical, verbatim, which no length or
+source-meta audit could see. The line contract is `ref;;the sentence`, the parser
+still reads a three-field line and drops the duplicate, and `writeOnePiece` nulls
+a line's headline too so the repair path agrees with the batch.
+
 **One call, one register.** `partitionByCallShape` returns three pools — longform,
 briefs, section lines — and lines never batch with briefs. The batch prompt frames
 the whole set, so a mixed call asks for one register and gets it for both; run #8

@@ -102,6 +102,39 @@ function testParsesOneLinePerBrief() {
   assert.equal(parsed.get("S2")!.body, "Three missiles fell into the sea, South Korea said.");
 }
 
+function testASectionLineHasNoHeadline() {
+  // All 7 of run #34's section lines came back with the headline and the body
+  // identical, verbatim — "Iranian families struggle to afford basic goods as
+  // the United States intensifies economic pressure on Iran", twice. A line is
+  // one sentence at the foot of a section whose lead has established the
+  // situation. It is its own pointer; there is no second thing to write.
+  const parsed = parseBriefBatchOutput(
+    "S1;;Israel says it will investigate the killing of Hind Rajab.",
+    ["S1"],
+    "line",
+  );
+  assert.equal(parsed.get("S1")!.headline, null);
+  assert.equal(parsed.get("S1")!.body, "Israel says it will investigate the killing of Hind Rajab.");
+}
+
+function testALineThatKeepsTheOldThreeFieldShapeIsStillRead() {
+  // Refusing to read it would cost a whole piece to punish the model for a
+  // format we only just changed. The duplicate headline is dropped instead.
+  const parsed = parseBriefBatchOutput("S1;;A duplicated sentence.;;A duplicated sentence.", ["S1"], "line");
+  assert.equal(parsed.get("S1")!.headline, null);
+  assert.equal(parsed.get("S1")!.body, "A duplicated sentence.");
+}
+
+function testTheLineContractAsksForTwoFields() {
+  const prompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100)], "line");
+  assert.ok(prompt.includes("ref;;the sentence"));
+  assert.ok(!prompt.includes("ref;;headline;;body"));
+  assert.ok(/A line has no headline/.test(prompt));
+  // Briefs keep theirs.
+  const briefPrompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100)]);
+  assert.ok(briefPrompt.includes("ref;;headline;;body"));
+}
+
 function testBracketedAndLowercaseRefsStillMatch() {
   const parsed = parseBriefBatchOutput("[s1];;A headline;;A body sentence.", ["S1"]);
   assert.equal(parsed.get("S1")!.headline, "A headline");
@@ -319,6 +352,9 @@ testBatchPromptCarriesEveryBriefAndItsRef();
 testTheBriefBatchSaysWhatToDoWithTooMuchMaterial();
 testTheLineBatchKeepsItsOwnGuidance();
 testParsesOneLinePerBrief();
+testASectionLineHasNoHeadline();
+testALineThatKeepsTheOldThreeFieldShapeIsStillRead();
+testTheLineContractAsksForTwoFields();
 testBracketedAndLowercaseRefsStillMatch();
 testSemicolonsInsideTheBodySurvive();
 testInventedRefsAreDropped();

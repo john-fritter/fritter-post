@@ -400,11 +400,15 @@ export function buildBriefBatchUserPrompt(
     "",
     `Output one output line per ${noun}, in this exact format, and nothing else:`,
     "",
-    "ref;;headline;;body",
+    kind === "line" ? "ref;;the sentence" : "ref;;headline;;body",
     "",
     "The ref is the identifier above (for example " + (packets[0]?.ref ?? "S12345") + "). " +
-      "Two semicolons separate the fields. The body is plain prose on one line, " +
-      `no line breaks. Write every ${noun} listed, once each, in the order given.`,
+      "Two semicolons separate the fields. " +
+      (kind === "line"
+        ? "A line has no headline — it is one sentence and that sentence is the whole piece. "
+        : "") +
+      `The text is plain prose on one line, no line breaks. Write every ${noun} ` +
+      "listed, once each, in the order given.",
   );
 
   return parts.join("\n");
@@ -412,7 +416,8 @@ export function buildBriefBatchUserPrompt(
 
 export interface ParsedBrief {
   ref: string;
-  headline: string;
+  /** Null for a section line: one sentence is its own pointer, not a headline. */
+  headline: string | null;
   body: string;
 }
 
@@ -422,7 +427,11 @@ export interface ParsedBrief {
  * Missing refs are the caller's problem to record — a brief that did not come
  * back is a failed piece, not a silent gap.
  */
-export function parseBriefBatchOutput(text: string, validRefs: string[]): Map<string, ParsedBrief> {
+export function parseBriefBatchOutput(
+  text: string,
+  validRefs: string[],
+  kind: BriefBatchKind = "brief",
+): Map<string, ParsedBrief> {
   const valid = new Set(validRefs.map((r) => r.toUpperCase()));
   const out = new Map<string, ParsedBrief>();
 
@@ -432,11 +441,39 @@ export function parseBriefBatchOutput(text: string, validRefs: string[]): Map<st
 
     const first = line.indexOf(";;");
     if (first === -1) continue;
-    const second = line.indexOf(";;", first + 2);
-    if (second === -1) continue;
 
     const ref = normalizeRef(line.slice(0, first));
     if (ref === null || !valid.has(ref) || out.has(ref)) continue;
+
+    // **A section line has no headline, so the contract does not ask for one.**
+    // It is one sentence at the foot of a section whose lead has established the
+    // situation — a pointer, not a small brief — and asking for `ref;;headline;;
+    // body` made the model write that sentence twice. All 7 of run #34's lines
+    // came back with the headline and the body identical, verbatim.
+    //
+    // Read forgivingly all the same: a line that arrives with two delimiters is
+    // still read, and its duplicate headline dropped, because a model that keeps
+    // the old shape has still done the job.
+    if (kind === "line") {
+      const second = line.indexOf(";;", first + 2);
+      const rest = line.slice(first + 2).trim();
+      const body =
+        second === -1
+          ? rest
+          : (() => {
+              const a = line.slice(first + 2, second).trim();
+              const b = line.slice(second + 2).trim();
+              // Two fields and the second is empty: the line is the first field.
+              if (b.length === 0) return a;
+              return b;
+            })();
+      if (body.length === 0) continue;
+      out.set(ref, { ref, headline: null, body });
+      continue;
+    }
+
+    const second = line.indexOf(";;", first + 2);
+    if (second === -1) continue;
 
     const headline = line.slice(first + 2, second).trim();
     const body = line.slice(second + 2).trim();
