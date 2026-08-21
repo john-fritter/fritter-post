@@ -769,11 +769,24 @@ is running on feed excerpts.
   Retry logic lives in application code, not in the HTTP layer.
 - **Retry backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
   `callLLM` thunk with exponential backoff and jitter, honoring a
-  `Retry-After` hint when the provider sends one. It retries two classes —
-  rate limits (429/503) and transport failures where the connection died
-  mid-flight (`Stream broke`, `ECONNRESET`, `socket hang up`, …). It
+  `Retry-After` hint when the provider sends one. It retries three classes —
+  rate limits (429/503), transport failures where the connection died
+  mid-flight (`Stream broke`, `ECONNRESET`, `socket hang up`, …), and a call
+  that spent its entire output budget on reasoning and emitted no content. It
   deliberately does **not** retry timeouts: a call that ran to its configured
   ceiling will likely do it again, and the run #40 lesson was to bound those.
+  **Budget exhaustion looks like a timeout and behaves like a spiral**, which is
+  why it is on the other side of that line: run #35 had five calls land on
+  exactly 8,001 output tokens with an empty body, 32 pieces failed with them, and
+  one repair pass re-asked the same prompts and recovered all 32. Two of the five
+  were on the individual writer path, whose prompt had not changed — 500,932
+  input tokens against 500,934, the same 91 calls — while its output went 52,819
+  to 122,316. Identical input, 2.3× the output: the provider, not the prompt.
+- **An empty response is a failed call and the log says so.** `callLLM` sets
+  `generation_logs.error` before writing the row, not after. It used to throw
+  afterwards, so a run that lost 32 pieces still reported "91 attempts, 0
+  errors" and the regression was invisible in telemetry — only the piece counts
+  showed it.
   Run #50's thread pass lost its single call to a broken stream and produced
   zero threads, which put three separate wildfire rows in the top ten. Configured per-stage via
   optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
