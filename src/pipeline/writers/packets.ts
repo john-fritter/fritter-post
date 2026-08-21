@@ -36,9 +36,23 @@ function loadDoc(name: string, fallback: string): string {
 }
 
 /**
- * Fetched article text, keyed by item. Only `ok` rows count: a `thin` row holds
- * whatever came back from a paywall or a consent wall, which is kept in the
- * table for diagnosis and must not reach a writer as if it were the article.
+ * Fetched article text, keyed by item. `thin` rows count as well as `ok` ones,
+ * and the assembler takes whichever of the fetched text and the feed body is
+ * longer.
+ *
+ * This loader used to demand `status = 'ok'`, which threw away real article
+ * prose the fetcher had already paid for. `thin` is a *length* verdict laid on
+ * top of a structural one that already passed: `extractArticle` returns "" when
+ * Readability finds nothing article-shaped and deliberately has no
+ * whole-document fallback, so a non-empty `thin` row is a short article, not nav
+ * soup. Run #28's C20 was a feature lead written on 49 words: one of its sources
+ * was dropped from the packet entirely while 1,035 characters of its extracted
+ * text sat in this table, and another used a 395-character feed teaser over a
+ * 574-character extraction of the same story.
+ *
+ * The paywall stub this filter was built for is handled by the comparison rather
+ * than by exclusion — a stub shorter than the feed teaser loses to it, and one
+ * longer than the teaser carries more of the article than the teaser did.
  */
 export async function loadFetchedTexts(itemIds: number[]): Promise<Map<number, ResolvedText>> {
   if (itemIds.length === 0) return new Map();
@@ -46,7 +60,7 @@ export async function loadFetchedTexts(itemIds: number[]): Promise<Map<number, R
   const { rows } = await pool.query<{ preprocessed_item_id: string; text: string | null }>(
     `SELECT preprocessed_item_id::text AS preprocessed_item_id, text
      FROM article_texts
-     WHERE status = 'ok' AND text IS NOT NULL AND preprocessed_item_id = ANY($1::bigint[])`,
+     WHERE status IN ('ok', 'thin') AND text IS NOT NULL AND preprocessed_item_id = ANY($1::bigint[])`,
     [itemIds],
   );
   return new Map(

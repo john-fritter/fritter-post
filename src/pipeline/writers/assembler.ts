@@ -85,6 +85,20 @@ export interface PacketOmission {
   sourceName: string;
   title: string;
   reason: string;
+  /**
+   * Why the source is not in the packet, as the writer needs to understand it.
+   *
+   * `length` is a source with reporting in it that the budget could not fit —
+   * worth telling the writer exists, so it does not go looking for the rest of
+   * the story. `no-text` is a source that turned out to have nothing: an empty
+   * body, or a body that only repeats its own headline. Nothing is being
+   * withheld from the writer there, and saying otherwise is the prompt
+   * describing its own plumbing. Run #28's C187 was handed a packet with zero
+   * characters and a note claiming one further source had been "left out for
+   * length"; the piece it wrote ends "No further details were available from the
+   * report."
+   */
+  kind: "length" | "no-text";
 }
 
 /**
@@ -258,6 +272,7 @@ export function selectArticles(
       reason: isLiveBlog(a.title)
         ? `live blog, ranked behind articles (cap ${maxArticles})`
         : `beyond the ${maxArticles}-article cap for this tier`,
+      kind: "length" as const,
     }));
 
   return { selected, omitted };
@@ -418,6 +433,7 @@ export function assembleWriterPacket(
         r.text.length < cfg.min_article_chars
           ? `no usable body text (${r.text.length} chars after cleanup)`
           : "body text only repeats the headline",
+      kind: "no-text" as const,
     });
   }
 

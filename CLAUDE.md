@@ -386,8 +386,22 @@ underlying articles carried under 800 characters of feed body, and thinness is a
 property of the outlet rather than the story, so the fetch is per item: feature
 and standard tiers, only where the feed body is under
 `writers.fetch.feed_chars_floor`. Extraction is Readability + html-to-text, with
-**no whole-document fallback** — a page with no article is marked `thin` and the
-assembler falls back to the feed text rather than feeding a writer nav soup.
+**no whole-document fallback** — a page with no article extracts to `""` rather
+than to nav soup.
+
+**`thin` is a length verdict on top of a structural one that already passed, so
+its text is used.** `min_extracted_chars` marks a short extraction, but the
+no-fallback rule already guarantees that any *non-empty* extraction is
+article-shaped prose: a page with no article comes back empty, not short. So a
+non-empty `thin` row is a short article, and `loadFetchedTexts` returns `ok` and
+`thin` alike; the assembler's existing rule — take whichever of the fetched text
+and the feed body is longer — decides. It used to demand `status = 'ok'` and
+threw away reporting the fetch had already paid for: run #28's C20 was a feature
+lead written on 49 words while one of its sources sat omitted from the packet
+with 1,035 characters of extracted text in `article_texts`, and another used a
+395-character feed teaser over a 574-character extraction of the same story. The
+paywall stub the filter was built for is handled by the comparison instead of by
+exclusion — a stub shorter than the teaser loses to it.
 
 Politeness is per host, not per source: hosts run concurrently, each host's own
 URLs run sequentially with `per_host_delay_ms` between them. The honest UA goes
@@ -459,6 +473,17 @@ untranslated flag survives — whether the writer can read the text is a real
 decision. Origin, truncation, dedup and furniture counts moved to
 `inspect packet --rank`, where an audit needs them. Voice comes from `docs/voice.md`
 (the standing memo), read like `docs/bio.md` with a fallback.
+
+**An omission the writer is told about must be one that withheld something.**
+`PacketOmission.kind` splits the two cases: `length` is a source with reporting
+in it that a cap could not fit, worth naming so the writer does not go looking
+for the rest of the story; `no-text` is a source that had nothing — an empty
+body, or one that only repeats its headline. Only `length` renders in the
+prompt, and with `max_articles` and `total_chars` null on every tier there are
+none, so the note is now silent. It used to count both and say "left out for
+length", which was the fourth layer of the same failure: run #28's C187 was
+handed a packet of **zero** characters plus a note claiming a further source
+existed, and wrote "No further details were available from the report."
 
 **Sections: a thread is not one piece.** Threading absorbs a situation's rows
 into one ranked story, and one 500-word slot cannot hold twelve events — run #3's

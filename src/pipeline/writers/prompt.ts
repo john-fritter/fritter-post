@@ -253,10 +253,19 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
     for (const note of packet.notes) parts.push(`- ${note}`);
   }
 
-  if (packet.omitted.length > 0) {
+  // Only sources the budget could not fit are worth naming. A source omitted
+  // because it had no body text is not information being withheld — there was
+  // nothing there — and telling the writer it was "left out for length" is the
+  // prompt describing its own plumbing, wrongly. Run #28's C187 had a packet of
+  // zero characters and this note claiming a further source existed; it wrote
+  // "No further details were available from the report." With `max_articles` and
+  // `total_chars` null on every tier there are no length omissions left, so this
+  // note now renders only if a cap is ever restored.
+  const omittedForLength = packet.omitted.filter((o) => o.kind === "length").length;
+  if (omittedForLength > 0) {
     parts.push(
       "",
-      `${packet.omitted.length} further source(s) covering this story were left out for length. ` +
+      `${omittedForLength} further source(s) covering this story were left out for length. ` +
         "They are not new information; do not refer to them.",
     );
   }

@@ -410,6 +410,22 @@ function testThePromptNeverDescribesItsOwnPlumbing() {
   }
 }
 
+function testAnEmptySourceIsNotReportedAsLeftOutForLength() {
+  // Run #28's C187: both its Hankyoreh items came back with zero characters, one
+  // kept its packet slot empty and one was omitted for "no usable body text" —
+  // and the prompt told the writer a further source had been "left out for
+  // length". Nothing was withheld; there was nothing there. The piece it wrote
+  // ends "No further details were available from the report."
+  const packet = assembleWriterPacket(
+    story("standard", [article(1, { chars: 300 }), article(2, { chars: 0 })]),
+    new Map(),
+    CFG,
+  );
+  assert.ok(packet.omitted.some((o) => o.kind === "no-text"));
+  assert.ok(!packet.omitted.some((o) => o.kind === "length"));
+  assert.ok(!/left out for length/i.test(buildWriterUserPrompt("bio", packet)));
+}
+
 function testAnUntranslatedSourceIsStillFlaggedInThePrompt() {
   // The one flag that survives, because it is the one a writer can act on:
   // whether it can read the text at all.
@@ -692,6 +708,7 @@ testAPartialPacketIsAlsoDirectedNotDescribed();
 testAThinPieceIsGivenACeilingAndNoFloor();
 testLiveBlogDetectionAcceptsAnySeparator();
 testThePromptNeverDescribesItsOwnPlumbing();
+testAnEmptySourceIsNotReportedAsLeftOutForLength();
 testAnUntranslatedSourceIsStillFlaggedInThePrompt();
 testFullMaterialCarriesNoWarning();
 testPacketKeepsTheEditorsSourceCountNotTheArticleCount();
