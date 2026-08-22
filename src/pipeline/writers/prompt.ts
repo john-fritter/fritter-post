@@ -402,13 +402,21 @@ export function buildBriefBatchUserPrompt(
     "",
     kind === "line" ? "ref;;the sentence" : "ref;;headline;;body",
     "",
-    "The ref is the identifier above (for example " + (packets[0]?.ref ?? "S12345") + "). " +
-      "Two semicolons separate the fields. " +
-      (kind === "line"
-        ? "A line has no headline — it is one sentence and that sentence is the whole piece. "
-        : "") +
-      `The text is plain prose on one line, no line breaks. Write every ${noun} ` +
-      "listed, once each, in the order given.",
+    // **Name the fields.** The shape alone was not enough: whole batches answered
+    // `ref;;body`, dropping the headline field, and run #39 published ten briefs
+    // with no headline because of it. The parser keeps them now rather than
+    // losing the pieces, but a brief in the paper should have a headline.
+    kind === "line"
+      ? "The ref is the identifier above (for example " + (packets[0]?.ref ?? "S12345") + "). " +
+        "Two semicolons separate it from the sentence. A line has no headline — it is " +
+        "one sentence and that sentence is the whole piece. Plain prose on one line, " +
+        "no line breaks. Write every line listed, once each, in the order given."
+      : "Three fields, in this order: the ref, then a headline for the brief, then the " +
+        "brief itself. The ref is the identifier above (for example " +
+        (packets[0]?.ref ?? "S12345") + "), and two semicolons separate each field from " +
+        "the next, so every output line contains exactly two `;;`. Do not omit the " +
+        "headline field. Each field is plain prose on one line, no line breaks. Write " +
+        "every brief listed, once each, in the order given.",
   );
 
   return parts.join("\n");

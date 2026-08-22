@@ -125,6 +125,16 @@ function testALineThatKeepsTheOldThreeFieldShapeIsStillRead() {
   assert.equal(parsed.get("S1")!.body, "A duplicated sentence.");
 }
 
+function testTheBriefContractNamesItsThreeFields() {
+  // The shape alone was not enough: whole batches answered `ref;;body` and run
+  // #39 published ten briefs with no headline. The parser keeps them rather than
+  // losing the pieces, but a brief in the paper should have a headline.
+  const prompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100)]);
+  assert.ok(/Three fields, in this order: the ref, then a headline/.test(prompt));
+  assert.ok(/Do not omit the headline field/.test(prompt));
+  assert.ok(/exactly two `;;`/.test(prompt));
+}
+
 function testTheLineContractAsksForTwoFields() {
   const prompt = buildBriefBatchUserPrompt("bio", [packet("S1", 100)], "line");
   assert.ok(prompt.includes("ref;;the sentence"));
@@ -456,6 +466,7 @@ testTheLineBatchKeepsItsOwnGuidance();
 testParsesOneLinePerBrief();
 testASectionLineHasNoHeadline();
 testALineThatKeepsTheOldThreeFieldShapeIsStillRead();
+testTheBriefContractNamesItsThreeFields();
 testTheLineContractAsksForTwoFields();
 testATwoFieldBriefIsStillABrief();
 testARunTogetherBatchIsSplitOnItsOwnRefs();
