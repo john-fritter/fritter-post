@@ -515,7 +515,8 @@ export function parseBriefBatchOutput(
 }
 
 export interface ParsedWriterOutput {
-  headline: string;
+  /** Null when the model wrote the piece and no headline. */
+  headline: string | null;
   body: string;
 }
 
@@ -582,8 +583,25 @@ export function parseWriterOutput(text: string): ParsedWriterOutput | null {
   const candidate = clean(lines[firstContentIndex]!.replace(/^#{1,3}\s*/, ""));
   const body = lines.slice(firstContentIndex + 1);
   if (candidate.length > 0 && candidate.length <= MAX_UNLABELLED_HEADLINE_CHARS) {
-    return lastDraft(candidate, body, clean);
+    const parsed = lastDraft(candidate, body, clean);
+    if (parsed !== null) return parsed;
   }
+
+  // **A piece with no headline is still a piece.** This used to return null when
+  // the first line was plainly prose, on the reasoning that publishing a
+  // paragraph as a headline is worse than recording a failure. That reasoning
+  // only holds while the prose is being made *into* a headline. With the headline
+  // null it does not apply, and the piece survives.
+  //
+  // Run #36's S59896 repair answered with one clean line of newspaper prose —
+  // "Malheur County schools restored truancy citations through a local ordinance
+  // after state lawmakers banned the fines in 2021…" — which is exactly what a
+  // 40-word brief is, and the parser threw it away. Run #37 lost four more
+  // pieces the same way, every one recorded as "unparseable output". It is the
+  // batch parser's lesson on the individual path: a missing headline costs a
+  // headline, and refusing the piece costs the piece.
+  const whole = lines.slice(firstContentIndex).join("\n").trim();
+  if (whole.length > 0) return { headline: null, body: whole };
 
   return null;
 }
@@ -635,7 +653,7 @@ function lastDraft(
 
   for (let i = drafts.length - 1; i >= 0; i--) {
     const draft = drafts[i]!;
-    if (draft.headline.length > 0 && draft.body.length > 0) return draft;
+    if ((draft.headline ?? "").length > 0 && draft.body.length > 0) return draft;
   }
 
   return null;

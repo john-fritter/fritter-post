@@ -664,10 +664,18 @@ never applied.
 
 **Reading the output is forgiving; producing it is not retried.** Run #3 lost two
 pieces to a parser that demanded a labelled headline on the first line — the
-calls had succeeded. `parseWriterOutput` now scans the opening lines for a label,
-ignores code fences, and falls back to a short unlabelled first line, while still
-refusing a first line that is plainly prose. A brief missing from a batch gets
-one follow-up call for the stragglers.
+calls had succeeded. `parseWriterOutput` scans the opening lines for a label,
+ignores code fences, and falls back to a short unlabelled first line. A brief
+missing from a batch gets one follow-up call for the stragglers.
+
+**And a piece with no headline is still a piece.** The parser used to refuse a
+first line that was plainly prose, reasoning that publishing a paragraph as a
+headline is worse than recording a failure. That reasoning only holds while the
+prose is being made *into* a headline; with the headline null it does not apply.
+Run #36's S59896 repair answered with one clean line of newspaper prose — which
+is exactly what a 40-word brief is — and was recorded as "unparseable output";
+run #37 lost four more the same way. A label with nothing under it still fails,
+because there is no prose to publish.
 
 **When the writer revises in the stream, the last draft is the piece.** Run #28's
 C187 drafted, caught itself asserting a subsidy figure that came from the cluster

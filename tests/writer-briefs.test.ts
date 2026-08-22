@@ -286,17 +286,47 @@ function testMarkdownHeadingAsHeadline() {
   assert.equal(parsed!.headline, "Oregon bans fireworks in Redmond");
 }
 
-function testProseFirstLineIsNotAHeadline() {
-  // Publishing a paragraph as a headline is worse than recording a failure.
+function testProseWithNoHeadlineIsPublishedWithoutOne() {
+  // This used to yield null, on the reasoning that publishing a paragraph as a
+  // headline is worse than recording a failure. That reasoning only holds while
+  // the prose is being made *into* a headline; with the headline null it does
+  // not apply, and the piece survives.
   const prose =
     "The Trump administration's immigration crackdown has widened from Latino communities to groups that previously drew less enforcement attention, according to data obtained under a Freedom of Information Act request.";
-  assert.equal(parseWriterOutput(`${prose}\n\nMore body text follows here.`), null);
+  const parsed = parseWriterOutput(`${prose}\n\nMore body text follows here.`);
+  assert.equal(parsed!.headline, null);
+  assert.ok(parsed!.body.startsWith("The Trump administration"));
+  assert.ok(parsed!.body.includes("More body text follows here."));
+}
+
+function testASingleProseLineIsTheWholeBrief() {
+  // Run #36's S59896 repair, verbatim. A 40-word brief is one paragraph, and the
+  // parser recorded it as "unparseable output". Run #37 lost four more the same
+  // way.
+  const brief =
+    "Malheur County schools restored truancy citations through a local ordinance " +
+    "after state lawmakers banned the fines in 2021. The county now leads Oregon " +
+    "in attendance. Superintendent Alisha McBride says only one citation was " +
+    "issued last year — the threat, not the fine, drives engagement.";
+  const parsed = parseWriterOutput(brief);
+  assert.equal(parsed!.headline, null);
+  assert.equal(parsed!.body, brief);
 }
 
 function testHeadlineWithNoBodyIsAFailure() {
+  // A label and nothing under it is an incomplete piece, not a headline-less
+  // one: there is no prose to publish.
   assert.equal(parseWriterOutput("HEADLINE: no body follows"), null);
-  assert.equal(parseWriterOutput("A bare line and nothing else"), null);
   assert.equal(parseWriterOutput(""), null);
+  assert.equal(parseWriterOutput("   \n\n  "), null);
+}
+
+function testABareShortLineIsPublishedAsTheBody() {
+  // Previously null. It is a short piece with no headline, which is what the
+  // material sometimes supports.
+  const parsed = parseWriterOutput("A bare line and nothing else");
+  assert.equal(parsed!.headline, null);
+  assert.equal(parsed!.body, "A bare line and nothing else");
 }
 
 // Run #28's C187: the model wrote a draft, caught itself asserting a figure that
@@ -414,7 +444,9 @@ testCodeFencesAreIgnored();
 testDecoratedLabelsAreRead();
 testAnUnlabelledShortFirstLineIsTheHeadline();
 testMarkdownHeadingAsHeadline();
-testProseFirstLineIsNotAHeadline();
+testProseWithNoHeadlineIsPublishedWithoutOne();
+testASingleProseLineIsTheWholeBrief();
+testABareShortLineIsPublishedAsTheBody();
 testHeadlineWithNoBodyIsAFailure();
 testTheLastDraftWins();
 testAnUnlabelledFirstDraftStillYieldsTheLastOne();
