@@ -185,7 +185,51 @@ async function testTimeoutIsNotRetried() {
   assert.equal(calls, 1);
 }
 
+async function testRetriesBudgetExhaustion() {
+  // Run #35: five calls hit exactly 8,001 output tokens with an empty body and
+  // 32 pieces failed with them. One repair pass re-asked the same prompts and
+  // recovered all 32 — the same input succeeded on the next attempt every time,
+  // which is what makes this a spiral to re-ask rather than a ceiling to respect.
+  let calls = 0;
+  const result = await callWithBackoff(
+    async () => {
+      calls++;
+      if (calls === 1) {
+        throw new Error(
+          "LLM call failed: LLM returned empty response after consuming its entire " +
+            "8000-token budget (output_tokens=8001) — reasoning exhausted it before " +
+            "any content was emitted. Raise max_tokens or lower reasoning_effort.",
+        );
+      }
+      return "ok";
+    },
+    { retry_max_attempts: 3, retry_base_ms: 1 },
+    "test",
+  );
+  assert.equal(result, "ok");
+  assert.equal(calls, 2);
+}
+
+async function testAPlainEmptyResponseIsNotRetried() {
+  // Only budget exhaustion is a spiral. An empty response with no budget story
+  // behind it says nothing about whether asking again would help.
+  let calls = 0;
+  await assert.rejects(() =>
+    callWithBackoff(
+      async () => {
+        calls++;
+        throw new Error("LLM call failed: LLM returned empty response");
+      },
+      { retry_max_attempts: 3, retry_base_ms: 1 },
+      "test",
+    ),
+  );
+  assert.equal(calls, 1);
+}
+
 async function main() {
+  await testRetriesBudgetExhaustion();
+  await testAPlainEmptyResponseIsNotRetried();
   await testSucceedsFirstTry();
   await testRetriesRateLimitThenSucceeds();
   await testExhaustsAttemptsThenThrows();

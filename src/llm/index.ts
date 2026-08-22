@@ -202,6 +202,22 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
 
   const durationMs = Date.now() - startMs;
 
+  // **An empty response is a failed call, and the log has to say so.** A thinking
+  // model can spend its whole budget on reasoning and emit no content; the tell
+  // is `outputTokens` landing exactly on `maxTokens`. This used to be raised
+  // *after* the row was written, so `generation_logs.error` stayed NULL and a run
+  // that lost 32 pieces still reported "91 attempts, 0 errors" — the regression
+  // in run #35 was invisible in telemetry and only showed up in the piece counts.
+  if (errorMsg === null && responseText === null) {
+    const budgetExhausted =
+      outputTokens !== null && maxTokens !== undefined && outputTokens >= maxTokens;
+    errorMsg = budgetExhausted
+      ? `LLM returned empty response after consuming its entire ${maxTokens}-token ` +
+        `budget (output_tokens=${outputTokens}) — reasoning exhausted it before any ` +
+        `content was emitted. Raise max_tokens or lower reasoning_effort.`
+      : "LLM returned empty response";
+  }
+
   if (errorMsg !== null) {
     console.error(
       `[llm] ${stage} call failed: model=${model} elapsed=${durationMs}ms error=${errorMsg}`
@@ -233,23 +249,9 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   if (errorMsg !== null) {
     throw new Error(`LLM call failed: ${errorMsg}`);
   }
-
-  if (responseText === null) {
-    // A thinking model can spend its entire token budget on reasoning and emit
-    // no content at all. The tell is outputTokens landing exactly on maxTokens,
-    // and without it the failure looks like an unexplained empty response — the
-    // thread pass burned 24,000 tokens over 11 minutes on run #40 before anyone
-    // could see why. Say it in the error rather than leaving it in telemetry.
-    const budgetExhausted =
-      outputTokens !== null && maxTokens !== undefined && outputTokens >= maxTokens;
-    throw new Error(
-      budgetExhausted
-        ? `LLM returned empty response after consuming its entire ${maxTokens}-token ` +
-          `budget (output_tokens=${outputTokens}) — reasoning exhausted it before any ` +
-          `content was emitted. Raise max_tokens or lower reasoning_effort.`
-        : "LLM returned empty response",
-    );
-  }
+  // Unreachable: a null response always sets errorMsg above and throws. The
+  // guard is here so the return type stays honest rather than asserted.
+  if (responseText === null) throw new Error("LLM returned empty response");
 
   return { text: responseText, inputTokens, outputTokens, durationMs, generationLogId };
 }

@@ -1,0 +1,216 @@
+import assert from "node:assert/strict";
+import { stripBoilerplate, isHeadlineEcho } from "../src/pipeline/writers/boilerplate.js";
+
+// Every rule here came from reading the first assembled packets for editor run
+// #112. Each test pins both the cut and a near-miss that must survive, the same
+// contract the junk filter's rules carry.
+
+function testCnnWireFooterIsRemoved() {
+  const text = [
+    "A bomb attack in Crimea has reportedly killed a former Ukrainian submarine commander.",
+    "The-CNN-Wire",
+    "\u2122 & \u00a9 2026 Cable News Network, Inc., a Warner Bros. Discovery Company. All rights reserved.",
+    "The post Crimea bomb attack reportedly kills former Ukrainian submarine commander appeared first on KTVZ.",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 3);
+  assert.equal(cleaned, "A bomb attack in Crimea has reportedly killed a former Ukrainian submarine commander.");
+}
+
+function testFurnitureInsideOneParagraphIsRemoved() {
+  // KTVZ emits these as two lines of a single paragraph. The first version of
+  // the rules matched whole paragraphs and missed exactly this, which is how
+  // both lines reached the rank 3 packet after the first fix.
+  const text = [
+    "Five other people were killed in a separate explosion in Sevastopol.",
+    "The-CNN-Wire\n\u2122 & \u00a9 2026 Cable News Network, Inc., a Warner Bros. Discovery Company. All rights reserved.",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 2);
+  assert.equal(cleaned, "Five other people were killed in a separate explosion in Sevastopol.");
+}
+
+function testALineOfProseSharingAParagraphWithFurnitureSurvives() {
+  const text = "The agency confirmed the strike.\nThe-CNN-Wire";
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+  assert.equal(cleaned, "The agency confirmed the strike.");
+}
+
+function testLireAussiIsDroppedWithoutCuttingTheDocument() {
+  // Le Monde's live blog repeats this between real entries; a tail cut here
+  // would throw away most of the reporting.
+  const text = [
+    "Deux personnes ont \u00e9t\u00e9 bless\u00e9es \u00e0 la suite d\u2019une frappe russe.",
+    "Lire aussi :",
+    "L\u2019Ukraine et la Russie ont proc\u00e9d\u00e9 \u00e0 de nouveaux \u00e9changes de d\u00e9pouilles.",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+  assert.ok(cleaned.includes("Deux personnes"));
+  assert.ok(cleaned.includes("nouveaux \u00e9changes"));
+}
+
+function testReadAlsoCutsTheTail() {
+  const text = [
+    "The KSK grain terminal in Novorossiysk has suspended operations.",
+    "READ ALSO",
+    "* War Day 1632. The port of Novorossiysk was closed for exercises",
+    "* Another unrelated story",
+  ].join("\n\n");
+  const { text: cleaned } = stripBoilerplate(text);
+  assert.equal(cleaned, "The KSK grain terminal in Novorossiysk has suspended operations.");
+}
+
+function testGuardianTeaserMarkerIsRemoved() {
+  const text = "Nearly 100 children have been wrongly identified and detained as adults.\n\nContinue reading...";
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+  assert.ok(!cleaned.includes("Continue reading"));
+}
+
+function testLeMondeLiveChromeIsRemoved() {
+  const text = [
+    "Deux personnes ont \u00e9t\u00e9 bless\u00e9es \u00e0 la suite d\u2019une frappe russe.",
+    "Posez votre question \u00e0 la r\u00e9daction :",
+    "R\u00e9agissez",
+    "Votre pseudo...",
+    "1. Article r\u00e9serv\u00e9 aux abonn\u00e9s Avec la s\u00e9cheresse en France, des tensions",
+  ].join("\n\n");
+  const { text: cleaned, dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 4);
+  assert.ok(cleaned.startsWith("Deux personnes"));
+}
+
+function testNprImageCreditIsRemoved() {
+  const text = "Ukraine is hitting Crimea hard, upending daily life.\n\n(Image credit: Igor Ivanko)";
+  const { dropped } = stripBoilerplate(text);
+  assert.equal(dropped, 1);
+}
+
+function testProseIsNeverCutForMentioningTheseThings() {
+  // The near-misses. Each of these is reporting that contains a phrase a
+  // sloppier rule would fire on.
+  const survivors = [
+    "CNN reported that the officer had defected in 2014.",
+    "The company said all rights reserved to its licensees would be honoured under the settlement.",
+    "Readers were told to continue reading the filing before the hearing.",
+    "The post office announced it would appear first on the ballot in November.",
+    "Related stories about the outage were published by three outlets that week.",
+  ];
+  for (const line of survivors) {
+    const { text: cleaned, dropped } = stripBoilerplate(line);
+    assert.equal(dropped, 0, `wrongly cut: ${line}`);
+    assert.equal(cleaned, line);
+  }
+}
+
+function testEmptyInputIsSafe() {
+  assert.deepEqual(stripBoilerplate(""), { text: "", dropped: 0 });
+}
+
+// --- headline echo ---
+
+function testGoogleNewsStubIsAnEcho() {
+  assert.equal(
+    isHeadlineEcho(
+      "Poland says it thwarted a Russian plot to kill an American citizen in Warsaw - apnews.com",
+      "Poland says it thwarted a Russian plot to kill an American citizen in Warsaw  apnews.com",
+    ),
+    true,
+  );
+}
+
+function testAShortRealSummaryIsNotAnEcho() {
+  // 89 characters, and every one of them is a fact the headline did not carry.
+  assert.equal(
+    isHeadlineEcho(
+      "Ukraine attacks key Russian grain terminal on Black Sea port",
+      "Ukraine has damaged Russia\u2019s grain export terminals in an attack on the Novorossiysk port.",
+    ),
+    false,
+  );
+}
+
+function testHeadlineFollowedByRealTextIsNotAnEcho() {
+  assert.equal(
+    isHeadlineEcho(
+      "Third person dies at New Jersey immigration detention center",
+      "Third person dies at New Jersey immigration detention center. A man died in custody at Delaney Hall on Wednesday, the third death this year.",
+    ),
+    false,
+  );
+}
+
+function testEmptyBodyIsAnEcho() {
+  assert.equal(isHeadlineEcho("Some headline", ""), true);
+  assert.equal(isHeadlineEcho("Some headline", "   "), true);
+}
+
+testCnnWireFooterIsRemoved();
+testFurnitureInsideOneParagraphIsRemoved();
+testALineOfProseSharingAParagraphWithFurnitureSurvives();
+testLireAussiIsDroppedWithoutCuttingTheDocument();
+testReadAlsoCutsTheTail();
+testGuardianTeaserMarkerIsRemoved();
+testLeMondeLiveChromeIsRemoved();
+testNprImageCreditIsRemoved();
+testProseIsNeverCutForMentioningTheseThings();
+testEmptyInputIsSafe();
+testGoogleNewsStubIsAnEcho();
+testAShortRealSummaryIsNotAnEcho();
+testHeadlineFollowedByRealTextIsNotAnEcho();
+testEmptyBodyIsAnEcho();
+
+// Run #118's ranks 65 and 8: Readability returned Cascade PBS's house promo for
+// a different programme as the article body, twice over, for an ABC-v-FCC
+// lawsuit and a South Korea military-drills feature. A non-empty extraction is
+// not a guarantee of article-shaped prose — it is the best block on a page whose
+// article Readability could not see.
+
+const CASCADE_PROMO =
+  "Finding one\u2019s voice as a writer takes dedication, courage, and a willingness to " +
+  "reimagine the world through words on a page. In this episode of \u201cBeyond the CANVAS,\u201d " +
+  "we sit down with novelist Margaret Atwood, playwright Danai Gurira, and others to talk " +
+  "about finding meaning as a writer.";
+
+function testCascadePbsHousePromoIsRemoved() {
+  const out = stripBoilerplate(`${CASCADE_PROMO}\n\nABC sued the FCC on Tuesday.`);
+  assert.ok(!out.text.includes("Margaret Atwood"));
+  assert.ok(out.text.includes("ABC sued the FCC"));
+  assert.equal(out.dropped, 1);
+}
+
+function testAnArticleAboutWritersSurvives() {
+  // The near-miss: a real piece that discusses finding a voice as a writer.
+  const prose =
+    "Finding one\u2019s voice as a writer is what the workshop teaches, its director said, " +
+    "and the state has now cut its funding.";
+  assert.equal(stripBoilerplate(prose).text, prose);
+}
+
+function testAParagraphRepeatedInsideOneDocumentIsDropped() {
+  // No article says the same paragraph twice; a page template does, once per
+  // slot. The cascadepbs extraction was this promo twice and nothing else, which
+  // measured 574 characters against a 390-character feed teaser and won the
+  // packet's longer-of-the-two comparison.
+  const para = "The commission voted on Tuesday to open the proceeding, according to the filing.";
+  const out = stripBoilerplate([para, para].join("\n\n"));
+  assert.equal(out.text, para);
+  assert.equal(out.dropped, 1);
+}
+
+function testDistinctParagraphsAreAllKept() {
+  const a = "The commission voted on Tuesday to open the proceeding.";
+  const b = "The company said it would appeal the decision.";
+  const out = stripBoilerplate([a, b].join("\n\n"));
+  assert.equal(out.text, [a, b].join("\n\n"));
+  assert.equal(out.dropped, 0);
+}
+
+testCascadePbsHousePromoIsRemoved();
+testAnArticleAboutWritersSurvives();
+testAParagraphRepeatedInsideOneDocumentIsDropped();
+testDistinctParagraphsAreAllKept();
+
+console.log("writer boilerplate tests passed");

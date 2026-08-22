@@ -169,11 +169,203 @@ editor:
     # paper.
     body_cap: 300
 
-# Unbuilt placeholder — stage not yet implemented; model id is not real.
+# Writers stage. The writer call itself is not built yet — the model id below is
+# still a placeholder — but the fetch sub-stage that feeds it is.
 writers:
-  model: gemini-3-flash-preview  # placeholder
+  # GLM for prose, as concept.md called for, and the same family the judgment
+  # stages run on. Non-thinking: writing 400 words from twelve sources in front
+  # of you is composition, not inference, and run #40's lesson was that a
+  # thinking model can spend its whole budget reasoning and emit nothing.
+  model: zai-org/glm-5.2
+  provider: nanogpt
+  # Higher than every other stage. The judgment stages want repeatability; this
+  # one wants prose that does not read like a form letter.
   temperature: 0.6
-  max_tokens: 2000
+  # A feature is 400-600 words, roughly 900 tokens. The headroom is for a batch
+  # of ten briefs plus whatever reasoning_effort "low" spends.
+  max_tokens: 8000
+  reasoning_effort: "low"
+  stream: true
+  timeout_ms: 300000
+  # 15 features + 60 standards = 75 individual calls, plus 8 brief batches.
+  concurrency: 4
+  brief_batch_size: 10
+  retry_max_attempts: 5
+  retry_base_ms: 2000
+  # Stop the run after this many consecutive call failures.
+  #
+  # Run #4 met a provider outage: streams broke call after call, and since
+  # callWithBackoff retries broken streams, 103 logical calls became 807 provider
+  # attempts with 775 errors. The run spent 31 minutes to write 17 pieces and the
+  # repair pass another 34 to add 22. Nothing about the hundredth request was
+  # going to succeed where the first ninety-nine failed.
+  #
+  # Consecutive rather than a failure rate: one hard piece among successes is a
+  # piece problem, a hundred in a row is an outage, and only the second is worth
+  # abandoning a run over. 10 is roughly two rounds at concurrency 4 — long
+  # enough that a couple of unlucky calls do not trip it. Set to 0 to disable.
+  abort_after_consecutive_failures: 10
+
+  # Article text fetch. Editor run #112's audit is the source of every number
+  # here: 305 underlying articles, 185 of them (61%) under 800 characters of feed
+  # body and 132 under 300, with thinness concentrated by outlet rather than
+  # spread evenly — AP, Al Jazeera, BBC World, NYT and the Oregonian ran 100%
+  # teasers; Meduza, KTVZ, the Bend Bulletin and OPB ran none.
+  fetch:
+    enabled: true
+    # Briefs are one-liners; a headline and a lede is already enough for one.
+    # This is what keeps the fetch at ~139 requests rather than ~230.
+    tiers: [feature, standard]
+    # Only fetch what the feed left short. Matches THIN_CHARS in the materials
+    # audit, so the audit's "thin" count and the fetch worklist are the same set:
+    # roughly a headline plus a lede, which is what the judgment stages read and
+    # what a writer cannot work from.
+    feed_chars_floor: 800
+    # Below this, extraction did not find an article — a paywall, a consent wall,
+    # or a JavaScript shell. The row is marked thin and the assembler falls back
+    # to the feed text. Set above feed_chars_floor on purpose: a fetch that
+    # barely matches the teaser was not worth making.
+    min_extracted_chars: 1200
+    # Hosts fetched in parallel. Each host's own URLs are always sequential with
+    # per_host_delay_ms between them, so this is a fan-out across publishers, not
+    # pressure on any one of them. Run #112's busiest fetchable host held 15
+    # articles, which at 1.5s apart is well under a minute.
+    concurrency: 6
+    per_host_delay_ms: 1500
+    timeout_ms: 20000
+    # Do not re-request an article attempted inside this window, whatever the
+    # outcome. Run #112's full fetch re-requested the 20 URLs its own capped run
+    # had just retrieved: the plan consulted the cooldown but never the cache.
+    # 20 hours means a same-day re-run costs nothing and tomorrow's paper starts
+    # clean.
+    refetch_after_hours: 20
+    # A news page above this is nav, ads and tracking, not article text.
+    max_bytes: 5000000
+    # This is the only table holding third-party full text. It exists to write
+    # the paper, is never published, and is swept on this window.
+    retention_days: 14
+    # Leave alone the hosts that keep refusing. NYT and OregonLive answer with a
+    # DataDome device check that the browser identity does not get past, so
+    # re-requesting them daily is 18 pointless requests. Learned from
+    # article_texts rather than configured as a blocklist: a host with no success
+    # in the window and at least min_attempts failures is skipped, and recovers
+    # by itself once those failures age out.
+    cooldown:
+      enabled: true
+      window_days: 7
+      min_attempts: 3
+
+  # Prompt assembly: how much material each tier's writer sees, and how it is cut
+  # down to that. Every number here is a budget, not a judgment — the judgment
+  # happened in the prefilter and grouping-pass-1, and the editor's tier is what
+  # carries it into this stage.
+  packet:
+    # A paragraph shorter than this is exempt from duplicate removal. A dateline,
+    # a one-line attribution, or "Reuters contributed to this report" repeating
+    # across outlets is not the redundancy we are removing, and cutting it would
+    # reshape a lede.
+    min_dedup_paragraph_chars: 120
+    # Sections: a thread is several pieces under one heading, not one piece.
+    #
+    # Threading absorbs a situation's rows into one ranked story. That is right
+    # for ranking and wrong for writing: run #3 put T1's twelve members into one
+    # 500-word slot and the writer kept one of them, dropping a story scoring 81
+    # while the paper ran a 35-word brief on one scoring 56.
+    #
+    # The top member leads at the story's own tier, the next max_sidebars get
+    # their own piece one tier down, and every remaining member gets a line — so
+    # nothing a thread absorbed disappears. Material is partitioned by member, so
+    # two pieces of a section cannot overlap.
+    section:
+      # Sidebars per section. Three plus a lead is a section a reader can finish;
+      # more turns the top of the paper into one subject. The tail still gets
+      # lines, so this caps depth rather than coverage.
+      max_sidebars: 3
+    # Ceiling for a piece whose material is headline-only, whatever its tier.
+    #
+    # Run #8's T1 sidebar S53521 had a headline and a lede and produced detail
+    # about the 1924 Johnson-Reed Act that no source carried. Asking for 120-200
+    # words from 150 characters is asking the model to fill the gap, and the note
+    # telling it not to is competing with the length target. Removing the
+    # pressure is more reliable than instructing against it.
+    headline_only_words: [25, 60]
+    # Floor for a body to be worth a packet slot at all, after furniture removal.
+    # Deliberately low: run #112's Al Jazeera summary was 89 characters and
+    # carried a real fact, while the Google News stub next to it was the headline
+    # repeated. Length catches the empties; the headline-echo rule in
+    # boilerplate.ts catches the stubs. Never empties a packet — if every source
+    # is a stub, the best one stays.
+    min_article_chars: 60
+    tiers:
+      # **Source material is not rationed.** max_articles and total_chars are
+      # null everywhere: if an item survived collection, prefiltering, grouping
+      # and the editor, and it is not a verbatim duplicate, the writer sees it.
+      #
+      # They used to be 12 articles / 48,000 chars for a feature and 6 / 12,000
+      # for a standard, justified as redundancy control. That was wrong twice
+      # over. Redundancy is already handled — selection reads one article per
+      # outlet before a second from the same one, and dedupeParagraphs removes
+      # what another source said verbatim — so the caps were a third mechanism
+      # for a solved problem, and unlike those two they discarded whole sources
+      # rather than repeated text. Run #114's Iran thread lost 5 of its 17
+      # articles that way, and run #17's rank 32 printed a false statement
+      # because per_article_chars cut the article before the part that answered
+      # the question.
+      #
+      # Deciding what bears on a piece is the writer's judgment. It reads the
+      # sources and decides what the story is; that is the job, and it is the
+      # reason the pipeline gathers and groups sources in the first place. When
+      # a piece comes out too long the fix is guidance on how to editorialize,
+      # never less to read.
+      #
+      # per_article_chars and floor_chars are inert while total_chars is null.
+      # They exist so that if a cap ever has to be set — a page that would blow
+      # a context window — the squeeze spreads across outlets instead of letting
+      # two long sources take everything.
+      feature:
+        max_articles: null
+        total_chars: null
+        per_article_chars: 6000
+        floor_chars: 800
+        target_words: [400, 600]
+        thin_material_chars: 3000
+        full_material_chars: 12000
+      standard:
+        max_articles: null
+        total_chars: null
+        per_article_chars: 3000
+        floor_chars: 500
+        target_words: [120, 200]
+        thin_material_chars: 900
+        full_material_chars: 3000
+      # The short forms are short because the *piece* is short, not because the
+      # writer is given less to read. Their thin/full thresholds still describe
+      # how much material a piece of that size needs before it counts as
+      # well-sourced.
+      brief:
+        max_articles: null
+        total_chars: null
+        per_article_chars: 1200
+        floor_chars: 400
+        target_words: [25, 45]
+        thin_material_chars: 300
+        full_material_chars: 900
+      sidebar:
+        max_articles: null
+        total_chars: null
+        per_article_chars: 2000
+        floor_chars: 600
+        target_words: [45, 70]
+        thin_material_chars: 400
+        full_material_chars: 1200
+      line:
+        max_articles: null
+        total_chars: null
+        per_article_chars: 900
+        floor_chars: 300
+        target_words: [15, 30]
+        thin_material_chars: 200
+        full_material_chars: 600
 
 editor_pass_1:
   model: zai-org/glm-5.2:thinking

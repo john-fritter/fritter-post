@@ -167,12 +167,104 @@ const ThreadStageConfigSchema = StageConfigSchema.extend({
   retry_base_ms: z.number().int().optional(),
 });
 
+// Article text fetch for the writers stage. Every threshold here is a policy
+// the audit of a real run set, so none of them are allowed to be implicit.
+const WritersFetchConfigSchema = z.object({
+  enabled: z.boolean(),
+  // Tiers whose pieces get fetched. Briefs are one-liners and stay out.
+  tiers: z.array(z.enum(["feature", "standard", "brief"])),
+  // Fetch only when the feed body is shorter than this.
+  feed_chars_floor: z.number().int().nonnegative(),
+  // Extraction under this is a paywall or a JS shell, not an article.
+  min_extracted_chars: z.number().int().nonnegative(),
+  // Hosts in parallel; each host's URLs are always sequential.
+  concurrency: z.number().int().positive(),
+  per_host_delay_ms: z.number().int().nonnegative(),
+  timeout_ms: z.number().int().positive(),
+  // Do not re-request an article attempted inside this window.
+  refetch_after_hours: z.number().int().nonnegative(),
+  max_bytes: z.number().int().positive(),
+  retention_days: z.number().int().positive(),
+  cooldown: z.object({
+    enabled: z.boolean(),
+    window_days: z.number().int().positive(),
+    min_attempts: z.number().int().positive(),
+  }),
+});
+
+// Per-tier material budget for one writer packet.
+//
+// **Source material is not rationed.** `max_articles` and `total_chars` are
+// `null` on every tier, meaning no limit: if an item survived collection,
+// prefiltering, grouping and the editor, and it is not a verbatim duplicate,
+// the writer sees it. Deciding what bears on the story is the writer's job and
+// nothing upstream can do it — which is the whole reason the pipeline gathers
+// and groups sources in the first place.
+//
+// Both remain settable because a run may one day meet a page that would blow a
+// context window, and a number in config beats a crash. Setting either is an
+// editorial decision, not a tuning knob: it discards reporting.
+const WritersTierPacketConfigSchema = z.object({
+  max_articles: z.number().int().positive().nullable(),
+  total_chars: z.number().int().positive().nullable(),
+  per_article_chars: z.number().int().positive(),
+  // Both of these are inert while `total_chars` is null. They only decide who
+  // gets squeezed if a limit is ever set, and they exist so that a squeeze
+  // spreads across outlets rather than letting two long sources take it all.
+  floor_chars: z.number().int().nonnegative(),
+  target_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  // Judged per tier: the same 1,000 characters is thin for a feature and
+  // adequate for a standard piece.
+  thin_material_chars: z.number().int().nonnegative(),
+  full_material_chars: z.number().int().nonnegative(),
+});
+
+// A thread's section: how many members get their own piece before the rest
+// become one-line entries.
+const WritersSectionConfigSchema = z.object({
+  max_sidebars: z.number().int().nonnegative(),
+});
+
+const WritersPacketConfigSchema = z.object({
+  section: WritersSectionConfigSchema,
+  min_dedup_paragraph_chars: z.number().int().nonnegative(),
+  // Sources with less usable text than this are left out of the packet.
+  min_article_chars: z.number().int().nonnegative(),
+  // Length ceiling for a piece with headline-only material, whatever its tier.
+  headline_only_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  tiers: z.object({
+    feature: WritersTierPacketConfigSchema,
+    standard: WritersTierPacketConfigSchema,
+    brief: WritersTierPacketConfigSchema,
+    // Section pieces. A sidebar under a standard lead would otherwise take the
+    // brief tier's numbers, and a line the brief tier's material; both are the
+    // wrong job. See assembleSectionPackets.
+    sidebar: WritersTierPacketConfigSchema,
+    line: WritersTierPacketConfigSchema,
+  }),
+});
+
+const WritersStageConfigSchema = StageConfigSchema.extend({
+  // In-flight writer calls. Each one is a whole piece of prose, so this is the
+  // knob that decides how long the stage takes and how hard the provider is hit.
+  concurrency: z.number().int().positive(),
+  // Briefs per batched call. 75 separate calls would each re-send the bio and
+  // the standing memo.
+  brief_batch_size: z.number().int().positive(),
+  // Consecutive call failures after which the run stops asking. 0 disables.
+  abort_after_consecutive_failures: z.number().int().nonnegative(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
+  fetch: WritersFetchConfigSchema,
+  packet: WritersPacketConfigSchema,
+});
+
 const ModelsConfigSchema = z.object({
   preprocessor: PreprocessorConfigSchema,
   prefilter: BatchStageConfigSchema,
   editor: EditorStageConfigSchema,
   thread: ThreadStageConfigSchema,
-  writers: StageConfigSchema,
+  writers: WritersStageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
   grouping: GroupingStageConfigSchema,
@@ -186,6 +278,10 @@ export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema
 export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
+export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
+export type WritersTierPacketConfig = z.infer<typeof WritersTierPacketConfigSchema>;
+export type WritersPacketConfig = z.infer<typeof WritersPacketConfigSchema>;
+export type WritersStageConfig = z.infer<typeof WritersStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
 export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
 export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;

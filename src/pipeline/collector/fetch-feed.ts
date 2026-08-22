@@ -1,42 +1,20 @@
 import Parser from "rss-parser";
 import { synthesizeGuid } from "./guid.js";
 import { decodeFeedBytes } from "./charset.js";
+import {
+  HONEST_USER_AGENT,
+  BROWSER_USER_AGENT,
+  BROWSER_HINT_HEADERS,
+} from "../../lib/http.js";
 import type { Source } from "../../config/sources.js";
 
-// Honest identification, sent first for every feed. It works for the large
-// majority of sources and is the right default for a polite aggregator.
-const USER_AGENT = "FritterPost/0.1 (+https://post.fritter.lol)";
-
-// Escalation UA, sent only after a source has already refused the honest one
-// with a 403. Run #47 lost The Baffler, TechCrunch, and Inside Climate News to
-// 403s — three publishers who serve the same feed to any browser, behind CDN
-// rules that score an unknown UA as a bot. Retrying once with a browser UA
-// costs one extra request on the handful of sources that need it and nothing
-// on the rest, and the log line names which sources are in that set so
-// sources.yaml can record it.
-const FALLBACK_USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-  "Chrome/131.0.0.0 Safari/537.36";
+// Identity constants are shared with the writers' article fetcher — see
+// src/lib/http.ts for the 403-escalation rule they encode.
 
 const TIMEOUT_MS = 20_000;
 
 const ACCEPT_HEADER =
   "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8";
-
-// Sent only on the escalation attempt. Run #48 showed a UA swap alone is not
-// enough for The Baffler or Inside Climate News: the retry fired and was
-// refused again. A bot score is built from the whole request, and a "browser"
-// that sends no Accept-Language and no Sec-Fetch headers still reads as
-// automation. This is the cheap half of the remaining gap — if it does not move
-// those two, the block is TLS-fingerprint or IP based and no header set will
-// fix it, which is the point at which the honest answer is to drop the source.
-const BROWSER_HINT_HEADERS: Record<string, string> = {
-  "Accept-Language": "en-US,en;q=0.9",
-  "Sec-Fetch-Dest": "document",
-  "Sec-Fetch-Mode": "navigate",
-  "Sec-Fetch-Site": "none",
-  "Upgrade-Insecure-Requests": "1",
-};
 
 // Custom item fields beyond the rss-parser defaults.
 type CustomItemFields = {
@@ -89,14 +67,14 @@ function requestOnce(url: string, userAgent: string, asBrowser = false): Promise
  * as mojibake — accented characters replaced by U+FFFD. See ./charset.ts.
  */
 async function fetchFeedText(url: string): Promise<string> {
-  let res = await requestOnce(url, USER_AGENT);
+  let res = await requestOnce(url, HONEST_USER_AGENT);
 
   // A 403 to the honest UA is a bot rule, not a real refusal: the publisher is
   // still serving the feed, just not to us. Retry once as a browser. Every
   // other status — 404, 410, 5xx — is the feed genuinely being gone or broken,
   // and retrying it would only double the request for no new information.
   if (res.status === 403) {
-    const retry = await requestOnce(url, FALLBACK_USER_AGENT, true);
+    const retry = await requestOnce(url, BROWSER_USER_AGENT, true);
     if (retry.ok) {
       console.warn(
         `[collector] ${url}: 403 for the FritterPost UA, served with a browser UA — ` +

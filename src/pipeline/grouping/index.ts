@@ -799,11 +799,29 @@ async function splitLowDensityComponents(
 
 interface DescribeParseResult {
   localIndex: number;
+  /** False when the model judged the cluster to hold more than one event. */
+  oneEvent: boolean;
   title: string;
   summary: string;
 }
 
-function parseDescribeOutput(text: string, batchSize: number): Map<number, DescribeParseResult> {
+/**
+ * Parses the describe pass: one `index;;verdict;;title;;summary` line per
+ * cluster.
+ *
+ * Columns come from the first three delimiters, so a stray `;;` inside the
+ * summary widens the summary and shifts nothing else. A line in the older
+ * three-field format still parses, and defaults to ONE — the verdict is an
+ * addition to the pass, and its absence must not start dissolving clusters.
+ *
+ * Anything other than a recognisable MULTI is ONE, deliberately: a wrongly split
+ * cluster loses corroboration, so the failure mode of an unreadable verdict
+ * should be to leave the cluster alone.
+ */
+export function parseDescribeOutput(
+  text: string,
+  batchSize: number,
+): Map<number, DescribeParseResult> {
   const results = new Map<number, DescribeParseResult>();
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -816,16 +834,42 @@ function parseDescribeOutput(text: string, batchSize: number): Map<number, Descr
     if (!/^\d+$/.test(idxStr)) continue;
     const localIndex = parseInt(idxStr, 10);
     if (localIndex < 0 || localIndex >= batchSize) continue;
-    const title = line.slice(first + 2, last).trim();
-    const summary = line.slice(last + 2).trim();
+
+    const second = line.indexOf(";;", first + 2);
+    const maybeVerdict = line.slice(first + 2, second).trim();
+    const hasVerdict = second !== last && /^(one|multi)$/i.test(maybeVerdict);
+
+    let title: string;
+    let summary: string;
+    if (hasVerdict) {
+      // Columns from the first, second and third delimiter, so a stray `;;`
+      // widens the summary rather than shifting the title.
+      const third = line.indexOf(";;", second + 2);
+      title = line.slice(second + 2, third).trim();
+      summary = line.slice(third + 2).trim();
+    } else {
+      // The older three-field shape, read exactly as it was before the verdict
+      // existed: nothing in the middle gets silently dropped.
+      title = line.slice(first + 2, last).trim();
+      summary = line.slice(last + 2).trim();
+    }
     if (!title || !summary) continue;
-    if (!results.has(localIndex)) results.set(localIndex, { localIndex, title, summary });
+    if (!results.has(localIndex)) {
+      results.set(localIndex, {
+        localIndex,
+        oneEvent: !(hasVerdict && /^multi$/i.test(maybeVerdict)),
+        title,
+        summary,
+      });
+    }
   }
   return results;
 }
 
 interface DescribePassResult {
   clusters: Cluster[];
+  /** Indices into `clusters` the model judged to hold more than one event. */
+  flagged: number[];
   inputTokens: number | null;
   outputTokens: number | null;
   firstGenerationLogId: bigint | null;
@@ -838,7 +882,7 @@ async function describeGroups(
   runId: number,
 ): Promise<DescribePassResult> {
   if (clusters.length === 0) {
-    return { clusters: [], inputTokens: 0, outputTokens: 0, firstGenerationLogId: null };
+    return { clusters: [], flagged: [], inputTokens: 0, outputTokens: 0, firstGenerationLogId: null };
   }
 
   const limit = pLimit(config.concurrency);
@@ -849,7 +893,7 @@ async function describeGroups(
   }
 
   type BatchResult = {
-    descriptions: Map<number, { title: string; summary: string }>;
+    descriptions: Map<number, { title: string; summary: string; oneEvent: boolean }>;
     inputTokens: number | null;
     outputTokens: number | null;
     generationLogId: bigint | null;
@@ -888,9 +932,16 @@ async function describeGroups(
           );
 
           const parsed = parseDescribeOutput(result.text, batch.length);
-          const descriptions = new Map<number, { title: string; summary: string }>();
+          const descriptions = new Map<
+            number,
+            { title: string; summary: string; oneEvent: boolean }
+          >();
           for (const [localIdx, r] of parsed) {
-            descriptions.set(localIdx, { title: r.title, summary: r.summary });
+            descriptions.set(localIdx, {
+              title: r.title,
+              summary: r.summary,
+              oneEvent: r.oneEvent,
+            });
           }
 
           const missing = batch.length - parsed.size;
@@ -931,6 +982,7 @@ async function describeGroups(
   );
 
   const described: Cluster[] = [];
+  const flagged: number[] = [];
   let totalInputTokens: number | null = 0;
   let totalOutputTokens: number | null = 0;
   let firstGenerationLogId: bigint | null = null;
@@ -942,6 +994,7 @@ async function describeGroups(
     for (let localIdx = 0; localIdx < batch.length; localIdx++) {
       const cluster = batch[localIdx]!;
       const desc = result.descriptions.get(localIdx);
+      if (desc && !desc.oneEvent) flagged.push(described.length);
       described.push(desc ? { ...cluster, title: desc.title, summary: desc.summary } : cluster);
     }
 
@@ -963,6 +1016,200 @@ async function describeGroups(
 
   return {
     clusters: described,
+    flagged,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    firstGenerationLogId,
+  };
+}
+
+// --- RE-SPLIT PASS ---
+
+interface ResplitResult {
+  clusters: Cluster[];
+  /**
+   * The clusters this pass created, keyed by their member ids. Only these need
+   * describing again — `notes` is null on every cluster in this stage, so it
+   * cannot be used to tell a fresh piece from an already-labelled one.
+   */
+  newClusterKeys: Set<string>;
+  freedSingletonIds: number[];
+  calls: number;
+  failedCalls: number;
+  split: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  firstGenerationLogId: bigint | null;
+}
+
+/**
+ * Re-partitions the clusters the describe pass called MULTI.
+ *
+ * This is the split pass's prompt applied to a different suspect set. Step 2b
+ * selects by *cohesion*, which finds chained components and structurally cannot
+ * find two same-kind events in different places — those are tightly connected,
+ * because they are described in the same words. Describe reads the material and
+ * can see it; run #50's own label for one of them was "Gold mine collapses kill
+ * dozens in Central African Republic and Colombia".
+ *
+ * Deliberately not a dissolve. A flagged cluster of ten may hold two real groups
+ * of five, and breaking it into ten singletons would throw away the corroboration
+ * grouping exists to find. A failed call leaves the cluster intact — the pass not
+ * running, rather than a wrong answer — which is the same contract as everywhere
+ * else in this stage.
+ */
+/**
+ * Applies re-split partitions to the cluster list. Pure, and exported because
+ * the bug it now encodes was invisible without a test.
+ *
+ * **A partition naming one group is not a no-op.** It says those members are the
+ * event and the rest are not. The first version bailed out whenever the model
+ * returned a single group, so run #51 flagged 34 clusters and changed 6: a
+ * response of "1,2,3" against eight members kept all eight together and freed
+ * nobody. `splitLowDensityComponents` has always applied a partition whenever
+ * the call succeeded, and this matches it — including `none`, where no two
+ * members are the same event and the cluster dissolves into singletons.
+ *
+ * A cluster with no entry in `partitions` had a failed call and is left alone.
+ */
+export function applyResplitPartitions(
+  clusters: Cluster[],
+  partitions: Map<number, number[][]>,
+  itemById: Map<number, PreprocessedItemRow>,
+): { clusters: Cluster[]; newClusterKeys: Set<string>; freedSingletonIds: number[]; split: number } {
+  const out: Cluster[] = [];
+  const newClusterKeys = new Set<string>();
+  const freedSingletonIds: number[] = [];
+  let split = 0;
+
+  for (let i = 0; i < clusters.length; i++) {
+    const cluster = clusters[i]!;
+    const partition = partitions.get(i);
+    if (partition === undefined) {
+      out.push(cluster);
+      continue;
+    }
+
+    const placed = new Set<number>();
+    for (const group of partition) {
+      // parseSplitOutput returns 1-based member positions within the cluster,
+      // and only ever groups of two or more.
+      const ids = group
+        .map((pos) => cluster.item_ids[pos - 1])
+        .filter((id): id is number => id !== undefined);
+      if (ids.length === 0) continue;
+      for (const id of ids) placed.add(id);
+      const items = ids
+        .map((id) => itemById.get(id))
+        .filter((it): it is PreprocessedItemRow => it !== undefined);
+      // Labels are stale the moment a cluster is re-partitioned, so the pieces
+      // go back to fallback labels and are described again by the caller.
+      newClusterKeys.add(ids.join(","));
+      out.push(items.length > 0 ? buildAutoCluster(items) : { ...cluster, item_ids: ids });
+    }
+    for (const id of cluster.item_ids) {
+      if (!placed.has(id)) freedSingletonIds.push(id);
+    }
+    if (partition.length !== 1 || placed.size !== cluster.item_ids.length) split++;
+  }
+
+  return { clusters: out, newClusterKeys, freedSingletonIds, split };
+}
+
+async function resplitFlaggedClusters(
+  clusters: Cluster[],
+  flagged: number[],
+  itemById: Map<number, PreprocessedItemRow>,
+  config: GroupingSplitConfig,
+  runId: number,
+): Promise<ResplitResult> {
+  const empty: ResplitResult = {
+    clusters,
+    newClusterKeys: new Set(),
+    freedSingletonIds: [],
+    calls: 0,
+    failedCalls: 0,
+    split: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    firstGenerationLogId: null,
+  };
+  if (flagged.length === 0) return empty;
+
+  const limit = pLimit(config.concurrency);
+  let calls = 0;
+  let failedCalls = 0;
+  let totalInputTokens: number | null = 0;
+  let totalOutputTokens: number | null = 0;
+  let firstGenerationLogId: bigint | null = null;
+
+  const outcomes = await Promise.all(
+    flagged.map((clusterIdx) =>
+      limit(async (): Promise<{ clusterIdx: number; partition: number[][] | null }> => {
+        const cluster = clusters[clusterIdx]!;
+        const members = cluster.item_ids
+          .map((id) => itemById.get(id))
+          .filter((i): i is PreprocessedItemRow => i !== undefined);
+        if (members.length < 2) return { clusterIdx, partition: null };
+
+        const memberBlocks = members.map((item, idx) => `(${idx + 1}) ${item.title}`).join("\n");
+        calls++;
+        try {
+          const result = await callWithBackoff(
+            () =>
+              callLLM({
+                stage: "grouping",
+                stageRunId: runId,
+                model: config.model,
+                systemPrompt: buildSplitSystemPrompt(),
+                userPrompt: buildSplitUserPrompt(memberBlocks),
+                temperature: config.temperature,
+                maxTokens: config.max_tokens,
+                reasoningEffort: config.reasoning_effort,
+                provider: config.provider,
+                timeoutMs: config.timeout_ms,
+                stream: config.stream,
+              }),
+            config,
+            `grouping resplit ${clusterIdx}`,
+          );
+          if (result.inputTokens !== null && totalInputTokens !== null) {
+            totalInputTokens += result.inputTokens;
+          }
+          if (result.outputTokens !== null && totalOutputTokens !== null) {
+            totalOutputTokens += result.outputTokens;
+          }
+          if (result.generationLogId !== null && firstGenerationLogId === null) {
+            firstGenerationLogId = result.generationLogId;
+          }
+          return { clusterIdx, partition: parseSplitOutput(result.text, members.length) };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          failedCalls++;
+          console.warn(
+            `[grouping] resplit cluster ${clusterIdx}: LLM failed after retries — ` +
+              `leaving it intact: ${msg}`,
+          );
+          return { clusterIdx, partition: null };
+        }
+      }),
+    ),
+  );
+
+  const partitions = new Map<number, number[][]>();
+  for (const o of outcomes) {
+    if (o.partition !== null) partitions.set(o.clusterIdx, o.partition);
+  }
+
+  const applied = applyResplitPartitions(clusters, partitions, itemById);
+
+  return {
+    clusters: applied.clusters,
+    newClusterKeys: applied.newClusterKeys,
+    freedSingletonIds: applied.freedSingletonIds,
+    calls,
+    failedCalls,
+    split: applied.split,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     firstGenerationLogId,
@@ -1228,9 +1475,19 @@ export async function runGrouping(
       splitFailedCalls: number | null;
       splitComponentsSplit: number | null;
       splitFreedSingletons: number | null;
+      describeFlagged: number | null;
+      resplitCalls: number | null;
+      resplitFailedCalls: number | null;
+      resplitClustersSplit: number | null;
+      resplitFreedSingletons: number | null;
     } = {
       attachCalls: null,
       attachFailedCalls: null,
+      describeFlagged: null,
+      resplitCalls: null,
+      resplitFailedCalls: null,
+      resplitClustersSplit: null,
+      resplitFreedSingletons: null,
       splitExamined: null,
       splitSuspect: null,
       splitCalls: null,
@@ -1343,10 +1600,54 @@ export async function runGrouping(
       describeResult.firstGenerationLogId,
     );
 
+    runStats.describeFlagged = describeResult.flagged.length;
+
     console.log(
       `[grouping] step 4 describe: ${finalClusters.length} clusters described, ` +
+        `${describeResult.flagged.length} flagged MULTI, ` +
         `${remainingSingletonIds.size} singletons pass through unchanged`,
     );
+
+    // --- STEP 4b: RE-SPLIT ---
+    // The clusters describe called MULTI, re-partitioned by the split prompt.
+    // Step 2b selects suspects by cohesion and therefore cannot see two
+    // same-kind events in different places; describe reads the material and can.
+    if (groupingConfig.split.enabled && describeResult.flagged.length > 0) {
+      const resplit = await resplitFlaggedClusters(
+        finalClusters,
+        describeResult.flagged,
+        itemById,
+        groupingConfig.split,
+        runId,
+      );
+      finalClusters = resplit.clusters;
+      for (const id of resplit.freedSingletonIds) remainingSingletonIds.add(id);
+      runStats.resplitCalls = resplit.calls;
+      runStats.resplitFailedCalls = resplit.failedCalls;
+      runStats.resplitClustersSplit = resplit.split;
+      runStats.resplitFreedSingletons = resplit.freedSingletonIds.length;
+      accumulateTokens(resplit.inputTokens, resplit.outputTokens, resplit.firstGenerationLogId);
+
+      // Re-partitioned pieces carry fallback labels; describe them again. Only
+      // the clusters this pass created go — every cluster in this stage has
+      // `notes === null`, so that field cannot distinguish them.
+      const needLabels = finalClusters.filter(
+        (c) => c.item_ids.length > 1 && resplit.newClusterKeys.has(c.item_ids.join(",")),
+      );
+      const relabelled = new Map<string, Cluster>();
+      if (resplit.split > 0 && needLabels.length > 0) {
+        const second = await describeGroups(needLabels, itemById, groupingConfig.describe, runId);
+        accumulateTokens(second.inputTokens, second.outputTokens, second.firstGenerationLogId);
+        for (const c of second.clusters) relabelled.set(c.item_ids.join(","), c);
+        finalClusters = finalClusters.map((c) => relabelled.get(c.item_ids.join(",")) ?? c);
+      }
+
+      console.log(
+        `[grouping] step 4b resplit: calls=${resplit.calls}, failed=${resplit.failedCalls}, ` +
+          `clusters_split=${resplit.split}, freed=${resplit.freedSingletonIds.length}, ` +
+          `relabelled=${relabelled.size}`,
+      );
+    }
 
     const digestText = formatFlatClusterLines(finalClusters);
     const totalDurationMs = Date.now() - stageStartedAt;
@@ -1368,8 +1669,13 @@ export async function runGrouping(
            split_calls             = $12,
            split_failed_calls      = $13,
            split_components_split  = $14,
-           split_freed_singletons  = $15
-       WHERE id = $16`,
+           split_freed_singletons  = $15,
+           describe_flagged        = $16,
+           resplit_calls           = $17,
+           resplit_failed_calls    = $18,
+           resplit_clusters_split  = $19,
+           resplit_freed_singletons = $20
+       WHERE id = $21`,
       [
         totalInputTokens,
         totalOutputTokens,
@@ -1386,6 +1692,11 @@ export async function runGrouping(
         runStats.splitFailedCalls,
         runStats.splitComponentsSplit,
         runStats.splitFreedSingletons,
+        runStats.describeFlagged,
+        runStats.resplitCalls,
+        runStats.resplitFailedCalls,
+        runStats.resplitClustersSplit,
+        runStats.resplitFreedSingletons,
         runId,
       ],
     );

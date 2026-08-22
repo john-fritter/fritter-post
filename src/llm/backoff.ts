@@ -1,9 +1,10 @@
 /**
  * Shared exponential-backoff utility for LLM calls.
  *
- * Retries two classes of failure, both of which mean "ask again", not "the
- * model answered": rate limits (429/503) and transport failures where the
- * connection died mid-flight.
+ * Retries three classes of failure, all of which mean "ask again", not "the
+ * model answered": rate limits (429/503), transport failures where the
+ * connection died mid-flight, and a call that spent its entire output budget on
+ * reasoning and emitted no content.
  *
  * Detects both from the error message (since callLLM re-throws as a plain
  * Error). Honors "Retry-After: N" if the message includes it; otherwise uses
@@ -44,8 +45,29 @@ function isTransientTransportError(msg: string): boolean {
   );
 }
 
+/**
+ * A call that spent its whole output budget on reasoning and emitted nothing.
+ *
+ * Retried, and the distinction from a timeout is empirical rather than
+ * theoretical. A timeout means the call ran to its wall-clock ceiling and will
+ * probably do it again, which is why it is deliberately not retried. Budget
+ * exhaustion is a reasoning spiral, and run #35 measured how stochastic that is:
+ * five calls hit exactly 8,001 output tokens with an empty body, 32 pieces
+ * failed with them, and a single repair pass re-asked the same prompts and
+ * recovered **all 32**. The same input succeeded on the next attempt every time.
+ *
+ * Two of those five were on the individual writer path, whose prompt had not
+ * changed at all — 500,932 input tokens in run #34 against 500,934 in run #35,
+ * the same 91 calls — while its output went 52,819 to 122,316. Identical input,
+ * 2.3x the output. That is the provider, not the prompt, and asking again is the
+ * only thing that addresses it.
+ */
+function isBudgetExhausted(msg: string): boolean {
+  return /empty response after consuming its entire \d+-token budget/i.test(msg);
+}
+
 function isRetryable(msg: string): boolean {
-  return isRateLimitError(msg) || isTransientTransportError(msg);
+  return isRateLimitError(msg) || isTransientTransportError(msg) || isBudgetExhausted(msg);
 }
 
 function parseRetryAfterMs(msg: string): number | null {

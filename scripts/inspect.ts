@@ -12,10 +12,18 @@
  *   npm run inspect -- preprocessor --id 1
  *   npm run inspect -- prefilter
  *   npm run inspect -- prefilter --id 1
+ *   npm run inspect -- editor --id 112
+ *   npm run inspect -- materials --editor-run 112
  */
 
 import "dotenv/config";
 import { Pool } from "pg";
+import { loadEditorRunMaterials } from "../src/pipeline/writers/materials.js";
+import {
+  summarizeMaterials,
+  formatMaterialsReport,
+} from "../src/pipeline/writers/materials-report.js";
+import { buildEditorRunPackets, loadFetchedTexts } from "../src/pipeline/writers/packets.js";
 
 interface RawItemRow {
   id: string;
@@ -693,6 +701,202 @@ async function main() {
         break;
       }
 
+      // Writer materials audit: resolves an editor run's stories to the
+      // articles underneath them and reports how much body text each carries.
+      // Uses the shared pool from src/db rather than this script's, since the
+      // resolver is stage code — both are closed by the process exit below.
+      case "materials": {
+        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        if (runId === undefined || Number.isNaN(runId)) {
+          console.log("Usage: npm run inspect -- materials --editor-run <n> [--sources <n>]");
+          break;
+        }
+        const stories = await loadEditorRunMaterials(runId);
+        // Fetched lengths, so the audit can report what a writer reads and not
+        // only what the feeds gave. Empty before the fetch has run, which is
+        // when the report says so rather than implying the two are the same.
+        const itemIds = [
+          ...new Set(stories.flatMap((s) => s.articles.map((a) => a.preprocessedItemId))),
+        ];
+        const fetched = await loadFetchedTexts(itemIds);
+        const fetchedChars = new Map(
+          [...fetched].map(([id, resolved]) => [id, resolved.text.length]),
+        );
+        const report = summarizeMaterials(runId, stories, undefined, fetchedChars);
+        const sourceLimit = flags["sources"] ? parseInt(flags["sources"], 10) : undefined;
+        console.log(formatMaterialsReport(report, sourceLimit));
+        break;
+      }
+
+      // Writer packets: the assembled prompt for one story, or a size summary
+      // for the whole run. This is the writers stage's feedback loop — the
+      // prompt is the product, so it has to be readable before any model sees it.
+      case "packet": {
+        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        if (runId === undefined || Number.isNaN(runId)) {
+          console.log("Usage: npm run inspect -- packet --editor-run <n> [--rank <n>]");
+          break;
+        }
+        const packets = await buildEditorRunPackets(runId);
+
+        if (flags["rank"]) {
+          const rank = parseInt(flags["rank"], 10);
+          const found = packets.find((p) => p.packet.rank === rank);
+          if (!found) {
+            console.log(`No story at rank ${rank} in editor run #${runId}`);
+            break;
+          }
+          console.log(`=== SYSTEM PROMPT (${found.systemPrompt.length} chars) ===\n`);
+          console.log(found.systemPrompt);
+          console.log(`\n=== USER PROMPT (${found.userPrompt.length} chars) ===\n`);
+          console.log(found.userPrompt);
+          // The prompt deliberately does not name omitted sources — the writer
+          // must not refer to material it cannot read — but an audit has to see
+          // which sources were dropped and why.
+          if (found.packet.omitted.length > 0) {
+            console.log(`\n=== OMITTED SOURCES (${found.packet.omitted.length}) ===\n`);
+            for (const o of found.packet.omitted) {
+              console.log(`  [${o.preprocessedItemId}] ${o.sourceName} — ${o.reason}`);
+              console.log(`      ${o.title.slice(0, 110)}`);
+            }
+          }
+          // Provenance for the same reason: the prompt used to label each source
+          // `[feed summary only]` and `[truncated at N of M chars]`, and run #15
+          // relayed both to the reader. A writer cannot act on either, but an
+          // audit cannot work without them — so they live here now.
+          console.log(`\n=== MATERIAL (${found.packet.articles.length} source(s)) ===\n`);
+          console.log(`  level: ${found.packet.materialLevel}, ${found.packet.totalChars} chars in prompt`);
+          for (const a of found.packet.articles) {
+            const marks = [
+              a.origin,
+              a.truncated ? `truncated ${a.chars}/${a.availableChars}` : `${a.chars} chars`,
+              a.duplicateParagraphs > 0 ? `${a.duplicateParagraphs} dup para` : null,
+              a.boilerplateParagraphs > 0 ? `${a.boilerplateParagraphs} furniture` : null,
+              a.translationFailed ? "UNTRANSLATED" : null,
+            ].filter((m) => m !== null);
+            console.log(`  [${a.preprocessedItemId}] ${a.sourceName} — ${marks.join(", ")}`);
+          }
+          break;
+        }
+
+        console.log(`Writer packets — editor run #${runId} (${packets.length} stories)`);
+        const totalChars = packets.reduce((sum, p) => sum + p.promptChars, 0);
+        console.log(`  Total prompt characters: ${totalChars}`);
+        console.log(`  Largest packet:          ${Math.max(...packets.map((p) => p.promptChars))}`);
+        console.log("");
+        const sectionPieces = packets.filter((p) => p.packet.section !== null).length;
+        if (sectionPieces > 0) {
+          const sections = new Set(packets.map((p) => p.packet.section?.ref).filter(Boolean));
+          console.log(`  Sections:                ${sections.size} (${sectionPieces} pieces)`);
+        }
+        console.log("");
+        console.log("  rank tier      ref     section     arts  omit  material       chars  fetched/feed");
+        for (const { packet, promptChars } of packets) {
+          const fetched = packet.articles.filter((a) => a.origin === "fetched").length;
+          const section = packet.section
+            ? `${packet.section.ref}/${packet.section.role}`
+            : "-";
+          console.log(
+            `  ${String(packet.rank).padStart(4)} ${packet.tier.padEnd(9)} ${packet.ref.padEnd(7)} ` +
+              `${section.padEnd(11)} ` +
+              `${String(packet.articles.length).padStart(4)}  ${String(packet.omitted.length).padStart(4)}  ` +
+              `${packet.materialLevel.padEnd(13)} ${String(promptChars).padStart(6)}  ` +
+              `${fetched}/${packet.articles.length - fetched}`,
+          );
+        }
+        break;
+      }
+
+      // Written pieces: the paper as the reader will see it.
+      case "writers": {
+        if (flags["id"]) {
+          const runId = parseInt(flags["id"], 10);
+          const { rows: runRows } = await pool.query<{
+            id: number; started_at: string; completed_at: string | null;
+            editor_run_id: number; model_used: string; pieces_in: number;
+            pieces_written: number; pieces_failed: number; calls: number;
+            failed_calls: number; input_tokens: number | null; output_tokens: number | null;
+          }>("SELECT * FROM writer_runs WHERE id = $1", [runId]);
+          const run = runRows[0];
+          if (!run) {
+            console.log(`No writer run with id ${runId}`);
+            break;
+          }
+          console.log(`Writer run #${run.id}`);
+          console.log(`  Editor run: #${run.editor_run_id}`);
+          console.log(`  Model:      ${run.model_used}`);
+          console.log(`  Pieces:     ${run.pieces_written} written, ${run.pieces_failed} failed of ${run.pieces_in}`);
+          console.log(`  Calls:      ${run.calls} (${run.failed_calls} failed)`);
+          console.log(`  Tokens:     ${run.input_tokens ?? 0} in, ${run.output_tokens ?? 0} out`);
+
+          const { rows: pieces } = await pool.query<{
+            rank: number; tier: string; ref: string; headline: string | null;
+            body: string | null; word_count: number; material_level: string | null;
+            source_count: number; articles_used: number; status: string; detail: string | null;
+            section_ref: string | null; section_title: string | null;
+            section_role: string | null; section_rank: number;
+          }>(
+            `SELECT rank, tier, ref, headline, body, word_count, material_level,
+                    source_count, articles_used, status, detail,
+                    section_ref, section_title, section_role, section_rank
+             FROM writer_pieces WHERE run_id = $1 ORDER BY rank ASC, section_rank ASC`,
+            [runId],
+          );
+
+          const full = flags["full"] === "true";
+          console.log(`\n── PIECES (${pieces.length})`);
+          let currentSection: string | null = null;
+          for (const p of pieces) {
+            // A section reads as one run of pieces under one heading.
+            if (p.section_ref !== currentSection) {
+              currentSection = p.section_ref;
+              if (p.section_ref !== null) {
+                console.log(`\n  ══ SECTION ${p.section_ref}: ${p.section_title ?? ""}`);
+              }
+            }
+            if (p.status !== "ok") {
+              console.log(`  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}] ${p.ref.padEnd(7)} FAILED — ${p.detail ?? ""}`);
+              continue;
+            }
+            const role = p.section_role ? ` ${p.section_role.padEnd(7)}` : "";
+            console.log(
+              `  ${String(p.rank).padStart(3)}. [${p.tier.padEnd(8)}]${role} ${p.ref.padEnd(7)} ` +
+                `${String(p.word_count).padStart(3)}w  ${(p.material_level ?? "").padEnd(13)} ` +
+                `src=${p.source_count}/${p.articles_used}`,
+            );
+            console.log(`       ${p.headline ?? ""}`);
+            if (full && p.body) {
+              for (const line of p.body.split("\n")) console.log(`       ${line}`);
+              console.log("");
+            }
+          }
+          break;
+        }
+
+        const { rows } = await pool.query<{
+          id: number; started_at: string; editor_run_id: number; model_used: string;
+          pieces_in: number; pieces_written: number; pieces_failed: number; failed_calls: number;
+        }>(
+          `SELECT id, started_at, editor_run_id, model_used, pieces_in,
+                  pieces_written, pieces_failed, failed_calls
+           FROM writer_runs ORDER BY started_at DESC LIMIT 20`,
+        );
+        if (rows.length === 0) {
+          console.log("No writer runs yet.");
+          break;
+        }
+        console.log("id     started              editor  model                in    ok    fail  bad-calls");
+        for (const r of rows) {
+          console.log(
+            `${String(r.id).padEnd(6)} ${new Date(r.started_at).toISOString().slice(0, 19)}  ` +
+              `#${String(r.editor_run_id).padEnd(6)} ${r.model_used.slice(0, 20).padEnd(20)} ` +
+              `${String(r.pieces_in).padEnd(5)} ${String(r.pieces_written).padEnd(5)} ` +
+              `${String(r.pieces_failed).padEnd(5)} ${r.failed_calls}`,
+          );
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -707,11 +911,23 @@ Commands:
   prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
   editor                   List recent editor runs
   editor --id <n>          Show ranked/tiered list with resolved titles and fail-safe flags
+  materials --editor-run <n>
+                           Writer materials audit: per-tier and per-source body
+                           text available under each story, and the fetch scope
+  packet --editor-run <n>  Writer packet sizes for every story of an editor run
+  packet --editor-run <n> --rank <n>
+                           Print the full assembled prompt for one story
+  writers                  List recent writer runs
+  writers --id <n>         Show every written piece; add --full for bodies
 
 Options:
   --source <name>          Filter by source name (exact match)
   --limit <n>              Max rows returned (default varies by command)
   --id <n>                 Run id for detail view
+  --editor-run <n>         Editor run id (materials)
+  --sources <n>            Rows in the per-source table (materials, default 40)
+  --rank <n>               Story rank (packet)
+  --full                   Print piece bodies (writers --id)
 `);
         process.exit(1);
     }

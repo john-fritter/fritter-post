@@ -20,6 +20,659 @@ Entry format:
 
 ---
 
+## 2026-08-22 — The writers stage is done; the parsers were the real defect
+
+**Decision:** Stop rewriting the paper to tune the writers stage. Remaining
+defects are within the measured noise band. The next work is the publisher and
+the cron entrypoint.
+
+**Context:** Runs #38, #39 and #40 each persisted 150/150 on the first pass with
+no repair, zero generation-log error rows and zero output-token ceilings. Before
+that, every run needed a repair pass and several lost whole batches.
+
+What actually fixed it was not prompt tuning. It was four parser defects, every
+one of which had been discarding work the model had already done correctly:
+
+| defect | cost |
+|---|---|
+| first headline wins, rest of output published | 233-word piece of drafts (run #28) |
+| batch demanded `ref;;headline;;body` exactly | 40 non-empty responses across 13 runs yielded nothing |
+| individual refused prose with no label | every "unparseable output" failure in runs #36–#37 |
+| batch answered on one line, first ref swallowed the rest | 9 briefs buried inside a 10th (run #38) |
+
+Each was found by reading the raw output or the paper itself. None was visible in
+any summary count: the repair pass covered for all of them, and telemetry read
+"0 errors" because `callLLM` set `generation_logs.error` *after* writing the row.
+
+**Rationale:** Run #3's lesson — refusing output the model already paid for is
+the parser's failure, not the writer's — was applied once, to
+`parseWriterOutput`, and never carried to the batch parser or to the
+prose-without-label case. Two of these four defects are that same lesson
+unlearned in another place. The rule now holds everywhere: a missing field costs
+the field, never the piece; only genuinely empty output fails.
+
+Where run #40 leaves the paper, per 150 pieces: 16 length outliers of which
+fifteen are within 21 words of their band, 3 outlet-class source-meta sentences,
+4 pieces with no headline, 0 lost pieces. The length audit only became readable
+once Gizmo added a signed margin column — a 2-word miss and a 53-word miss had
+been counting the same.
+
+**Supersedes:** nothing. It closes the arc that "Source-meta has reached its
+noise floor" (2026-08-21) opened.
+
+---
+
+## 2026-08-21 — Source-meta has reached its noise floor; stop pulling layers
+
+**Decision:** Stop treating "the paper writing about its own sourcing" as a
+mechanism with a remaining fix. Keep the two interventions that measured, record
+what did not, and do not remove or add another prompt layer on this theory
+without a controlled A/B that shows more than two pieces moving.
+
+**Context:** Three controlled runs against the same editor run (#119) and the
+same 73 standard-tier packets, one variable each:
+
+| run | change | outlet defects |
+|---|---|---|
+| #31 | baseline: three layers removed | 4 |
+| #32 | the gap clause restored, as the actionable rule | 2 |
+| #33 | `partial` material gets a ceiling, not a band | 2 |
+
+The count is flat between #32 and #33 but the *identity* changed. S60167 — the
+piece the ceiling was built for — dropped its gap sentence and went from 156
+words to 77, exactly the intended behaviour on one thin source. A different
+piece, S60563, drifted in with "The report did not name specific ASEAN member
+states approached by either side". S59935 has now survived all three.
+
+Two pieces in seventy-three, with different pieces each run, is not a defect
+with a cause. It is variance.
+
+**Rationale:** The four earlier removals were made on the theory that a prompt
+layer naming the sourcing plants the sourcing, and each one was followed by an
+*increase*: 1 → 2 → 4 as the packet note, the source count and the "make no
+remark" clauses came off. The controlled A/B then reversed it, 4 → 2, by putting
+one clause back in its actionable form. So the theory was wrong in the direction
+it predicted and right about where the instruction has to sit — near the piece,
+saying what to do rather than what not to write.
+
+The second intervention is kept on its own evidence rather than on the flat
+count. A floor is a number and a number beats an instruction; that was already
+established at `headline-only` in run #24, and S60167 is the same mechanism one
+level up. The length guard says it cost nothing: **zero** `full` pieces fell
+below their 120-word floor in #33 having been above it in #32, and the `full`
+mean moved 179.4 → 178.3. Only the pieces with nothing to reach the floor with
+got shorter, which is the point.
+
+Anything further would be a fifth guess tested at n=2, and the last four rounds
+of that produced a different pair of pieces each time.
+
+**Supersedes:** the source-meta half of "Source-meta down from five to two"
+(2026-08-20), which read the count as a trend when the population was changing
+under it.
+
+---
+
+## 2026-08-21 — Every repaired piece is an individual call
+
+**Decision:** `--repair` always writes through the individual-piece path, whatever
+the tier. The brief batch is for full runs only.
+
+**Context:** Run #31's S60468 failed the full run and then failed two successive
+repair passes, all three recording "not present in the batch output". The repair
+path's own comment said briefs were re-asked individually "to remove the batch's
+own failure mode"; it did not. It built a batch of one and sent it through
+`writeBriefBatch`, keeping the ref-keyed parser, so a model that did not echo
+`S60468;;` exactly produced no row and failed again for the same reason it failed
+the first time. On the individual path it recovered on the first attempt.
+
+**Rationale:** Every packet already carries a full individual prompt from
+`buildWriterUserPrompt` — its target length, its section instruction, its focus —
+and `parseWriterOutput` reads that back forgivingly with no ref to echo. The
+batch exists to amortise the bio and the standing memo across 75 briefs. At one
+piece there is nothing to amortise and only the failure mode left.
+
+---
+
+## 2026-08-21 — A non-empty extraction is not article-shaped prose
+
+**Decision:** `loadFetchedTexts` returns `thin` rows as well as `ok` ones, and the
+guard against template junk is the rules that read the text — `stripBoilerplate`
+plus the packet's longer-of-the-two comparison — not `min_extracted_chars`.
+
+**Context:** Demanding `status = 'ok'` threw away reporting the fetch had already
+paid for: run #28's C20 was a feature lead written on 49 words while 1,035
+characters of one source's extracted text sat unused, and letting it through took
+that piece to 388. But the argument for relaxing the floor was wrong. It ran:
+`extractArticle` returns `""` when Readability finds no article and has no
+whole-document fallback, therefore any non-empty extraction is article-shaped.
+Readability returns the best article-shaped *block*, and on a page whose article
+it cannot see that block is a template module. Cascade PBS supplied its house
+promo for a different programme — "In this episode of 'Beyond the CANVAS,' we sit
+down with novelist Margaret Atwood…" — as the article body for an ABC-versus-FCC
+lawsuit and, identically, for a South Korea military-drills feature. The
+1,200-character floor had been rejecting that by accident.
+
+**Rationale:** A length threshold cannot tell a short article from a short
+template, and both exist. Two rules that read the text can: paragraphs repeated
+inside one document are furniture by construction (no article says the same
+paragraph twice; a page template does, once per slot), and a named rule for the
+promo itself. They accrete from audit evidence the way the junk filter does. The
+same repeated-paragraph rule immediately removed six subscribe blocks from a
+Public Notice source nobody had complained about.
+
+---
+
+## 2026-08-21 — A wrapper is not a host
+
+**Decision:** `canonicalizeUrl` unwraps an absolute URL embedded in a redirector's
+**path**. Query strings are excluded, and Google News is left alone.
+
+**Context:** Folha publishes every feed item as
+`redir.folha.com.br/redir/…/rss091/*https://www1.folha.uol.com.br/…`. Storing the
+wrapper sent the fetch to the redirector and taught the per-host cooldown against
+a host that is not a publisher — 42 of run #118's article rows. After the fix,
+`redir.folha.com.br` holds 0 preprocessed items, `www1.folha.uol.com.br` holds
+96, and all 8 Folha fetches succeeded on a host that had never been fetchable.
+
+**Rationale:** The rule is the shape, not the outlet. Query strings are excluded
+because `…/article?ref=https://other.example` is one outlet's article carrying a
+referrer, not a redirect to another, and unwrapping it would replace the story.
+Google News's `/rss/articles/CBMi…` token is an opaque identifier with no URL
+inside it, so there is nothing to unwrap and those items stay headline-only by
+construction.
+
+---
+
+## 2026-08-21 — The parser publishes the last draft, not the workings
+
+**Decision:** `parseWriterOutput` rescans the body it produced and returns the
+last re-labelled draft. Draft bodies are bounded at the next label.
+
+**Context:** Run #28's C187 published 233 words against a 60-word ceiling: a first
+draft asserting a subsidy figure, the model catching that the figure came from the
+cluster label rather than a source, a second draft, the model catching itself
+writing about the sourcing, and a third draft that was correct — fifteen words,
+attributed, nothing the headline did not support.
+
+**Rationale:** Every guardrail worked. The memo stopped the source-meta, the
+cluster-label-is-not-evidence rule stopped the subsidy claim, and the ceiling was
+never the problem. The parser took the first headline it recognised and everything
+after it, so what reached the paper was all three drafts plus the reasoning
+between them. A writer that restates the contract mid-output has said which draft
+it stands behind. The opening label stays case-insensitive and a restart matches
+only the literal `HEADLINE:`, because missing the opening label costs a whole
+piece while mistaking prose for a restart truncates one that parsed correctly.
+
+---
+
+## 2026-08-21 — A killed run costs the calls in flight, not the calls answered
+
+**Decision:** Each piece is written to `writer_pieces` as its call returns.
+
+**Context:** Writer run #29 made 94 attempts, 90 of them successful, and persisted
+**zero** rows when it was stopped. The stage held every piece in memory and
+inserted them after the last call finished. The tokens were spent, the writing
+existed, and none of it was recoverable — not even by `--repair`, because there
+were no failed rows to repair.
+
+**Rationale:** The stage already treats a failed call as a row rather than an
+exception, for exactly this reason: one call that times out must cost one piece,
+not the edition. The same logic applies to the process. Insert order is free —
+every reader of `writer_pieces` sorts by rank and section_rank explicitly.
+
+---
+
+## 2026-08-15 — A run stops asking when the provider stops answering
+
+**Decision:** the writers stage aborts after `abort_after_consecutive_failures`
+(10) consecutive call failures, records the remaining pieces as failed, and
+points at the repair pass. `callWithBackoff` keeps its per-call retries; this is
+a second, run-level bound on top of them.
+
+**Context:** run #4 met a provider outage. `zai-org/glm-5.2` broke streams call
+after call, and because `callWithBackoff` correctly retries broken streams, **103
+logical calls became 807 provider attempts, 775 of them errors**. The run spent
+31 minutes to write 17 pieces; the repair pass spent 34 more to add 22. The
+sections design itself passed every structural gate in the same run — 191 pieces,
+52 in 11 sections, 41 standalone displaced, zero cross-section article overlaps —
+so the only thing missing was prose the provider would not produce.
+
+**Rationale:** per-call backoff answers "did this request fail for a reason worth
+re-asking?" and it answers it correctly. It cannot answer "is the provider up?",
+because each call only sees itself. Nothing about the hundredth request was going
+to succeed where the first ninety-nine failed, and continuing to ask was both
+expensive and impolite.
+
+Consecutive failures rather than a failure rate: one hard piece failing among
+successes is a piece problem, a hundred failing in a row is an outage, and only
+the second is worth abandoning a run over. A single success resets the count.
+
+**Why this needs no new recovery path:** `--repair` already exists and re-writes
+exactly the missing pieces, so an aborted run is a resumable one. The operator
+gets a message naming the command instead of an hour of hammering.
+
+**Watch:** if a run aborts on a healthy provider, the threshold is too low for
+the concurrency — ten is about two rounds at concurrency 4.
+
+---
+
+## 2026-08-15 — Comparatives are measurements
+
+**Decision:** superlatives and comparatives join characterization on the list of
+things that need a source. Added to `voice.md` and the writer prompt.
+
+**Context:** the sentence behind the run #3 overstatement, finally quoted: *"But
+the increases in APIDA arrests outpaced every other group."* The sources
+supported a sixfold rise and, separately, that this was among the largest
+increases on record. They did not support the comparison.
+
+**Rationale:** this is a distinct failure from the characterization rule written
+against it — that rule covers causes, motives and histories, and this is a
+measurement. "Largest", "first", "worst", "most", "outpaced" each assert a
+ranking, and a piece can slip into one while every individual fact in it is
+sourced. The remedy is the same and simpler: give the number the source gave,
+which usually hits harder anyway.
+
+---
+
+## 2026-08-15 — A thread is a section, not a story
+
+**Decision:** a thread expands into several pieces under one heading — a lead at
+the story's tier, up to `max_sidebars` members at one tier below, and a
+one-sentence line for every remaining member. Section pieces displace standalone
+pieces from the bottom of the ranked list, so the paper stays the size the editor
+said it was.
+
+**Context:** threading absorbs a situation's rows into one ranked story, which is
+right for ranking and wrong for writing. The two writer behaviours we have seen
+are both wrong, and for the same reason:
+
+- Before the spine instruction: twelve events in 500 words, which is a list.
+- After it: one event in 500 words, and eleven stories silently discarded.
+
+Run #3's T1 dropped a story scoring **81** (federal investigation of
+left-leaning groups during the Minnesota crackdown) while the paper ran a 35-word
+brief on a story scoring **56**. T3 dropped the Orsk refinery halt, the Sevastopol
+assassination, the Warsaw assassination plot, the FSB erasing the border with
+annexed territory. Nobody made those judgments; they fell out of a structure
+where one slot has to hold a situation.
+
+**Rationale:** the sub-stories already exist. A thread's members are distinct
+events *by construction* — grouping separated them, threading gathered them — so
+the assembler does not need to invent a structure or ask a model to plan one. It
+builds one packet per member instead of flattening twelve members into one.
+
+That has a property worth stating plainly: **material partitions by member, so
+two pieces of a section cannot overlap.** No coordination between writer calls is
+needed, and "writers don't see each other's work" survives intact. The only
+cross-piece information is static text — the lead is told what runs below it, a
+sidebar is told what the lead covers — and its entire job is to stop a piece
+retelling what the reader will find two inches away.
+
+**Alternatives rejected:**
+
+- *Longer thread features* (scale words with member count). A 1,000-word piece
+  covering twelve events is still a list, and it breaks the finite-paper
+  principle.
+- *Weaken threading* so only the top members are absorbed. Fixes coverage and
+  prose, but scatters the related items across the paper as unrelated briefs —
+  the repetition problem threading was built to solve (run #43's five wildfire
+  clusters, four in the top fifteen).
+
+**On paper size:** sections produce more pieces than the slots they replace, so
+the tail of the ranked list gives up its places. Deeper coverage of eleven real
+situations costs the lowest-scoring unrelated items. Given that run #112's bottom
+briefs scored 56 against a dropped thread member at 81, that trade is the right
+way round. Section pieces are never displaced, and one standalone story always
+survives so a pathological day cannot produce a paper of nothing but threads.
+
+**Timing:** the publisher is the one unbuilt stage, so this was the cheapest
+moment this change will ever be — it lands as a migration on a table nothing
+renders yet, rather than a schema change plus a rendering rewrite.
+
+**Open:** whether T1's "immigration crackdown" is a *situation* or a *topic* is
+still a threading question, and sections make it visible rather than answering
+it. Judge it on the next run: a section whose lead and sidebars have nothing to
+do with each other is a thread that should not have formed.
+
+---
+
+## 2026-08-14 — The paper writes: 147 of 150, and three defects worth the run
+
+**Decision:** the spine instruction stays; the parser gets more forgiving; a
+dropped brief is re-asked once; a failed piece can be repaired without
+re-writing the paper; and characterization joins the list of things that need a
+source.
+
+**Context:** the focus change worked. The same three features went 716 → 534,
+661 → 572, 534 → 503, every headline single-clause, and the reviewer's read was
+that T3 "correctly dropped the Crimea assassination, Warsaw plot, body exchange
+and other peripheral developments" — the largest editorial improvement of the
+run. The full paper then wrote in 264 seconds: 147 pieces, 83 calls, **zero
+failed provider calls**, features averaging 512 words, standards 157, briefs 35.
+
+Three defects, and two of them are mine rather than the model's.
+
+### An unforgiving parser cost two whole pieces
+
+`parseWriterOutput` required a labelled headline on the *first* non-empty line.
+Two pieces came back "unparseable": the call succeeded, the tokens were spent,
+and prose that was probably fine never reached the paper because of a preamble
+line or a missing label. The parser now looks for a label in the opening few
+lines, ignores code fences, and falls back to treating a short first line as the
+headline — while still refusing a first line that is plainly a paragraph, since
+publishing prose as a headline is worse than recording a failure.
+
+The pipeline's own precedent was already there: the editor's output parser was
+made recognition-based in June for exactly this reason.
+
+### A dropped brief is now re-asked once
+
+One brief of ten went missing from a batch — the call succeeded and returned
+nine. The batch now makes one bounded follow-up call for the stragglers. Only
+one: if the model will not write it twice, that is an answer.
+
+### A paper is one run, so repair belongs inside it
+
+Filling three holes should not cost 150 calls, and publishing the holes is not
+an option either. `npm run write -- --repair <run>` re-writes only the failed
+pieces of an existing run and updates them in place, so the run stays one paper
+and the cost is proportional to the damage. Repaired briefs are written
+individually rather than batched, which removes the batch's failure mode from
+the repair path.
+
+### Characterization is a claim
+
+The reviewer flagged a factual overstatement in the lead feature. The class it
+belongs to is not invented facts — the run had none — but invented *frames*: a
+source says refugees were resettled after a war, and the piece says they came
+from "countries the U.S. had destabilized". Both may be true; only one is
+sourced. `voice.md` and the writer prompt now say that causes, motives and
+histories need a source standing behind them, or the supporting fact stated
+plainly instead.
+
+**What this run establishes:** the stage is sound. Zero provider failures, one
+paper in four and a half minutes, ~320k input tokens, and the failures that did
+occur were all in reading the output rather than producing it.
+
+---
+
+## 2026-08-14 — First writer run: the prose is sound, the editing is not
+
+**Decision:** the fix for sprawling features is a focus instruction, not a
+shorter word target or fewer sources. `docs/voice.md` grows a "One piece, one
+spine" section, and the prompt tells a thread to lead with one development.
+
+**Context:** writer run #1 wrote the top three features. All three came back
+accurate — correct attribution throughout ("Zelensky said", "Russia has not
+confirmed", "the Prospect reported"), no invented number, name, date or quote,
+no cross-story contamination. The reviewer checked specifically for the failure
+that matters and found none.
+
+What it did find was length and shape: 716, 534 and 661 words against a 400–600
+target, with the two long ones reading as roundups rather than articles.
+
+**The diagnosis is in the numbers.** The piece that held together — T6, 534
+words, the only one inside its band — had **four** members. The two that sprawled
+had **twelve** each. T1's twelve covered deportation statistics, a medical
+neglect case, a warrantless raid, surveillance of nonprofits, a death in
+detention, shock gloves, a no-bid legal-services contract and an Oregon facility
+protest. A writer given twelve distinct events and 500 words will tour them,
+because nothing told it not to.
+
+**Rationale:** the alternatives are worse. Cutting `max_articles` would starve
+the corroboration the packet exists to provide — the sources are not the problem,
+the absence of an editorial instruction is. Lowering the word target treats the
+symptom and would make a *focused* feature too short. And the deeper cause —
+that "immigration crackdown" is closer to a topic than a situation — is a
+threading question, not one the writers stage should paper over.
+
+So the writer is told what a human editor would tell it: pick the development
+that matters now, lead with it, use the rest as corroboration, and leave out
+what the headline does not promise. The headline is the test — an "as" clause or
+a list of three nouns means the piece has no spine, which is exactly the shape
+both long headlines took.
+
+**Not done, deliberately:** no automatic re-call on an over-length piece. That
+doubles the cost of every overrun to fix something a prompt may fix for free.
+Revisit if the instruction does not move the numbers.
+
+---
+
+## 2026-08-14 — AP has no reachable feed; the Google News proxy stays, with its costs named
+
+**Decision:** keep the Google News search proxies for AP Top News and AP
+Politics. Do not replace them. Record what that costs in `sources.yaml` rather
+than leaving it to be rediscovered.
+
+**Context:** the AP entries are Google News RSS searches, so every item's link is
+an interstitial rather than an article — 20 stories in run #112 with no fetchable
+text, and `news.google.com` as the busiest host in the fetch scope. Seven
+candidate direct AP endpoints were probed from the production host on
+2026-08-14: `apnews.com/index.rss` returned 401, four `/hub/*.rss` paths returned
+404 HTML, and `feeds.apnews.com` does not resolve at all.
+
+**Rationale:** losing AP's article bodies is bad; losing AP entirely to a 404
+would be worse. AP items still earn their place through the editor's prominence
+formula — cross-source pickup is signal whether or not we can read the body.
+
+**What makes this tolerable now, and it is worth being precise about:** the two
+defects the proxy caused are handled at the points where they actually hurt. The
+`- apnews.com` suffix is stripped from headlines by the preprocessor, so it no
+longer reaches embeddings, prompts, or the reader. And the assembler's
+headline-echo rule keeps a body that is only its own headline out of writer
+packets, so an AP item contributes prominence without occupying a source slot
+with nothing in it.
+
+**Revisit if:** AP publishes a public feed again, or the paper starts wanting AP
+as a *writing* source rather than a corroboration signal.
+
+---
+
+## 2026-08-14 — Furniture rules match lines, not paragraphs; live blogs rank last
+
+**Decision:** `stripBoilerplate` matches per line within a paragraph. Live blogs
+are pushed behind real articles in packet selection, never deleted.
+
+**Context:** the second packet read found `The-CNN-Wire` and the CNN copyright
+line still in rank 3 after the furniture rules shipped. The cause is visible in
+the raw packet: KTVZ emits them as two lines of one paragraph, separated by a
+single newline, and the rules split on blank lines and anchored end-to-end — so
+neither could ever match. The rule set was right and the granularity was wrong.
+
+The same read flagged Le Monde's Ukraine live blog for the second time. A live
+blog is not an article: it is one page carrying a day of entries about many
+stories, wrapped in comment boxes and pointers to other coverage, and it took
+5,954 characters of rank 3's feature budget.
+
+**Rationale:** matching per line keeps the precision that matters — a line is
+still matched end-to-end, so a sentence of reporting that mentions CNN is
+untouched — while catching furniture that shares a block with other furniture.
+
+For live blogs, ordering rather than deletion is the honest fix. On a
+27-candidate thread the live blog falls out of the packet on its own; on a story
+where it is the only source, it is still the source. Detection is from the title,
+which live blogs announce plainly, and the near-miss tests pin headlines like
+"Live music returns to the Old Mill District".
+
+**Alternative rejected:** cutting live blogs upstream in the junk filter. They
+are digest-shaped, which is the junk filter's remit, but they also carry real
+reporting that legitimately clusters — the train strike, the Warsaw arrest, the
+body exchange all came from that page. Losing the item entirely would cost the
+cluster a source; losing it from the packet costs nothing.
+
+---
+
+## 2026-08-13 — First assembled packets: furniture, stubs, per-tier material, and the label that is not evidence
+
+**Decision:** four changes to the assembler, all from reading the first real
+packets for editor run #112 rather than from reasoning about them.
+
+**Context:** the packets were assembled and read end-to-end. They were
+structurally sound — selection visible, fetched vs feed distinguished, counts
+explicit, budgets bounded — and carried four concrete defects.
+
+1. **Publisher furniture survived extraction.** Rank 3 contained
+   `The-CNN-Wire`, a Cable News Network copyright line, `The post … appeared
+   first on KTVZ.`, `READ ALSO` followed by a list of other stories, NPR's
+   `(Image credit: …)`, Guardian's `Continue reading...`, and Le Monde's
+   live-blog chrome (`Posez votre question à la rédaction`, `Réagissez`,
+   `Votre pseudo...`, the most-read list). Readability keeps the article and
+   drops the page; it cannot know these are not sentences.
+   `boilerplate.ts` removes them with whole-paragraph, high-precision rules,
+   each naming the run and source that produced it — the junk filter's contract,
+   including a test for the near-miss prose that must survive.
+
+2. **A stub took a source slot.** Rank 3 spent one of twelve on a Google News
+   item whose entire body was `Poland says it thwarted a Russian plot … 
+   apnews.com` — the headline and the domain. **Length cannot make this call**:
+   an 89-character Al Jazeera summary in the same packet carried a real fact.
+   The test is whether the body echoes the headline (`isHeadlineEcho`), with a
+   60-character floor for the empties. A packet is never emptied by this rule.
+
+3. **Material thresholds are per tier.** One global pair labelled a Guardian
+   standard story `headline-only` while it carried four usable facts, because
+   1,000 characters is thin for a 600-word feature and adequate for a 150-word
+   standard piece. Thresholds moved into each tier's config block.
+
+4. **The cluster label is not evidence, and now says so.** The sharpest finding:
+   T3's describe-pass summary named a refinery strike, a Sevastopol
+   assassination, a body exchange, a border-control change and an armoured-
+   brigade exercise, and the twelve included sources supported some of that and
+   not the rest. The summary is generated from every article in the cluster,
+   including the ones the budget omitted. The prompt had said "write your own
+   headline", which addresses the headline and not the facts; it now says
+   plainly that the label is not source material and not evidence. A writer
+   treating it as reporting produces unsupported claims in the paper's own
+   voice, which is the one failure mode nothing downstream can catch.
+
+**Rationale:** all four are cases of the assembler passing along something it
+had no business treating as reporting. The stage's whole job is to hand a writer
+material it can trust; anything in the packet that is not reporting is a
+liability, because to the model it is indistinguishable from reporting.
+
+**Still open after this pass:** 64 of 150 packets are `headline-only` and 113
+carry no fetched article at all — most of them briefs, which are never fetched
+by design, but the feature/standard share of that is the real limit on how much
+of the paper can be written from substance. The AP feed pointing at
+`news.google.com` is a meaningful part of it and is a `sources.yaml` fix.
+
+---
+
+## 2026-08-13 — Packet dedup is verbatim paragraphs, not embedding similarity
+
+**Decision:** the assembler removes paragraphs one article repeats from another,
+verbatim. It does **not** suppress near-duplicate articles by embedding cosine.
+
+**Supersedes:** the dedup design sketched when this stage was proposed, which had
+three levels: selection cap, embedding-cosine near-duplicate suppression using
+the vectors `item_embeddings` already stores, and paragraph dedup. The middle
+level is wrong and is dropped.
+
+**Rationale:** every member of a cluster is the same event *by construction* —
+high cosine is precisely why grouping put them together — so a cosine threshold
+inside a packet would delete the corroboration the packet exists to provide. The
+27 articles under T3 are not 27 copies of one story; they are 27 vantage points
+on one situation, which is what lets a writer say where sources agree and where
+they diverge. What a writer genuinely does not need is the same AP paragraph
+three times under three ledes, and that is verbatim repetition, which a hash
+catches exactly and cheaply.
+
+Short paragraphs are exempt (`min_dedup_paragraph_chars`): a dateline or a
+one-line attribution repeating across outlets is not redundancy, and cutting it
+would reshape a lede.
+
+---
+
+## 2026-08-13 — Writers stage: the packet is assembled, not authored; article text is fetched for what the feed left short
+
+Three decisions, taken together because the audit that settled the third also
+justified the first two.
+
+### The writer package is deterministic software, not another LLM stage
+
+**Decision:** the writers work from a packet built by a prompt assembler:
+tier → length target and register, `docs/bio.md` → who it is for, a standing
+memo → voice, and the story's own source material, selected and budgeted by
+software. No LLM writes an "angle", a "voice brief", or "editorial notes".
+
+**Context:** `concept.md` carried this as an open question since 2026-06-16 —
+the writer package was going to be produced by the editor's phase 4 from the
+researcher's article ideas, and neither of those exists now. The question was
+whether the editor grows a package step or the writers work from the digest plus
+tier.
+
+**Rationale:** a package step would be a judgment stage with nothing new to
+judge on. The bio-aware judgment already happened twice, in the prefilter and in
+grouping-pass-1, and the editor stopped being a judgment stage for exactly this
+reason (2026-06-16). What is actually missing before a writer can work is not
+judgment but *material*: the article text, deduplicated and fitted to a budget.
+That is software.
+
+### The materials resolver is its own module, and returns text uncapped
+
+**Decision:** `src/pipeline/writers/materials.ts` walks a ranked story to the
+articles underneath it — thread → `thread_members` → cluster →
+`grouping_runs.digest` → `preprocessed_items` — and does nothing else. No
+fetching, no capping, no dedup, no formatting. Text comes back at full length.
+
+**Rationale:** every other stage excerpts at a configured `body_cap` because it
+is about to hand text to a model. This one hands text to the assembler, which
+owns the budget. A cap here would silently halve the assembler's material and
+leave two places to look for why. Keeping the walk pure also makes the
+three-deep thread case testable from fixtures, which it now is.
+
+Degradation is recorded rather than swallowed: a cluster missing from the digest
+leaves the story in place carrying the source count the editor ranked it on,
+plus a note. On editor run #112 the resolver reported no unresolved rows at all,
+and its thread member/source counts reconciled exactly with SQL.
+
+### Fetch only what the feed left short, and leave refusing hosts alone
+
+**Decision:** an article-text fetcher (`article_texts`, migration 034) runs over
+feature and standard stories, requests only articles whose feed body is under
+800 characters, extracts with Readability, and skips hosts that have failed
+repeatedly with no success inside a 7-day window.
+
+**Context:** the audit of editor run #112 measured the paper's 305 underlying
+articles. 185 (61%) carried under 800 characters of body text and 132 under 300
+— a headline and a lede. That is enough for the judgment stages, which read 500
+by design, and not enough to write 400 words from.
+
+The decisive finding is that **thinness is a property of the outlet, not the
+story**: AP, Al Jazeera, SCMP, BBC World, NYT Politics, the Oregonian, Wired,
+Folha and TechCrunch ran 100% thin; Meduza, KTVZ, the Bend Bulletin, La Nación,
+OPB, ProPublica and Street Roots ran 0%. So the policy is per item. On that
+run's numbers it is 139 requests rather than 228, and the busiest host drops
+from 20 articles to 15.
+
+A 15-URL live probe of the thinnest sources found: most publishers serve their
+article HTML to an honest agent; SCMP, Wired, Folha, LA Times and The Diplomat
+show consent or paywall furniture (whether the prose survives extraction is a
+question only the extractor can answer, and `status='thin'` is how it will
+answer it); and **nytimes.com and oregonlive.com refuse with a DataDome device
+check that the browser-agent retry does not get past**. Hence the cooldown —
+learned from `article_texts` rather than configured as a blocklist, so a host
+that lifts a block recovers by itself once its failures age out of the window.
+
+**No whole-document fallback.** When Readability finds no article the row is
+marked `thin` and the assembler falls back to the feed text. Running
+`html-to-text` over a whole news page returns nav, cookie banner and related-
+stories rail, and to a model that is indistinguishable from reporting.
+
+**Retention.** `article_texts` is the only place this project stores other
+people's full text. It exists to write the paper, is never published, and is
+swept on a rolling window by the fetch script.
+
+**Open, and surfaced to the reader:** the AP Top News feed resolves to
+`news.google.com` redirect pages — 20 articles in run #112, the single biggest
+source in the paper, and the busiest host in the fetch scope. Those URLs are
+Google interstitials, not articles, so nothing can be extracted from them. The
+fix is the feed URL in `sources.yaml`, not the fetcher; the cooldown will stop
+requesting them after one run either way.
+
+---
+
 ## 2026-08-12 — Run #51 confirms the scoring work; editor considered done
 
 **Decision:** stop tuning the editor path. The next work is the writers stage.
@@ -2626,3 +3279,883 @@ stories were identical in substance.
   Storing translations in the preprocessor makes re-runs cheap.
 
 ---
+
+## 2026-08-18 — Section lines get their own budget, and thin material caps the target
+
+Run #8 was the first paper written with sections, and structurally it worked:
+191 pieces across 11 sections, zero cross-section article overlap, nothing a
+thread absorbed disappeared. Two of its defects were the same mistake in two
+places — a piece was asked for a length its material could not honestly fill,
+and it filled it anyway.
+
+**Section lines were budgeted as briefs.** T3's lines came back at 40, 43, 45,
+46 and 47 words against a 15–30 target: compressed briefs, not the one-sentence
+pointers the design calls for. The word target alone was doing all the work
+against a brief's allocation of three sources and 2,500 characters, which is
+enough raw material for a second and third sentence and reads as an invitation
+to write them.
+
+The fix is a `line` tier in `writers.packet.tiers` — one source, 900 characters,
+`target_words: [15, 30]` — selected by `assembleWriterPacket`'s new `budgetTier`
+override rather than by the piece's published tier, which stays `brief`. Cutting
+the target on the same material was tried first in the design and rejected: a
+shorter number arguing with a fatter packet is the situation that produced run
+#8. Removing the material removes the argument.
+
+**A headline-only packet now caps the word target, whatever its tier.** T1's
+sidebar S53521 had a headline and a lede and was asked for 120–200 words; it
+produced detail about the 1924 Johnson–Reed Act that no source carried. The
+packet already carried a note saying "write short and invent nothing", but a
+note competes with a number and the number wins. `writers.packet.
+headline_only_words` (25–60) is an element-wise minimum against the tier's own
+target, so a brief keeps its 25–45 and a standard drops from 120–200.
+
+The general rule this establishes: **when a prompt instruction contradicts a
+prompt parameter, fix the parameter.** Instructions written against a standing
+target lose.
+
+**Lines and briefs never share a call.** They batched together because both are
+short, but a brief is a short paragraph and a line is one sentence, and one call
+has one register — the batch prompt frames the whole set. `partitionByCallShape`
+now returns three pools and `buildBriefBatchUserPrompt` takes a `kind`.
+
+Also in the voice memo: **an absence in the source is not a finding.** Run #8's
+S53537 sidebar wrote that "surveillance powers have reached beyond people
+suspected of immigration violations to political groups exercising protected
+speech" where the source said only that the groups were never accused of a
+crime. That is the third variant of the same failure the memo already covers for
+characterizations and comparatives — an inference the reader can make, stated as
+something the paper found out.
+
+**Still open:** Gizmo has now reported twice that T1 ("immigration crackdown")
+reads as a topic rather than a situation. If that holds, it is a threading
+problem upstream, not a writing one, and the sections machinery is correctly
+reporting it rather than causing it.
+
+## 2026-08-18 — The materials audit reports feed text and fetched text separately
+
+Run #113 was the first full-pipeline run: collect #50 through writer #10, 150
+pieces on the day's news. The materials audit for it read:
+
+    Median body: 560 chars       Thin (<800): 176 (58%)
+    feature: 15 stories, 112 articles, median 441 chars, 75 thin
+
+and the fetch for the same editor run reported `body text 33903 → 405351 chars`.
+Both were correct. Read together they say the paper's features were written from
+441-character teasers, which is false — the audit predates the fetch stage and
+only ever measured `preprocessed_items`, never `article_texts`.
+
+That mattered immediately: T2 (Gaza, rank 7, feature) shows 5 articles and 1,186
+characters in the audit, and on those numbers its packet would be headline-only
+and capped at 25–60 words. It was written at feature length because the fetch had
+already given it real text the audit could not see.
+
+`summarizeMaterials` now takes a `fetchedChars` map and reports both views —
+`effective = max(feed, fetched)`, the same choice `assembleWriterPacket` makes,
+so the audit agrees with the packet rather than describing one nobody is given.
+Run it before the fetch and the columns match; run it after and the gap is the
+fetcher's yield. With no map supplied the report says "feed bodies only" instead
+of leaving the reader to assume.
+
+The general shape: **a report written for one stage of a pipeline keeps
+answering that stage's question after a later stage changes the answer.** The
+audit was built to size the fetch and was still sizing the fetch after the fetch
+existed.
+
+**Also recorded from run #113, not yet acted on:**
+
+- **Threading produced a second topic-bundle.** T4 "Afghanistan under Taliban"
+  gathers five members spanning a country and a five-year period — one of them
+  is literally titled "Afghanistan: 5 Years in the Dark". T1 (Iran/Hormuz) and
+  T0 (Oregon wildfire) both hold as situations. That is two confirmed misses of
+  the same shape — a country or a policy area rather than a concrete situation
+  anchored in a place and a time.
+- **`raw_items` inserts hit a Postgres index-corruption error.** Collect #50 lost
+  two items to `posting list tuple with 21 items cannot be split at offset 129`
+  and `... 10 items ... offset 151`. That is a GIN index signature and the
+  migrations define no GIN index, so something created one outside them. It is
+  silent, per-item, and will recur.
+- **Individually-called brief-tier pieces overshoot.** Section sidebars demoted
+  to brief tier came in at 48–53 words against a 25–45 target, while batched
+  briefs ran 19–51. Same shape as the line problem — a brief's material budget
+  supports more sentences than a brief's word target asks for — and worth
+  checking against the paper before changing anything.
+
+## 2026-08-19 — A sidebar is never batched; threading states its anchor
+
+Two fixes from reading run #10's paper end to end. One of them was misdiagnosed
+in the previous entry.
+
+### The section machinery was silently dropping out for standard-tier threads
+
+`partitionByCallShape` routed `tier === "brief"` into the batched-briefs pool,
+and only `buildWriterUserPrompt` renders `sectionInstruction`. A sidebar under a
+*standard* lead lands on `brief` by the tier ladder — so it was written as a
+standalone brief, with no idea it belonged to a section, no idea what the lead
+covered, and a batch prompt telling it the opposite of the truth: "Each item
+below is one brief. They are unrelated to each other."
+
+Run #10's T4 sent three sidebars through that path and got three unrelated
+briefs filed under a heading, which is precisely the failure sections were built
+to prevent. The previous entry attributed all of T4's incoherence to threading.
+Part of it was this.
+
+Every sidebar now gets its own call whatever tier it lands on. A standard-tier
+thread yields at most `max_sidebars` of them, so the cost is a few calls a paper.
+
+Separately, those four sidebars all wrote 48–53 words against a brief's 25–45,
+and read well — a wrong parameter, not a writing failure, because a sidebar
+carries one development of a situation the lead has already established and that
+is not a brief's job. `packet.tiers.sidebar` gives 45–70 words and the material
+for it, selected through the same `budgetTier` override the `line` tier uses.
+
+### Threading now names the anchor
+
+The merge criterion has been "a concrete situation anchored in a place and a
+time" since the pass was written, and the prompt has listed topic-bundles as
+forbidden the whole time. It produced two anyway: run #8's "immigration
+crackdown" at rank 1, and run #113's "Afghanistan under Taliban" — five members
+spanning 2021 to 2026, including a five-year retrospective, a 2022 document
+leak's fallout, and an ongoing feature series.
+
+Both slipped past the negative examples because they pattern-match a *positive*
+one: "one war, or one front of one war". A country under a regime looks like a
+front.
+
+What separates them is **time**, and the prompt never asked for it. Every thread
+that held — Iran/Hormuz, Oregon's fire season, Ukraine, Gaza — gathers
+developments from the same news cycle. Both failures gather coverage of a
+condition that has persisted for years.
+
+So the output is now `title;;anchor;;summary;;refs`, where the anchor is the
+development the situation turns on and roughly when. Writing it before listing
+refs forces the criterion to be applied rather than recognised, and storing it
+(migration 037) makes a bad thread legible afterwards: "the Taliban's rule since
+2021" is visibly not an anchor, where a front-page title conceals the same
+defect. Both real failures are in the prompt now as worked negative examples with
+their reasons — the junk-filter convention, rules from audit logs rather than
+speculation.
+
+**Deliberately not validated in software.** There is no reliable signal — Ukraine
+and Gaza are countries too — and a heuristic here would cost real threads. The
+anchor exists to force the judgment and expose it, not to be parsed. The parser
+takes its columns from the first, second and last delimiter, so a stray `;;` in
+the summary shifts nothing and a pre-anchor three-field line still forms a
+thread, losing the summary rather than the thread.
+
+### Also from the same read
+
+The headline-only word cap worked: 29 of 150 pieces had headline-only material,
+they came in at 19–49 words instead of 120–200, and **nothing was invented**. But
+three of them replaced invention with commentary on the material — "No further
+details were available from the publication's feed" — which is the pipeline's
+plumbing showing through into the paper. That is a voice rule now.
+
+The root cause underneath those 29 is upstream of the writers: five of them
+attribute to Willamette Week, which like AP and Reuters reaches us through a
+Google News RSS proxy whose article URLs are interstitials. Twenty-one were
+fetched in run #113 and all twenty-one extracted zero characters.
+`raw_items.raw_entry` stores the full feed entry "for future extraction"; whether
+it carries the publisher URL is the next thing to probe.
+
+## 2026-08-19 — Slots are assigned by material, and notes direct rather than describe
+
+Run #13 re-threaded and re-wrote editor #113's material on the new code. Both
+changes from the previous entry worked:
+
+- **Threading.** Seven threads, `failed_calls=0`, and every anchor names an
+  actual development with a time — "record-breaking Oregon wildfire season,
+  summer 2026", "Trump's suspension of Iran negotiations and territorial claim
+  over Strait of Hormuz, this week". **The Afghanistan bundle did not re-form**
+  and nothing Afghanistan-shaped replaced it. Six of run #10's eight threads
+  survived; the elections thread dissolved and a two-member Providence
+  Medicare-Advantage thread formed, which is a concrete same-week situation.
+- **Sidebars.** No sidebar was batched. Lines came in at 18–20 words, all one
+  sentence.
+
+Two things the run exposed instead.
+
+### A slot the material cannot fill is worse than no slot
+
+The Gaza section led with C80 — 47 words, headline-only — while C19, 180 words
+and fully sourced, ran underneath it as a sidebar. Both pieces are well written;
+the 47-word one is a perfectly good short piece. The section is still wrong,
+because the lead establishes the situation the rest hangs off and a headline
+cannot do that.
+
+Slot assignment was pure score order, and score is deliberately blind to
+material — pass-1 scores relevance before the fetch has even run. So the two now
+compose: score still decides the thread's rank and the reading order, and
+material decides which member can hold which slot.
+
+- **A headline-only member cannot lead.** The highest scorer with real material
+  leads instead. When no member has any, score order stands and the section is
+  thin in the way its material is thin — nothing here invents a lead.
+- **A headline-only member gets a line, not a sidebar.** A line is a pointer and
+  a headline is enough for one. A sidebar is a paragraph, and an empty
+  paragraph-shaped slot is an invitation to fill it: run #13 filled two with
+  prose about the sources and one — T4's `S53744` — with an asserted development
+  the packet did not contain ("Willamette Week reports additional bad news …
+  The outlet did not specify the new development in its public feed").
+
+Measuring material means building a member's packet before its role is known, so
+the pass builds provisionally, assigns roles, then builds finals. All pure, no
+I/O, three cheap builds per member.
+
+### The note was the leak
+
+The voice rule from the previous entry cut source-meta prose sharply but six
+pieces still carried it. The cause was not the memo failing to land — it was the
+packet note contradicting it.
+
+The notes opened `Material is headline-level only` and `some sources gave only a
+summary`. The memo says never write about the sourcing and lives in the **system**
+prompt; the note lives in the **user** prompt, attached to this specific piece,
+and hands over the exact vocabulary. The nearer, more specific instruction won.
+
+Notes are now directions and never a description of the packet: "Write only what
+the sources below actually state … make no remark about how much they say." The
+unresolved-sources note lost its internal vocabulary the same way — it used to
+explain what the editor had counted and the resolver had missed.
+
+This is the third instance of one pattern, and it is worth naming plainly:
+**a general rule in the system prompt loses to a specific statement in the user
+prompt.** Same lesson as `headline_only_words` (a note saying "write short" lost
+to a 120–200 word target) and the `line` tier (a 15–30 target lost to a brief's
+material). Fix the nearer thing.
+
+### Still open
+
+- **36 of 150 pieces are headline-only**, up from 29. The root cause is
+  unchanged and upstream: AP Top News (25 articles, median 103 chars), Willamette
+  Week (7, median 94) and others reach us as Google News interstitials, and all
+  22 news.google.com URLs in fetch scope extract zero characters.
+- **`C86` ran as a 45-word feature at rank 15.** The editor assigns tiers before
+  the fetch exists, so it cannot know a story has no material. Not obviously
+  worth fixing — the piece is accurate and short — but it is where thin material
+  is most visible.
+- **The `posting list tuple` errors are still unexplained.** Gizmo reports only
+  btree indexes on `raw_items` and `preprocessed_items`; that error is a GIN
+  signature, so the index involved has not been found yet. No REINDEX was run.
+
+## 2026-08-19 — The prompt never describes its own plumbing
+
+Run #15 was a controlled A/B against run #13: same editor run #114, same pile,
+same threads, same `article_texts` (450 rows before and after), writers stage
+only. Both changes did what they were built to do.
+
+**Slot assignment by material worked.** Section pieces stayed at 26 while
+sidebars went 14 → 9 and lines 5 → 10 — five slots moved, no member dropped.
+Gaza's C19 leads now; Providence's `S53744` and Oregon's `S53742` / `S54035` are
+lines. Feature leads went from 47–556 words to 485–538: the 47-word lead was the
+headline-only member that can no longer take the slot.
+
+One deviation from my prediction, and the implementation was right and the
+prediction wrong. I expected Gaza's C80 to become a line too. It stayed a sidebar
+because its packet is *partial*, not headline-only — it has real material, and
+150 words is what that material supports. The rule is about material, not about
+having been outranked.
+
+**The six source-meta phrases are gone.** Three new ones took their place.
+
+### The third layer was the one that mattered
+
+`formatArticle` labelled every source in every packet:
+
+    --- SOURCE 2: The American Prospect | 2026-08-18T14:22Z [feed summary only; truncated at 1200 of 4800 chars]
+
+Run #15's `S54321` wrote "though the source material was truncated before
+detailing the specific benefits added". Gizmo checked the persisted body, found
+the details present, and called the sentence false. It is false about the
+article and *true about the packet*: the budget trimmed the text, and this label
+said so with numbers, inches from the text itself. The writer was not
+hallucinating. It was reporting what we told it.
+
+So three layers said the same thing at three distances — the standing memo in the
+system prompt, the packet note in the user prompt, the per-source label inline
+with the material — and each time I fixed the outer one, the inner one won. That
+is now four instances of one pattern (`headline_only_words`, the `line` tier, the
+packet note, this), and the general form is worth stating plainly:
+
+**A model relays what the prompt tells it about itself. The fix is never a rule
+telling it not to; the fix is not telling it.**
+
+Neither dropped flag was actionable. A writer cannot do anything differently
+knowing text was trimmed — trimming lands on a paragraph boundary and reads
+complete — and "this came from a feed rather than a fetch" has no bearing on how
+to write a sentence. The untranslated flag stays, because whether the writer can
+read the text at all is a real decision. `(no body text available for this
+source)` went too: it is the same leak in miniature, and a headline with nothing
+under it says the same thing without handing over the words.
+
+Origin, truncation, dedup and furniture counts now print in
+`inspect packet --rank`, following the precedent already set there for omitted
+sources — the prompt withholds what the writer must not use, the audit shows
+everything.
+
+### Judged and left alone
+
+`"La Nación did not specify its location beyond naming Deir Ezzor as one of the
+two sites inspected"` was flagged as a possible fourth leak. It is not the same
+thing: it reports the limit of what is publicly known about a fact, which is
+ordinary journalism, and papers write that sentence every day. The rule is about
+the paper's own machinery — feeds, fetches, budgets, extraction — not about
+attributing a gap in the public record. Tightening it to catch this would cost
+real reporting.
+
+`C86` still runs as a 45-word feature at rank 15. The editor assigns tiers before
+the fetch exists, so it cannot know a story has no material; fixing it means
+moving the fetch above the editor, which is a larger change than the defect.
+
+### Not yet explained
+
+The widened index query returned **zero GIN and zero GiST indexes** in the
+database; extensions are `amcheck`, `plpgsql`, `vector 0.8.2`. So the
+`posting list tuple with N items cannot be split at offset M` errors from collect
+#50 do not come from where that message normally comes from, and my GIN
+hypothesis was wrong. Two items are still being lost per run without explanation.
+
+## 2026-08-19 — The per-article cap was a ceiling, and it was cutting the answer
+
+Run #17 was the third writer-only A/B on editor #114. The plumbing leak is
+gone: `inspect packet --rank 32` shows source blocks with no `[feed summary
+only]` or `[truncated at …]`, the `MATERIAL` audit block carries them instead,
+and all three surviving sentences from run #15 are absent. Slots came back
+identical to run #15 — 7 leads, 9 sidebars, 10 lines — so nothing regressed.
+Lines 16–28 words, brief sidebar 48, no feature over 600.
+
+One sentence survived in spirit:
+
+> "The American Prospect reports the expansion is broad but does not specify
+> which benefits beyond the 1999 categories are now included."
+
+Gizmo called it an inference from omitted packet material, which is right, and
+the packet dump shows why it happened. That story is **one source, 9,892
+characters, standard tier**. Its packet held 2,573 — cut by
+`per_article_chars: 3000` on a `total_chars: 12000` budget, using a fifth of
+what was authorised with nothing else competing for it. The visible text runs
+1882 → 1999 → 2019 → Biden and stops at a paragraph boundary before the section
+describing the new rule. The writer read that and said so. It was **true of the
+material it was handed and false of the article**, and this time nothing in the
+prompt told it — it simply noticed.
+
+So the fix is not a fifth prompt rule. `allocateBudget` gains a third pass:
+floor everyone, distribute the remainder capped per article, then hand what is
+still unspent to the articles still truncated. The cap keeps doing its real job
+— stopping one long source eating a packet several outlets should share — and
+stops acting as an absolute ceiling on packets that have nobody to be fair to.
+
+Roughly 17% of articles reach the 5,000+ bucket, so this changes the packets
+built from the best-sourced material and leaves the thin ones alone.
+
+**The pattern across the last four entries, now complete.** Each fix removed a
+place where the prompt described its own state, and each time the model's
+remaining commentary moved one layer inward: system memo → user-prompt note →
+per-source label → *the shape of the text itself*. The last one cannot be fixed
+by withholding information, because the model is reading the material directly.
+It can only be fixed by not truncating in the middle of the answer.
+
+### The index is genuinely corrupt
+
+`bt_index_check` results:
+
+- `preprocessed_items_source_name_idx` — clean.
+- `raw_items_source_name_idx` — **FAILED**: `item order invariant violated …
+  page lsn=0/BA428F00`.
+
+So the `posting list tuple with N items cannot be split at offset M` errors from
+collect #50 are real btree corruption, on the index Gizmo named in the first
+place. My GIN hypothesis was wrong and my correction sent him to a dead end;
+PostgreSQL 13's btree deduplication stores repeated keys as posting list tuples,
+and `source_name` — 111 distinct values across hundreds of thousands of rows —
+is where deduplication does the most work.
+
+Not yet repaired: the pre-authorisation named `preprocessed_items_source_name_idx`,
+which is the clean one, and Gizmo correctly declined to touch an index the
+instruction had not named. `REINDEX INDEX CONCURRENTLY raw_items_source_name_idx`
+is the repair.
+
+`amcheck` predates this project on that database.
+
+### Watch
+
+First-pass writer failures are trending up across identical runs: 1 (#13), 3
+(#15), 10 (#17). Run #17's ten were all briefs missing from batch output,
+recovered by one repair pass. Same editor run and same packets each time, so this
+is provider-side variance rather than anything in the paper — but the batch path
+is where it lands, and `brief_batch_size: 10` means one bad batch costs ten
+pieces.
+
+## 2026-08-19 — Source material is not rationed
+
+Reverses part of the original writers design. `max_articles` and `total_chars`
+are now `null` on every tier: if an item survived collection, prefiltering,
+grouping and the editor, and it is not a verbatim duplicate, the writer sees it.
+
+**The principle, in John's words:** if it is news and not a duplicate then it
+should inform the story, and the writer is the one to judge whether a detail
+belongs. It reads multiple sources and decides what the story is — that is the
+job. When a piece comes out too long the fix is guidance on how to editorialize,
+never less to read.
+
+### Why the caps were wrong
+
+They were justified as redundancy control, and redundancy already had two
+mechanisms: `selectArticles` reads one article per parent outlet before a second
+from the same one, and `dedupeParagraphs` drops what another source in the packet
+already said verbatim. `max_articles` was a third mechanism for a solved problem
+— and unlike the other two it discarded **whole sources** rather than repeated
+text. Run #114's Iran thread carried 17 articles and the writer saw 12.
+
+The cost argument was also weaker than it was presented. Run #17 spent 376,425
+input tokens across 84 longform calls, ~4,480 each, of which roughly 3,300 is
+fixed scaffolding — the standing memo alone is 10,258 characters. **The memo
+costs about three times what the source material does.** The whole post-fetch
+corpus is ~1,002,000 characters. Economising on sources was economising on the
+cheap half.
+
+And the caps were actively producing errors. Run #17's rank 32 was one source of
+9,892 characters cut to 2,573, and the piece told the reader the article "does
+not specify which benefits … are now included" — true of the text it held, false
+of the article, because the part naming them was in the 74% the cap removed.
+
+### What stays
+
+`per_article_chars` and `floor_chars` remain in config and are inert while
+`total_chars` is null. They exist for the day a page would blow a context window:
+if a cap must be set, the squeeze should spread across outlets rather than let
+two long sources take everything. Setting either is an editorial decision that
+discards reporting, not a tuning knob.
+
+Word targets stay. A brief is short because the *piece* is short, and
+`headline_only_words` still caps the target when the material genuinely is a
+headline. The short tiers (`line`, `sidebar`) now exist only to set targets.
+
+### A conclusion that was never really established
+
+Run #8's lines came back at 40–47 words against a 15–30 target, and the fix
+recorded here was cutting a line's material to one source and 900 characters.
+That same run also split section lines out of the brief batch into a call framed
+for the line register. Two changes, one measurement — and the material cut got
+the credit. Removing it is now also the experiment: if lines stay at 15–30 words
+without it, the register instruction was doing the work all along.
+
+The standing memo gains a section for this, because writers will now routinely be
+handed several times more text than the target can hold: *more material than the
+piece needs* is deliberate, is not a signal to write longer, and material you did
+not need is not material wasted.
+
+## 2026-08-19 — Unrationed: what it cost, and what it settled
+
+Run #19 wrote editor #114 with `max_articles` and `total_chars` null. The
+measurements, all against run #17 on identical material:
+
+- **Packets: 3,182,655 characters** across 150 stories — feature 555,679,
+  standard 1,451,416, brief 1,175,560. Largest single packet 65,105 (C15).
+  Nothing pathological. The briefs collectively carry twice what the features do,
+  because there are 75 of them.
+- **Cost: +22.4% input tokens** (421,365 → 515,829), +30.9% output. That is the
+  whole price of handing writers everything. It confirms the earlier arithmetic:
+  the standing memo and bio dominate a writer call, so rationing sources was
+  economising on the cheap half.
+- **Transport clean.** 0 failed calls, no abort, one unparseable piece recovered
+  by one repair. Bigger prompts did not move the failure rate — first-pass losses
+  went 1 → 3 → 10 → 1 across four identical runs, which settles that as noise.
+- **T2 (Iran) now carries all 17 of its articles**, 16 in the packet and one
+  dropped as a duplicate. Run #17 showed the writer 12.
+- **Rank 32 got its full 9,892 characters** and came back a 190-word piece
+  carrying the projected disenrollment, the KFF estimates and the affected
+  countries. The "does not specify which benefits" sentence is gone, because the
+  part specifying them is now in the packet.
+
+### The line question is settled, and my earlier conclusion was wrong
+
+Lines came in at **16–29 words** with their members' full material — against
+16–28 in run #17, when they were capped at one source and 900 characters. Run #8
+changed the material budget *and* split lines into a call framed for the line
+register, in the same run, and the previous entry credited the material cut. It
+was the register instruction. The cap was doing nothing and cost the writer its
+judgment for four runs.
+
+### One regression, and it is a spine problem wearing a length problem's clothes
+
+C15 (Meta) came in at **668 words against a 600 ceiling** — the only feature over,
+with leads at 463–511. Gizmo found no unsupported claim in it; the material
+genuinely supports every sentence.
+
+But look at what it covers: the four states, the platform-design allegations, the
+age and data claims, internal documents, Meta's denial, prior state cases, the
+Section 230 posture, the damages framing, and the expected appeals. **Nine
+subjects in 668 words** — 74 words each, none developed. That is the roundup
+shape the memo has always forbidden, and the length is the symptom.
+
+So the fix is guidance, as promised, and specifically guidance that is *operable*.
+"Cut what the headline does not promise" is easy to agree with and hard to apply
+against twelve sources each carrying something real. The memo now gives two
+concrete tests: finish "this piece is about ___ and it lands on ___" before
+writing, and after writing, remove any paragraph and check whether the piece
+still answers its own headline. And it names the count of subjects, not the word
+count, as the thing to watch.
+
+### The absence rule needed a sharper line
+
+Two source-meta sentences survived, both of the same shape:
+
+- "though Le Monde does not explain the terms under which it is allowed to
+  function"
+- "The Willamette Week report does not provide further details of the union's
+  account"
+
+These are not the earlier plumbing leak — nothing about feeds or truncation — so
+the previous rule did not catch them. The distinction that does:
+
+**Who withheld it decides whether it is news.** "The interior ministry did not
+say how many people were detained" is an actor withholding, and is often the most
+telling line in a piece. "Willamette Week does not provide further details" is an
+outlet's article being short, which is the paper explaining why its own piece is
+short. Name the actor; never the outlet.
+
+This also corrects a call I made last round: I told Gizmo that "La Nación did not
+specify its location" was acceptable. Under this rule it is not, and it should
+not have been waved through.
+
+### Index
+
+`REINDEX INDEX CONCURRENTLY raw_items_source_name_idx` completed and
+`bt_index_check` now passes on both indexes. The `posting list tuple` errors that
+cost collect #50 two items should not recur.
+
+## 2026-08-19 — Run #20: a good piece, a wrong gate, and a real defect underneath
+
+The fresh pipeline (collect #51 → editor #115) ran clean: no index errors after
+the reindex, `attach_failed_calls=0`, `split_failed_calls=0`, thread #12 formed
+11 threads with `failed_calls=0`, 3,315,290 characters of packets with a 56,182
+largest. Gizmo then stopped after the one-piece writer smoke test, judging the
+feature a roundup covering five developments, and withheld the 150-piece run.
+
+**The piece is good, and the gate was wrong.** Its five "developments" are not
+five subjects — they are a spine with evidence hung off it. A new defence
+minister promises to escalate deep strikes; the piece explains the upheaval that
+produced him, then turns to whether the strategy is working, on an explicit hinge
+— *"The strikes Khmara promises to intensify are already measurable inside
+Russia"* — and gives 15% lower oil exports, Moscow fuel rationing, 194 refinery
+strikes against 18 a year earlier, and Putin's response. That is an article.
+
+The gate misfired because of how I wrote the prompt. Run #19's Meta feature
+covered nine subjects at 74 words each with nothing connecting them, and I asked
+Gizmo to "list the distinct subjects" as the diagnosis. He applied the count as a
+threshold. **The Meta piece's defect was never the number — it was nine subjects
+with no relation between them.** Five subjects joined by an argument is what a
+feature is supposed to look like.
+
+### But there is a real defect, and neither of us named it first
+
+Two of the lead's paragraphs — Fedorov's dismissal and wartime-election demand,
+and Mudra's corruption resignation — belong to `C22` and `C21`, which are **their
+own members of T1, running as lines below the lead.** The reader would get the
+lead covering both at length, then two one-sentence lines repeating them.
+
+Two causes, both fixed:
+
+**The lead was only ever told about the sidebars.** `siblingTitles` for a lead
+was `sidebarTitles`, which did not matter when a thread had three or four members
+and matters enormously at eleven: T1 has one sidebar-eligible trio and six lines,
+so six members were invisible to the piece most likely to write them up. Every
+piece now gets the full list — the lead sees everything below it, and a sidebar
+or line sees the lead plus the others, minus itself.
+
+**`isLiveBlog` missed its own canonical case.** The lead's single source was Le
+Monde's *"EN DIRECT, guerre en Ukraine : …"* — a comma after "EN DIRECT", where
+the pattern required a colon or dash. So 45,000 characters of live blog covering
+the entire war became a section lead's whole material. The detector now accepts
+any separator.
+
+That second one also punctures a claim in the section design: "material
+partitions by member, so two pieces cannot overlap." That holds for *sources*,
+not for *content* — a live blog assigned to one member contains every other
+member's events. Detection is the mitigation; the sibling list is the guarantee.
+
+### On stopping
+
+Withholding the run was the right instinct on a wrong judgment, and it cost one
+provider call to find a real bug. Worth keeping the smoke gate; worth being
+clearer that the smoke test's job is to catch structural failures, and that a
+disagreement about editorial quality should be reported and escalated rather than
+used to halt.
+
+## 2026-08-20 — Sections work on dimensions, not items
+
+Run #22 rewrote editor #115 with every section piece told what the others cover.
+The paper came out 150/150 after one repair, lines all 15–28 words and one
+sentence each, no absence-based source claims. Then Gizmo read all eleven
+sections against a hypothesis I had formed from three of them, and broke it.
+
+**My hypothesis:** a section works when its lead sits one level above its
+members, and fails when the lead is itself one of the members. It explained T1
+(low-altitude lead reaching sideways into two siblings), T0 and T3.
+
+**It has four counter-examples.** T2's lead is a statewide cost figure and the
+section works on a specific flare-up. T5's is a single rainfall warning and works.
+T9's is a Canadian aid announcement and works. T7's is one candidate's removal and
+works. Altitude describes the good cases without predicting them.
+
+**The better predictor, and it is Gizmo's:** a member belongs when it answers
+*"what does this change about the situation the lead established?"* — as a
+consequence, a mechanism, a scale, a human cost, or another instance of the same
+emergency. That is a **dimension**. A member that says "another thing happened in
+the same war" is an **item**, and a section built from items is a list.
+
+- T0: blockade → the diesel margin it drove to a record, the carriers straining
+  to hold it open. Dimensions.
+- T3: Pacific drawdown → the exercise it cancelled, the summit it enabled.
+- T10: outbreak's case count → its strain has no approved treatment. The second
+  answers the question the first raises.
+- T1: a defence minister's appointment, a prisoner exchange, a drone strike on a
+  police station, a family's story from the occupied east. Items.
+
+**Member count predicts nothing.** T0 works with nine, T1 fails with eleven; T3
+works with four, T8 fails with three.
+
+So the answer to "one article or a section?" is neither — **it is a threading
+question, and the section design stays as it is.** The thread prompt now carries
+both tests explicitly, with T1 named as the real thread that passed the first and
+failed the second.
+
+### What this reframes
+
+Three of the four failures are not the writers' fault and two are not threading's:
+
+- **T6** ran two sidebars that near-duplicate each other — "Treasury doubles debt
+  buyback" and "Bond market pressure prompts policy action" are one story that
+  grouping did not cluster.
+- **C32** ran 250 words as a sidebar because its *cluster* holds four separate
+  accountability cases — Hind Rajab, the paramedics, World Central Kitchen, two
+  MSF cases. Selection, not sourcing; and the selection was made by grouping.
+- **T4**'s second member is a procedural footnote about a comment deadline
+  already in the lead.
+
+That is three defects tracing to grouping being loose, surfacing at the writers
+because that is where they become visible. Worth a look at
+`grouping.embedding.similarity_threshold` on the next full run, but not worth
+tuning blind from one day's output.
+
+### Also
+
+`S55939`'s "The article reports that hairdressers, mechanics…" is a phrasing
+defect only — Gizmo confirmed the Le Monde source states it directly. It is the
+article-as-subject shape the memo already forbids, so it joins the named
+examples with its corrected form.
+
+## 2026-08-20 — The floor was the last thing asking for it
+
+Run #24 (fresh pipeline, collect #52 → editor #116 → writer #24) produced five
+pieces ending in some form of "No further details were available from the
+source". Every one is headline-only.
+
+This is the fifth appearance of one defect and the fourth attempted fix. The
+standing memo forbids writing about the sourcing; the packet note was rewritten
+to direct rather than describe; `formatArticle` stopped labelling every source
+with its origin and truncation. All three held — the sweep found no "the feed",
+no "truncated", no "paywall". What was left was a **number**.
+
+`headline_only_words` is `[25, 60]`, rendered as a range. A range has a floor,
+and a floor is an instruction to keep writing. A piece whose material supports
+fifteen words was being asked for twenty-five, and it met the number the only way
+available to it: by describing the gap.
+
+A headline-only packet is now told "up to 60 words, and fewer is correct — stop
+when the sources do". No minimum. Pieces with real material keep their range,
+where the floor does useful work and a 40-word feature is a different failure.
+
+Same lesson as `headline_only_words` itself, the `line` tier, the packet note and
+the source labels: **when an instruction contradicts a parameter, the parameter
+wins.** Four of the five instances of this defect were caused by a number.
+
+### Threading: the relation test worked
+
+Seven threads, down from run #12's eleven, and 19 section pieces down from 42 —
+the expected direction, and not an over-correction. Gizmo flagged one survivor:
+T5 pairs a Russian strike on Kyiv with Ukrainian drones hitting Tatarstan. That
+is the weakest of the seven, though "exchange strikes" is arguably a real
+relation — one is an answer to the other.
+
+### Grouping: over-merging is the more common failure, and the split pass cannot see it
+
+Gizmo's count, which is what the audit was for:
+
+**Clear over-merges (4):** `C5` Florida *and* Alaska primary results; `C9` gold
+mine collapses in the Central African Republic *and* Colombia; `C19` a graft
+probe plus a separate election demand; `C30` a membership surge plus separate
+Irkutsk and Tyumen disputes.
+
+**Plausible under-merges (2):** `C0`/`C48` (debt milestone, Treasury
+intervention); `C31`/`C55` (one Walmart earnings cycle split in two).
+
+**The split pass is structurally blind to this class.** It exists to repair
+*chaining* — union-find joining A~B~C where A and C are unrelated — so it
+suspects components that are large (`min_size: 3`) and **loosely** connected
+(`cohesion < 0.55`). Two gold-mine collapses on different continents are
+*tightly* connected in embedding space, because they are the same kind of event
+described in the same words. High cohesion, never suspected, never examined.
+
+Raising `similarity_threshold` would attack the over-merges and worsen the
+under-merges. It is not the lever.
+
+**But the describe pass already produces the evidence.** Its own title for `C9`
+is "Gold mine collapses kill dozens in Central African Republic **and** Colombia"
+— the model wrote the defect into its label, exactly as a bad thread anchor does,
+and nothing reads it. Describe runs on every multi-item cluster in one batched
+call and is the only pass that reads a whole cluster's material with a question
+in mind. Not yet acted on; proposed rather than shipped, because clustering is
+the pipeline's primary lever and the dissolve-versus-re-split choice is a real
+design decision.
+
+## 2026-08-20 — Describe asks whether the cluster is one story
+
+Run #50's grouping produced four clear over-merges, and they share a shape the
+split pass cannot see:
+
+- `C9` — gold mine collapses in the Central African Republic **and** Colombia
+- `C5` — Florida **and** Alaska primary results
+- `C19` — a graft probe plus a separate election demand
+- `C30` — a membership surge plus separate Irkutsk and Tyumen disputes
+
+Step 2b's split exists to repair **chaining**: union-find joins A~B~C when A and
+C are unrelated, so it suspects components that are large (`min_size: 3`) and
+**loosely** connected (`cohesion < 0.55`). Two mine collapses on different
+continents are the opposite — *tightly* connected, because they are the same kind
+of event described in the same words. High cohesion, never suspected, never
+examined. No value of `density_floor` reaches them.
+
+`similarity_threshold` is not the lever either. Gizmo's audit found two
+under-merges alongside the four over-merges (`C0`/`C48`, `C31`/`C55`), so raising
+it fixes one class and worsens the other.
+
+**But the describe pass already produced the evidence.** Its own title for `C9`
+named both countries. Describe reads every multi-item cluster's full material in
+one batched call, and it is the only pass positioned to answer the question — it
+just was not being asked. Same shape as the thread anchor: the model writes the
+defect into its own output and nothing reads it.
+
+So describe now emits `index;;verdict;;title;;summary`, and clusters it calls
+`MULTI` go through the split prompt again at a new step 4b. The freed members
+rejoin the singleton pool and the re-partitioned pieces are described a second
+time, since a label is stale the moment the cluster under it changes.
+
+**Re-partition, not dissolve.** John's call, and the right one: a flagged cluster
+of ten may hold two real groups of five, and breaking it into ten singletons
+would throw away the corroboration grouping exists to find. The split prompt is
+already built for exactly this partition, and it needs only member titles — the
+cohesion machinery it normally sits behind is *suspect selection*, which describe
+now does instead.
+
+Contracts kept from the rest of the stage: a failed re-split call leaves the
+cluster intact and increments `resplit_failed_calls`; every call goes through
+`callWithBackoff`; counters persist to `grouping_runs` (migration 038) so a run
+can be judged from the database. An unrecognisable verdict is read as `ONE`,
+because a wrongly split cluster loses corroboration while a wrongly merged one
+publishes two stories under one headline — only the first failure is caused by
+guessing here.
+
+### The relation test held on fresh material
+
+Run #52's seven threads, read against the criterion:
+
+- **T1** (child immigration detention) is the best thread the pass has produced:
+  a judge's order, the collapse of the protection system that prompted it, and
+  the scrapped effort to recruit lawyers for migrant children. Three members,
+  each a mechanism of the others.
+- **T0, T2, T3, T6** hold. T3's members are diplomatic, military and human-cost
+  dimensions of one week's Gaza strikes.
+- **T4** is marginal: its anchor is "Record-setting 2026 wildfire season", which
+  is a season rather than a dated development — the weak anchor shape.
+- **T5** is the one failure, and it is legible in its own anchor: "Russian
+  missile barrage on Kyiv **and** Ukrainian drone strike on Tatarstan". An anchor
+  needing "and" to join two events is a self-declared two-situation thread. That
+  is the third appearance of this shape, after run #113's T4 and run #22's T1.
+
+**T5 is not a failure — John's call, and it corrects both of us.** Gizmo flagged
+it and I agreed; the reader who wants this paper does not. It is the
+Russia–Ukraine war, two members, a barrage and the drone strike answering it, and
+he wants that as its own section. The lesson is not "same war is fine" either:
+run #22's T1 was also one war and he preferred it as a single article. The
+difference is size and shape — two reciprocal strikes cohere, eleven assorted war
+items do not.
+
+So the anchor rule I was about to add — an anchor needing "and" means two threads
+— **does not get written.** It would have cut this thread. Three appearances of
+the shape turned out to be two failures and one thread the reader wants. The
+anchor stays what it was built to be: a column that makes a thread legible to a
+human, not a test a machine applies.
+
+### Fixed on the way out
+
+`resplitFlaggedClusters` returned no way to tell a freshly re-partitioned cluster
+from an already-described one, and the first attempt filtered on `notes === null`
+— which is true of *every* cluster in this stage, since `buildAutoCluster` sets
+it null and describe never touches it. That would have re-described the entire
+run after any re-split instead of the handful of new pieces. The pass now returns
+the member-id keys of the clusters it created and only those are relabelled.
+
+## 2026-08-20 — Run #51: the re-split ran, and mostly did nothing
+
+The pass executed cleanly — `describe_flagged=34`, `resplit_calls=34`,
+`resplit_failed_calls=0`, digest accounting balanced at 671 clustered + 740
+singleton = 1,411 items with no duplicate member ids. And it changed **six**
+clusters out of thirty-four.
+
+The six it did change were right: the FDA-nomination / $40-trillion-debt cluster
+of 34 articles split cleanly in two; the Central African Republic and Colombian
+mine collapses separated; a 39-article Korea cluster became eight coherent
+groups. That is the class the pass was built for, and on those it works.
+
+**The other 28 were my bug.** `applyResplitPartitions` bailed out on
+`partition.length <= 1`, treating a single-group response as "leave it alone".
+But a single group is not a no-op — it says *those* members are the event and the
+rest are not. Case 2 of the audit is the clearest: eight members covering the USS
+Lincoln's deployment plus a South China Sea breakdown plus energy markets plus
+farm tariffs, and the model answered `1,2,3`. The correct action is to keep three
+and free five. Mine kept all eight and freed nobody.
+
+`splitLowDensityComponents` has always applied a partition whenever the call
+succeeded, freeing every unplaced member — I wrote the new pass without matching
+the tested one. The application logic is now extracted as
+`applyResplitPartitions`, pure and exported, with six tests including the
+single-group case, `none` (which dissolves), and a failed call (which does not).
+
+### The run's numbers are not comparable, and that is separate
+
+`cross_run_dedup_skipped=true` on preprocessor #45, with 0 cross-run drops and
+2,444 items kept from 2,496 considered. Previous runs dropped 1,100–1,600
+cross-run. Collector #53 inserted 301 new items, so the other ~2,100 were
+already-processed items from earlier days re-entering the pipeline.
+
+That is why grouping #51 shows 197 clusters and 1,411 kept-news against run #50's
+68 and 560, and why the digest carries Peru earthquake coverage and Florida
+primary roundups. **Run #51 is a valid test of whether the code executes and a
+poor test of whether grouping improved**, because the input is two-and-a-half
+days of news at once. The over-merges Gizmo found (`C5` Alaska runoff candidates,
+`C9` mine collapses) are real, but their frequency cannot be compared to run #50.
+
+### Two audit findings that are not defects
+
+**Sixteen "sidebar length outliers" are an artifact of the audit, not the paper.**
+Gizmo checked every section sidebar against 45–70 words. That band belongs to the
+`sidebar` *budget tier*, which applies only when a sidebar lands on `brief` — a
+sidebar under a feature-tier lead is standard-tier and gets 120–200. All sixteen
+are standard-tier, and fifteen of them are inside 120–200. Only `S59541` at 107
+is genuinely short.
+
+**Thirteen standalone briefs at 47–72 words against 25–45 are real**, and are the
+predicted cost of unrationing: a brief with five sources and 20,000 characters
+writes 52 words instead of 35. Roughly 30% of briefs, overshooting by ~15%. The
+memo's "more material than the piece needs" section exists for exactly this and
+is not landing on the batched path. Not yet acted on — the fix is guidance, per
+the standing principle, and one polluted run is thin evidence for rewording it.
+
+### Source-meta down from five to two
+
+The floor fix worked. `S57832` still says "No further details were available from
+the source" at 27 words, and `S57492` says "a separate question the sources do
+not address" — a 143-word piece flagging the limit of its own analysis, which is
+a different shape from the headline-only padding and may want its own rule.

@@ -48,7 +48,7 @@ The paper is produced by a daily cron running nine stages.
 9. Publisher (software)
 ```
 
-Stages 1–7 are built. Writers and publisher are not.
+Stages 1–8 are built. Only the publisher is not.
 
 **This section has been reconciled with what was actually built.** The
 original conception had seven stages including an agentic *Researcher*
@@ -118,13 +118,21 @@ Rows sort by combined score, and tiers are assigned by rank position from fixed 
 
 This replaced an earlier conception of the editor as an orchestrated multi-call LLM producing per-piece writer packages. Ranking and tiering turned out to be a scoring problem, not a judgment problem — the judgment lives in prefilter and grouping-pass-1, both of which read the bio. See `docs/decisions.md`.
 
-**Open question:** the writer package (angle, voice brief, editorial notes, length target) has no home now. Either the editor grows a package-creation step, or the writers work directly from the cluster digest plus tier. This is the main thing to decide before building the writers.
+**Resolved (2026-08-13):** the writer package is assembled by software, not authored by a model. Tier sets the length target and register, the bio says who the piece is for, a standing memo carries the voice, and a materials resolver plus an article-text fetch supply the source material. A package-creation LLM step would be a judgment stage with nothing new to judge on — the bio-aware judgment already happened in the prefilter and grouping-pass-1. See `docs/decisions.md`.
 
 ### Stage 8: Writers (parallel LLM calls)
 
 One call per piece. Writers run in parallel — no inter-dependencies. Each writer receives the source material for its story, a target length driven by tier, and the paper's voice.
 
 Writers don't see each other's work.
+
+The stage is three pieces, of which the first two are built:
+
+1. **Materials resolver** — walks a ranked story back to the articles underneath it, across threads, clusters and singletons.
+2. **Article-text fetch** — most feeds carry a teaser rather than a body (61% of run #112's articles were under 800 characters), so the articles the feed left short are fetched from the publisher and extracted. The text is used to write the paper and never published.
+3. **Prompt assembler** — selects, deduplicates and budgets that material into one prompt per piece, then makes the calls: one per feature and standard piece, briefs in batches. A failed call costs one piece, never the edition.
+
+A thread does not become one piece. It becomes a **section**: a lead, several sidebars at one tier below, and a one-sentence line for each remaining member, all under one heading. One slot cannot hold a situation — either the writer tours every event and produces a list, or it picks one and silently drops the rest. Because a thread's members are distinct events by construction, material partitions cleanly by member and the pieces of a section cannot overlap, so no writer needs to see another's work. Sections displace the lowest-ranked standalone stories, keeping the paper finite.
 
 ### Stage 9: Publisher (software)
 
