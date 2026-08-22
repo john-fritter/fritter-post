@@ -650,6 +650,18 @@ briefs, section lines — and lines never batch with briefs. The batch prompt fr
 the whole set, so a mixed call asks for one register and gets it for both; run #8
 did exactly that.
 
+**The batch parser is forgiving too, which it was not for thirty-five runs.**
+`parseBriefBatchOutput` demanded `ref;;headline;;body` exactly. Run #36's batch 0
+answered all ten of its briefs as `ref;;body` — no headline field — in the
+original call and again in the straggler re-ask; both produced ten complete,
+correctly-referenced briefs, and the parser dropped all twenty lines and turned
+the batch into ten failed pieces. A database-wide scan found **40 non-empty batch
+responses across thirteen runs** that yielded no pieces at all, quietly paid for
+and quietly discarded. A missing headline costs a headline; a dropped line costs
+the piece — so a two-field brief is read with a null headline, and only a line
+with no text at all is refused. This is run #3's lesson in the one place it was
+never applied.
+
 **Reading the output is forgiving; producing it is not retried.** Run #3 lost two
 pieces to a parser that demanded a labelled headline on the first line — the
 calls had succeeded. `parseWriterOutput` now scans the opening lines for a label,

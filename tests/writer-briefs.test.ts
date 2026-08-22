@@ -135,6 +135,41 @@ function testTheLineContractAsksForTwoFields() {
   assert.ok(briefPrompt.includes("ref;;headline;;body"));
 }
 
+function testATwoFieldBriefIsStillABrief() {
+  // Run #36's batch 0 answered all ten of its briefs as `ref;;body`, with no
+  // headline field — twice, in the original call and in the straggler re-ask.
+  // Both produced ten complete, correctly-referenced briefs; the parser required
+  // a second delimiter, dropped all twenty lines, and the batch became ten failed
+  // pieces. A missing headline costs a headline; a dropped line costs the piece.
+  const out = [
+    "S1;;Russia's Justice Ministry re-added Meduza to its \u201cforeign agent\u201d registry.",
+    "S2;;TriMet service cuts take effect this week, ending bus routes riders have used for years.",
+  ].join("\n\n");
+  const parsed = parseBriefBatchOutput(out, ["S1", "S2"]);
+  assert.equal(parsed.size, 2);
+  assert.equal(parsed.get("S1")!.headline, null);
+  assert.ok(parsed.get("S1")!.body.startsWith("Russia's Justice Ministry"));
+  assert.equal(parsed.get("S2")!.headline, null);
+}
+
+function testThreeFieldBriefsStillKeepTheirHeadline() {
+  const parsed = parseBriefBatchOutput("S1;;A real headline;;A real body.", ["S1"]);
+  assert.equal(parsed.get("S1")!.headline, "A real headline");
+  assert.equal(parsed.get("S1")!.body, "A real body.");
+}
+
+function testATrailingEmptyFieldIsReadAsTheBrief() {
+  // `ref;;text;;` — the model closed the shape but only wrote one thing.
+  const parsed = parseBriefBatchOutput("S1;;The council voted Tuesday to ban fireworks.;;", ["S1"]);
+  assert.equal(parsed.get("S1")!.headline, null);
+  assert.equal(parsed.get("S1")!.body, "The council voted Tuesday to ban fireworks.");
+}
+
+function testALineWithNoTextAtAllIsStillRejected() {
+  assert.equal(parseBriefBatchOutput("S1;;", ["S1"]).size, 0);
+  assert.equal(parseBriefBatchOutput("S1;;;;", ["S1"]).size, 0);
+}
+
 function testBracketedAndLowercaseRefsStillMatch() {
   const parsed = parseBriefBatchOutput("[s1];;A headline;;A body sentence.", ["S1"]);
   assert.equal(parsed.get("S1")!.headline, "A headline");
@@ -174,12 +209,19 @@ function testMissingBriefsAreSimplyAbsent() {
   assert.ok(!parsed.has("S2"));
 }
 
-function testEmptyFieldsAreRejected() {
+function testAMissingFieldCostsTheFieldNotThePiece() {
+  // These two used to be rejected outright, which is the same strictness that
+  // lost run #36's whole batch 0. Whatever text the model did write is the
+  // brief; only the headline is forfeit.
   const parsed = parseBriefBatchOutput(
-    ["S1;;;;A body with no headline.", "S2;;A headline with no body;;"].join("\n"),
+    ["S1;;;;A body with no headline.", "S2;;A brief with no third field;;"].join("\n"),
     ["S1", "S2"],
   );
-  assert.equal(parsed.size, 0);
+  assert.equal(parsed.size, 2);
+  assert.equal(parsed.get("S1")!.headline, null);
+  assert.equal(parsed.get("S1")!.body, "A body with no headline.");
+  assert.equal(parsed.get("S2")!.headline, null);
+  assert.equal(parsed.get("S2")!.body, "A brief with no third field");
 }
 
 function testPreambleAndFencesAreIgnored() {
@@ -355,12 +397,16 @@ testParsesOneLinePerBrief();
 testASectionLineHasNoHeadline();
 testALineThatKeepsTheOldThreeFieldShapeIsStillRead();
 testTheLineContractAsksForTwoFields();
+testATwoFieldBriefIsStillABrief();
+testThreeFieldBriefsStillKeepTheirHeadline();
+testATrailingEmptyFieldIsReadAsTheBrief();
+testALineWithNoTextAtAllIsStillRejected();
 testBracketedAndLowercaseRefsStillMatch();
 testSemicolonsInsideTheBodySurvive();
 testInventedRefsAreDropped();
 testFirstLineForARefWins();
 testMissingBriefsAreSimplyAbsent();
-testEmptyFieldsAreRejected();
+testAMissingFieldCostsTheFieldNotThePiece();
 testPreambleAndFencesAreIgnored();
 testLabelledHeadlineIsRead();
 testPreambleBeforeTheHeadlineIsSkipped();

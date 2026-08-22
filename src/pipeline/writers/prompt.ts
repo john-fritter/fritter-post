@@ -472,12 +472,41 @@ export function parseBriefBatchOutput(
       continue;
     }
 
+    // **A brief that arrives with two fields is still a brief.** The contract
+    // asks for `ref;;headline;;body`, and run #36's batch 0 answered every one of
+    // its ten briefs as `ref;;body` — no headline field — twice over, in the
+    // original call and in the straggler re-ask. Both produced ten complete,
+    // correctly-referenced briefs; the parser required a second delimiter and
+    // dropped all twenty lines, and the whole batch became ten failed pieces.
+    //
+    // This is run #3's lesson in the place it was never applied. That parser was
+    // made forgiving because refusing output the model had already paid for is
+    // the parser's failure, not the writer's — and `parseWriterOutput` has read
+    // an unlabelled headline ever since. `parseBriefBatchOutput` kept demanding
+    // its exact shape, and a database-wide scan found 40 non-empty batch
+    // responses across thirteen runs that produced no pieces at all.
+    //
+    // A missing headline costs a headline. A dropped line costs the piece.
     const second = line.indexOf(";;", first + 2);
-    if (second === -1) continue;
+    if (second === -1) {
+      const body = line.slice(first + 2).trim();
+      if (body.length === 0) continue;
+      out.set(ref, { ref, headline: null, body });
+      continue;
+    }
 
     const headline = line.slice(first + 2, second).trim();
     const body = line.slice(second + 2).trim();
-    if (headline.length === 0 || body.length === 0) continue;
+    // `ref;;text;;` — a trailing empty field means the text was the whole brief.
+    if (body.length === 0) {
+      if (headline.length === 0) continue;
+      out.set(ref, { ref, headline: null, body: headline });
+      continue;
+    }
+    if (headline.length === 0) {
+      out.set(ref, { ref, headline: null, body });
+      continue;
+    }
 
     out.set(ref, { ref, headline, body });
   }
