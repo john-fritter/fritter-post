@@ -650,6 +650,17 @@ briefs, section lines — and lines never batch with briefs. The batch prompt fr
 the whole set, so a mixed call asks for one register and gets it for both; run #8
 did exactly that.
 
+**A batch that answers on one line is still a batch.** The contract says "one
+output line per brief" and also "plain prose on one line, no line breaks", and
+run #38's batch merged the two: every brief on a single line, each separated by
+`;;`. The parser read the first ref, took the second field as its headline and
+**everything after it as the body**, so S60434 was published as a 353-word brief
+whose body was the other nine briefs, refs and all, while those nine went missing
+and cost a straggler re-ask. The refs are the batch's own structure, so
+`parseBriefBatchOutput` puts every known ref back at the start of a line before
+reading. Only `ref;;` splits — a brief that merely mentions a ref-shaped token
+keeps its body.
+
 **The batch parser is forgiving too, which it was not for thirty-five runs.**
 `parseBriefBatchOutput` demanded `ref;;headline;;body` exactly. Run #36's batch 0
 answered all ten of its briefs as `ref;;body` — no headline field — in the

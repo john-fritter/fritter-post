@@ -152,6 +152,36 @@ function testATwoFieldBriefIsStillABrief() {
   assert.equal(parsed.get("S2")!.headline, null);
 }
 
+function testARunTogetherBatchIsSplitOnItsOwnRefs() {
+  // Run #38's batch put every brief on one line. The parser read the first ref,
+  // took the second field as its headline and everything after it as the body —
+  // so S60434 was published as a 353-word brief whose body was the other nine
+  // briefs, refs and all, while those nine went missing and cost a re-ask.
+  const merged =
+    "S1;;Anthropic will watermark Claude's output;;Not all users welcome the change." +
+    ";;S2;;An Alabama jury awarded $9.25 million to a basketball player." +
+    ";;S3;;DHS told Nevada it found 185 potential noncitizen voters.";
+  const parsed = parseBriefBatchOutput(merged, ["S1", "S2", "S3"]);
+  assert.equal(parsed.size, 3);
+  assert.equal(parsed.get("S1")!.headline, "Anthropic will watermark Claude's output");
+  assert.equal(parsed.get("S1")!.body, "Not all users welcome the change.");
+  assert.ok(!parsed.get("S1")!.body.includes("S2"));
+  assert.equal(parsed.get("S2")!.headline, null);
+  assert.ok(parsed.get("S2")!.body.startsWith("An Alabama jury"));
+  assert.ok(parsed.get("S3")!.body.startsWith("DHS told Nevada"));
+}
+
+function testARefInsideProseDoesNotSplitALine() {
+  // Only `ref;;` splits. A brief that merely mentions a ref-shaped token keeps
+  // its body intact.
+  const parsed = parseBriefBatchOutput(
+    "S1;;A headline;;The filing lists case S2 among the consolidated claims.",
+    ["S1", "S2"],
+  );
+  assert.equal(parsed.size, 1);
+  assert.ok(parsed.get("S1")!.body.includes("case S2 among"));
+}
+
 function testThreeFieldBriefsStillKeepTheirHeadline() {
   const parsed = parseBriefBatchOutput("S1;;A real headline;;A real body.", ["S1"]);
   assert.equal(parsed.get("S1")!.headline, "A real headline");
@@ -428,6 +458,8 @@ testASectionLineHasNoHeadline();
 testALineThatKeepsTheOldThreeFieldShapeIsStillRead();
 testTheLineContractAsksForTwoFields();
 testATwoFieldBriefIsStillABrief();
+testARunTogetherBatchIsSplitOnItsOwnRefs();
+testARefInsideProseDoesNotSplitALine();
 testThreeFieldBriefsStillKeepTheirHeadline();
 testATrailingEmptyFieldIsReadAsTheBrief();
 testALineWithNoTextAtAllIsStillRejected();

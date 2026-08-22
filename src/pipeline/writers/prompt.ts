@@ -427,6 +427,10 @@ export interface ParsedBrief {
  * Missing refs are the caller's problem to record — a brief that did not come
  * back is a failed piece, not a silent gap.
  */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function parseBriefBatchOutput(
   text: string,
   validRefs: string[],
@@ -435,7 +439,29 @@ export function parseBriefBatchOutput(
   const valid = new Set(validRefs.map((r) => r.toUpperCase()));
   const out = new Map<string, ParsedBrief>();
 
-  for (const rawLine of text.split(/\r?\n/)) {
+  // **A batch that answers on one line is still a batch.** The contract says
+  // "one output line per brief" and also "plain prose on one line, no line
+  // breaks", and run #38's batch merged the two: every brief on a single line,
+  // each separated by `;;`. The parser read the first ref, took the second field
+  // as its headline and **everything after it as the body** — so S60434 was
+  // published as a 353-word brief whose body was the other nine briefs, refs and
+  // all, while those nine went missing and cost a straggler re-ask.
+  //
+  // The refs are the batch's own structure, so use them: put every known ref
+  // back at the start of a line before reading. A ref only ever appears
+  // mid-body when the model ran the briefs together, which is exactly the case
+  // this repairs.
+  const normalized =
+    validRefs.length > 0
+      ? text.replace(
+          // The `;;` that joined this brief to the previous one goes with it,
+          // so the previous body does not keep a dangling separator.
+          new RegExp(`(?:;;\\s*)?\\b(${validRefs.map(escapeRegExp).join("|")})\\s*;;`, "gi"),
+          "\n$1;;",
+        )
+      : text;
+
+  for (const rawLine of normalized.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line.length === 0) continue;
 
