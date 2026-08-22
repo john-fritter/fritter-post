@@ -83,7 +83,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes (the reading view)
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–036)
+├── migrations/                  # numbered SQL migrations (001–038)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -649,6 +649,16 @@ a line's headline too so the repair path agrees with the batch.
 briefs, section lines — and lines never batch with briefs. The batch prompt frames
 the whole set, so a mixed call asks for one register and gets it for both; run #8
 did exactly that.
+
+**The contract names its fields, because showing the shape was not enough.**
+Whole batches answered `ref;;body` and dropped the headline field, and run #39
+published ten headline-less briefs that way. The brief contract now names three
+fields — ref, then a headline, then the brief — and says not to omit the headline;
+run #40 came back with 52 of 52 brief lines in the three-field shape and **zero**
+headline-less batch briefs. The same gap existed on the individual path, which
+showed `HEADLINE:` in its output block and never said the label was mandatory,
+so the system prompt now says so and says a brief has a headline exactly as a
+feature does.
 
 **A batch that answers on one line is still a batch.** The contract says "one
 output line per brief" and also "plain prose on one line, no line breaks", and
