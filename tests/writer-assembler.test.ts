@@ -761,6 +761,12 @@ function testAMultiSourceClusterIsToldItIsOneEvent() {
 
 function testSystemPromptCarriesTheVoiceDocument() {
   const prompt = buildWriterSystemPrompt("VOICE MEMO CONTENTS");
+  // Naming the requirement is what took the batch contract's headline-less
+  // briefs from ten to zero in run #40. The individual prompt showed the shape
+  // and never said the label was mandatory; four of run #40's individual pieces
+  // came back without it.
+  assert.ok(/Begin with the literal word HEADLINE and a colon/.test(prompt));
+  assert.ok(/a brief has a headline exactly as a feature does/.test(prompt));
   assert.ok(prompt.includes("VOICE MEMO CONTENTS"));
   assert.ok(prompt.includes("HEADLINE:"));
 }

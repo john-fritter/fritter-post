@@ -50,6 +50,8 @@ HEADLINE: <one line, plain and direct, saying what happened>
 
 <the body, plain prose, paragraphs separated by a blank line>
 
+Begin with the literal word HEADLINE and a colon. Do not omit that line, whatever the length of the piece — a brief has a headline exactly as a feature does.
+
 The headline states what happened, in one clause. If it needs an "as" clause or a list of three nouns to cover the piece, the piece has no focus — find the focus first, then write the headline for that. No questions, no teasing, no "what you need to know", no colon-and-label constructions.`;
 }
 

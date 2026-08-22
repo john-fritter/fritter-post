@@ -20,6 +20,48 @@ Entry format:
 
 ---
 
+## 2026-08-22 — The writers stage is done; the parsers were the real defect
+
+**Decision:** Stop rewriting the paper to tune the writers stage. Remaining
+defects are within the measured noise band. The next work is the publisher and
+the cron entrypoint.
+
+**Context:** Runs #38, #39 and #40 each persisted 150/150 on the first pass with
+no repair, zero generation-log error rows and zero output-token ceilings. Before
+that, every run needed a repair pass and several lost whole batches.
+
+What actually fixed it was not prompt tuning. It was four parser defects, every
+one of which had been discarding work the model had already done correctly:
+
+| defect | cost |
+|---|---|
+| first headline wins, rest of output published | 233-word piece of drafts (run #28) |
+| batch demanded `ref;;headline;;body` exactly | 40 non-empty responses across 13 runs yielded nothing |
+| individual refused prose with no label | every "unparseable output" failure in runs #36–#37 |
+| batch answered on one line, first ref swallowed the rest | 9 briefs buried inside a 10th (run #38) |
+
+Each was found by reading the raw output or the paper itself. None was visible in
+any summary count: the repair pass covered for all of them, and telemetry read
+"0 errors" because `callLLM` set `generation_logs.error` *after* writing the row.
+
+**Rationale:** Run #3's lesson — refusing output the model already paid for is
+the parser's failure, not the writer's — was applied once, to
+`parseWriterOutput`, and never carried to the batch parser or to the
+prose-without-label case. Two of these four defects are that same lesson
+unlearned in another place. The rule now holds everywhere: a missing field costs
+the field, never the piece; only genuinely empty output fails.
+
+Where run #40 leaves the paper, per 150 pieces: 16 length outliers of which
+fifteen are within 21 words of their band, 3 outlet-class source-meta sentences,
+4 pieces with no headline, 0 lost pieces. The length audit only became readable
+once Gizmo added a signed margin column — a 2-word miss and a 53-word miss had
+been counting the same.
+
+**Supersedes:** nothing. It closes the arc that "Source-meta has reached its
+noise floor" (2026-08-21) opened.
+
+---
+
 ## 2026-08-21 — Source-meta has reached its noise floor; stop pulling layers
 
 **Decision:** Stop treating "the paper writing about its own sourcing" as a
