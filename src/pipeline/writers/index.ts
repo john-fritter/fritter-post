@@ -519,16 +519,25 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
       console.warn(`[writers] repair ${piece.ref}: still failing — ${piece.detail ?? ""}`);
       continue;
     }
+    // `tier` and `material_level` are rewritten, not just the body. Both are
+    // derived from the packet the repair actually wrote against, and a repair
+    // re-derives packets from `article_texts` as it stands now — so a fetch or a
+    // retention sweep between the run and the repair can move a story's tier
+    // under `resolveTiersByMaterial`, or its material level on its own. The row
+    // must describe the piece that exists: a row reading `feature` above thirty
+    // words of brief is the kind of disagreement an audit cannot resolve.
     await pool.query(
       `UPDATE writer_pieces
        SET headline = $1, body = $2, word_count = $3, status = 'ok', detail = NULL,
-           generation_log_id = $4
-       WHERE run_id = $5 AND ref = $6`,
+           generation_log_id = $4, tier = $5, material_level = $6
+       WHERE run_id = $7 AND ref = $8`,
       [
         piece.headline,
         piece.body,
         piece.wordCount,
         piece.generationLogId !== null ? piece.generationLogId.toString() : null,
+        piece.tier,
+        piece.materialLevel,
         runId,
         piece.ref,
       ],

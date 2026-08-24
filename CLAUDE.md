@@ -571,6 +571,39 @@ Sections make the paper longer than the editor's story count, so
 `applyPaperBudget` drops standalone pieces from the bottom of the rank order to
 compensate. Section pieces are never dropped and one standalone always survives.
 
+**Tier slots are assigned by material too — the section rule, one level up.**
+The editor tiers by rank position alone and its formula knows nothing about
+whether any text exists behind a story, so run #42 published 37 of 150 pieces on
+headline-only material, three of them features. Rank 7 ran one sentence and then,
+under a horizontal rule, a note to the operator ("That's all the source
+carries"); rank 18 was 24 words ending "the New York Times reports". Neither is a
+writing failure — both are writers obeying a headline-only packet's own ceiling
+inside a slot that promised four hundred words. **The pipeline knew before it
+made the call:** those two are `oregonlive.com` and `nytimes.com`, which the
+fetch cooldown had already given up on, and rank 62 was a Google News item that
+`sources.yaml` records as structurally unfetchable. Note that `opb.org` and
+`oregonlive.com` are both permanently in cooldown and both are the Oregon local
+beat — the front page is starved on precisely the subject the bio weights
+hardest.
+
+`resolveTiersByMaterial` runs between assembly and rendering. A story whose
+packet is headline-only *at the tier it holds* trades tiers with the
+nearest-ranked story below it that can fill the slot. `materialLevelAtTier` reads
+the level at the tier being asked about rather than the one assigned, which is
+what makes a demotion meaningful — 1,500 characters is headline-only for a
+feature and partial for a standard, so the demoted piece gets a band it can
+actually fill. **It swaps rather than demotes**, so the paper keeps 15 features on
+a day the local outlets block us instead of shrinking to 12, and the well-sourced
+standards just under the line get the treatment they can carry (run #42's ranks
+16 and 17 were fully-sourced pieces sitting below three stubs). Ranks and scores
+are never touched, so a story can sit high in the ranking and run short — the
+honest outcome when a story matters and the text is not there. The pass is
+top-down, so a story demoted out of feature is reconsidered at standard; when
+nothing below has material either, the slot is left alone. Threads participate,
+judged on their section lead. Config is `packet.tiers_requiring_material`
+(`[feature, standard]`); `brief` is deliberately absent because a brief is a
+pointer, and an empty list disables the rule.
+
 **A sidebar is never batched, and a brief-tier sidebar is budgeted as a sidebar.**
 Only `buildWriterUserPrompt` renders `sectionInstruction`, so a batched sidebar is
 written with no idea it belongs to a section and no idea what the lead covers —
@@ -932,7 +965,12 @@ number is ambiguous. The next migration is **039**.
   the same run's fetch had taken body text from 33,903 to 405,351, and reading
   the feed column alone says the features were written from teasers
 - `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
-  packets: sizes for every story, or the full prompt for one
+  packets: sizes for every story, or the full prompt for one. Prints
+  **headline-only counts per tier** and any tier swaps `resolveTiersByMaterial`
+  made. Run #42's audit could not state that 37 of its 150 pieces were
+  headline-only because the materials audit counts thin *articles*, which is a
+  different quantity from a thin *piece*; a non-zero count in a prominent tier
+  now means the day ran out of material to trade with, not a mis-assigned slot
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 

@@ -232,6 +232,10 @@ const WritersPacketConfigSchema = z.object({
   min_article_chars: z.number().int().nonnegative(),
   // Length ceiling for a piece with headline-only material, whatever its tier.
   headline_only_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  // Tiers, most prominent first, whose slot a headline-only story may not hold.
+  // Anything outside the list accepts headline material. Empty disables the
+  // rule and restores the editor's rank-only tiering. See resolveTiersByMaterial.
+  tiers_requiring_material: z.array(z.string()),
   tiers: z.object({
     feature: WritersTierPacketConfigSchema,
     standard: WritersTierPacketConfigSchema,

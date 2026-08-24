@@ -789,6 +789,29 @@ async function main() {
           const sections = new Set(packets.map((p) => p.packet.section?.ref).filter(Boolean));
           console.log(`  Sections:                ${sections.size} (${sectionPieces} pieces)`);
         }
+        // The number run #42's audit had no way to state: how much of each tier
+        // is running on a headline. 37 of its 150 pieces were headline-only,
+        // three of them features, and nothing in the reports said so — the
+        // materials audit counted thin *articles*, which is a different thing
+        // from a thin *piece*. Tiers whose slots require material are resolved
+        // before this point, so a non-zero count here is a day the paper ran out
+        // of material to trade with, not a slot mis-assignment.
+        console.log("");
+        console.log("  Material by tier:");
+        const tierOrder = ["feature", "standard", "brief"];
+        const seen = [...new Set(packets.map((p) => p.packet.tier))].sort(
+          (a, b) => (tierOrder.indexOf(a) + 1 || 99) - (tierOrder.indexOf(b) + 1 || 99),
+        );
+        for (const tier of seen) {
+          const inTier = packets.filter((p) => p.packet.tier === tier);
+          const at = (level: string) =>
+            inTier.filter((p) => p.packet.materialLevel === level).length;
+          console.log(
+            `    ${tier.padEnd(9)} ${String(inTier.length).padStart(3)} pieces — ` +
+              `${at("full")} full, ${at("partial")} partial, ${at("headline-only")} headline-only`,
+          );
+        }
+
         console.log("");
         console.log("  rank tier      ref     section     arts  omit  material       chars  fetched/feed");
         for (const { packet, promptChars } of packets) {

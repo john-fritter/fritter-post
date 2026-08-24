@@ -289,6 +289,25 @@ writers:
     # telling it not to is competing with the length target. Removing the
     # pressure is more reliable than instructing against it.
     headline_only_words: [25, 60]
+    # Tiers whose slot a headline-only story may not hold, most prominent first.
+    #
+    # The editor tiers by rank position alone, and its formula —
+    # relevance + source_weight*ln(sources) — cannot see whether any text exists
+    # behind a story. Run #42 published 37 of 150 pieces on headline-only
+    # material, three of them features: rank 7 ran one sentence and then a note
+    # to the operator, rank 18 was 24 words ending "the New York Times reports".
+    # Both were on hosts the fetch cooldown had already given up on, which the
+    # pipeline knew before it made the call.
+    #
+    # A story that cannot fill its slot trades tiers with the nearest-ranked one
+    # below it that can, so the paper keeps 15 features on a day the local
+    # outlets block us rather than shrinking to 12 — and the well-sourced
+    # standards sitting just under the line get the treatment they can carry.
+    # Ranks and scores are never touched.
+    #
+    # `brief` is deliberately absent: a brief is a pointer and a headline is
+    # enough for one. An empty list disables the rule.
+    tiers_requiring_material: [feature, standard]
     # Floor for a body to be worth a packet slot at all, after furniture removal.
     # Deliberately low: run #112's Al Jazeera summary was 89 characters and
     # carried a real fact, while the Google News stub next to it was the headline

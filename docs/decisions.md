@@ -4159,3 +4159,137 @@ The floor fix worked. `S57832` still says "No further details were available fro
 the source" at 27 words, and `S57492` says "a separate question the sources do
 not address" — a 143-word piece flagging the limit of its own analysis, which is
 a different shape from the headline-only padding and may want its own rule.
+
+---
+
+## 2026-08-24 — A slot the material cannot fill is worse than no slot
+
+Run #42 (editor #120) is the first paper audited end to end before building the
+publisher. It passed every integrity check — 150/150 pieces persisted, ranks
+contiguous, zero failed calls — and the review that came back listed length
+outliers, a smoke-gate miss and a recovered token-budget error. None of those is
+the thing wrong with the paper.
+
+**37 of the 150 published pieces were written on headline-only material.** A
+quarter of the paper, and not distributed like noise:
+
+| tier | headline-only | of |
+|---|---|---|
+| feature | 3 | 15 |
+| standard | 11 | 60 |
+| brief | 23 | 75 |
+
+Ranks 7, 9 and 14 — three of the fifteen front-page slots — were 46-, 50- and
+56-word stubs. Rank 18 was twenty-four words: "The Cicero Institute, founded by
+venture capitalist Joe Lonsdale, led Republican efforts to clear homeless people
+from the streets, the New York Times reports." Rank 7 (S61342) wrote one
+sentence and then, below a horizontal rule, a note to whoever was reading it:
+"That's all the source carries. The headline promises dismantling a third of the
+system, but the article body does not state that."
+
+### These are not writing failures
+
+Every one of them is a writer doing what a headline-only packet tells it to —
+write what you have, go no further, and a ceiling with no floor so nothing pushes
+it to pad. That machinery works. What it cannot do is decline the slot. A
+four-hundred-word feature position handed 400 characters of teaser produces
+either invention or an apology, and the accumulated fixes in this stage have
+successfully steered it away from invention.
+
+The audit's own source-boundary list makes the point: four candidate sentences,
+and the two that are genuine defects (S61342, S61332) are both headline-only
+pieces in slots too large for them. The other two are actors declining to
+comment, which is reporting. Fix the slot and the language problem goes with it.
+
+### The pipeline already knew
+
+Nothing about this was discovered at write time. The fetch cooldown had given up
+on `oregonlive.com` and `nytimes.com` before the run started — S61342 and S61618
+are those two hosts. S61332 is a Google News item, and `sources.yaml` has said in
+its own notes since the AP feed was added that those links are interstitials with
+no article behind them.
+
+Note which hosts those are. `opb.org` and `oregonlive.com` are both in the
+cooldown list, and they are the Oregon local beat — the beat the bio weights
+hardest and which therefore scores highest in grouping-pass-1. **The front page
+is systematically starved on precisely its highest-relevance subject**, and will
+be every day until those hosts stop serving a device check.
+
+### The editor cannot see this and should not have to
+
+`combined = relevance + source_weight·ln(sources)`, then tiers by rank position
+from fixed counts. Both inputs are upstream judgments about what the reader
+should care about; neither is about whether text exists. Teaching the editor
+about fetchability would be teaching a ranking formula about HTTP.
+
+`applyPaperBudget` could not catch it either — it drops from the bottom of the
+rank order and never looks at a packet's contents.
+
+### The fix is the section rule, one level up
+
+`assembleSectionPackets` has assigned a thread's lead by material rather than by
+score since run #13, when the Gaza section led with a 47-word stub while a
+180-word fully-sourced piece ran beneath it as a sidebar. The reasoning
+generalizes exactly: the unit is the paper's tiers instead of a section's roles.
+
+`resolveTiersByMaterial` runs between assembly and rendering. A story whose
+packet comes out headline-only *at the tier it holds* trades tiers with the
+nearest-ranked story below it that can fill the slot. Config is
+`writers.packet.tiers_requiring_material: [feature, standard]`; `brief` is
+deliberately absent, because a brief is a pointer and a headline is enough for
+one. An empty list disables the rule.
+
+Three properties, each deliberate:
+
+**Material level is read at the tier being asked about, not the tier assigned.**
+`materialLevelOf` already reads each tier's own thresholds, so 1,500 characters
+is headline-only for a feature and partial for a standard. That is what makes a
+demotion mean something rather than relabel a stub: the demoted piece gets a real
+word band it can actually fill.
+
+**It swaps rather than demotes.** The paper keeps fifteen features on a day the
+local outlets block us, instead of shrinking to twelve. This also fixes the
+other half of the problem — run #42's ranks 16 and 17 were fully-sourced 208- and
+213-word standards that would have made real features, sitting one place below
+the line while three stubs held feature slots.
+
+**Ranks and scores are never touched**, matching the section rule's promise. Only
+the treatment moves. A story can therefore sit high in the ranking and run short,
+which is the honest outcome when a story matters and the text is not there.
+
+The pass is top-down, so a story demoted out of feature is reconsidered for the
+standard slot it lands in and demoted again if it cannot fill that either.
+Each swap moves the failing story strictly downwards, so it terminates. When
+nothing below has material either — a day the whole corpus is teasers — the slot
+is left alone and the packet's own ceiling still keeps the piece short.
+
+Threads participate, judged on their section lead, since the lead is what
+occupies the slot.
+
+### What is not being changed, and why
+
+**The length outliers.** Fourteen pieces outside their band, the worst a
+651-word feature against a 600 ceiling and three 46–48-word briefs against 45.
+Soft targets missed by under 10%.
+
+**A deterministic minimum word count**, which the review recommended. This is the
+one recommendation that would actively regress the stage. A floor is a number, a
+number beats an instruction, and floors are what produced run #24's five "No
+further details were available from the source" pieces — the lesson recorded
+under "The floor was the last thing asking for it" four days ago. `targetPhrase`
+renders a ceiling with no floor for anything short of a full packet, on purpose.
+
+**The recovered brief-batch token exhaustion.** One call in eight spent its 8,000
+output tokens with an empty body and the retry recovered it. That is
+`callWithBackoff` doing the job it was given after run #35, when budget
+exhaustion was deliberately placed on the retryable side of the timeout line.
+The mechanism worked; there is nothing to fix.
+
+### Instrumentation
+
+`inspect packet --editor-run` now prints headline-only counts per tier. Run
+#42's audit could not state the finding above because the materials audit counts
+thin *articles*, which is a different quantity from a thin *piece* — 254 unique
+URLs and 104 thin ones says nothing about how many of the 150 slots that left
+empty. A non-zero count in a prominent tier now means the day ran out of material
+to trade with, not that a slot was mis-assigned.

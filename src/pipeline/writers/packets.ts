@@ -11,11 +11,14 @@ import { readFileSync } from "fs";
 import path from "path";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import { loadEditorRunMaterials } from "./materials.js";
+import { loadEditorRunMaterials, type StoryMaterials } from "./materials.js";
 import {
   assembleWriterPacket,
   assembleSectionPackets,
+  materialLevelAtTier,
+  resolveTiersByMaterial,
   type ResolvedText,
+  type TierCandidate,
   type WriterPacket,
 } from "./assembler.js";
 import { buildWriterSystemPrompt, buildWriterUserPrompt, VOICE_FALLBACK } from "./prompt.js";
@@ -137,8 +140,36 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
 
   const { bio, voice } = loadWriterDocs();
 
+  // **A slot the material cannot fill is worse than no slot.** The editor tiers
+  // by rank alone and cannot see whether any text exists behind a story, so run
+  // #42 put three headline-only stubs on its front page. Stories whose material
+  // cannot fill their tier trade places with the nearest-ranked ones below that
+  // can; ranks and scores are untouched. See resolveTiersByMaterial.
+  const ladder = cfg.tiers_requiring_material;
+  const candidates: TierCandidate[] = stories.map((story) => ({
+    ref: story.ref,
+    rank: story.rank,
+    tier: story.tier,
+    levels: new Map(
+      ladder.map((tier) => [tier, materialLevelAtTier(story, textsById, cfg, tier)]),
+    ),
+  }));
+  const { tiers, swaps } = resolveTiersByMaterial(candidates, ladder);
+  for (const swap of swaps) {
+    console.log(
+      `[writers] editor run #${editorRunId}: rank ${swap.rank} ${swap.ref} ` +
+        `${swap.tier}→${swap.demotedTo} (headline-only material for a ${swap.tier}); ` +
+        `rank ${swap.takerRank} ${swap.takerRef} ${swap.takerFrom}→${swap.tier}`,
+    );
+  }
+
+  const atResolvedTier = (story: StoryMaterials): StoryMaterials => {
+    const tier = tiers.get(story.ref) ?? story.tier;
+    return tier === story.tier ? story : { ...story, tier: tier as StoryMaterials["tier"] };
+  };
+
   // A thread becomes a section of several pieces; everything else is one piece.
-  const expanded = stories.flatMap((story) =>
+  const expanded = stories.map(atResolvedTier).flatMap((story) =>
     story.itemType === "thread"
       ? assembleSectionPackets(story, textsById, cfg)
       : [assembleWriterPacket(story, textsById, cfg)],

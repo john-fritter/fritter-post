@@ -27,6 +27,7 @@ const CFG: WritersPacketConfig = {
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,
   headline_only_words: [25, 60],
+  tiers_requiring_material: ["feature", "standard"],
   tiers: {
     feature: {
       max_articles: null,

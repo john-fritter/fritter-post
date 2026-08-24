@@ -719,3 +719,143 @@ export function assembleSectionPackets(
     };
   });
 }
+
+/**
+ * The material level a story would have if it were written at `tier`.
+ *
+ * Material level is tier-relative by design — `materialLevelOf` reads the
+ * tier's own thresholds, so 1,000 characters is headline-only for a feature and
+ * partial for a standard piece. That is exactly the property the slot resolver
+ * needs: asking "could this story fill a feature slot?" is asking for its level
+ * at the feature tier, not at the one the editor happened to assign it.
+ *
+ * For a thread the answer is its **section lead's** level, because the lead is
+ * what occupies the slot. `assembleSectionPackets` has already reordered members
+ * so the best-sourced one leads, so the first packet is the right one to read.
+ */
+export function materialLevelAtTier(
+  story: StoryMaterials,
+  textsById: Map<number, ResolvedText>,
+  cfg: WritersPacketConfig,
+  tier: string,
+): MaterialLevel {
+  const at =
+    tier === story.tier ? story : { ...story, tier: tier as StoryMaterials["tier"] };
+  return story.itemType === "thread"
+    ? assembleSectionPackets(at, textsById, cfg)[0]!.materialLevel
+    : assembleWriterPacket(at, textsById, cfg).materialLevel;
+}
+
+/** One story as the slot resolver sees it: where it sits, and what it could fill. */
+export interface TierCandidate {
+  ref: string;
+  rank: number;
+  tier: string;
+  /** Material level this story would have at each tier the resolver considers. */
+  levels: Map<string, MaterialLevel>;
+}
+
+/** A slot that changed hands, kept so the run can say what it did and why. */
+export interface TierSwap {
+  tier: string;
+  /** The story that could not fill the slot, and where it went instead. */
+  ref: string;
+  rank: number;
+  demotedTo: string;
+  /** The story that took the slot, and what it gave up to take it. */
+  takerRef: string;
+  takerRank: number;
+  takerFrom: string;
+}
+
+/**
+ * Reassigns tier slots a story's material cannot fill.
+ *
+ * **A slot the material cannot fill is worse than no slot.** The editor assigns
+ * tiers by rank position alone — feature 15, standard 60, brief 75 — and its
+ * formula is `relevance + source_weight·ln(sources)`, which knows nothing about
+ * whether any text exists behind the story. Nothing downstream corrected that,
+ * so run #42 published 37 of 150 pieces on headline-only material, including
+ * three of its fifteen features. Rank 7 (S61342, OregonLive) ran one sentence
+ * and then, below a horizontal rule, a note to whoever was reading: "That's all
+ * the source carries." Rank 18 (S61618) was twenty-four words ending "the New
+ * York Times reports". Rank 62 (S61332, a Google News item, which `sources.yaml`
+ * already records as structurally unfetchable) wrote "No further details on the
+ * outbreak's scale, location, or the vaccination campaign were available from
+ * the source."
+ *
+ * Those are not writing failures. Every one of them is a writer obeying a
+ * headline-only packet's own instruction — write what you have and stop — inside
+ * a slot that promised four hundred words. The pipeline knew the material was
+ * absent before the call was made: the fetch cooldown had already given up on
+ * oregonlive.com and nytimes.com, and a Google News link has never had an
+ * article behind it.
+ *
+ * **This is the section rule, applied to the paper.** `assembleSectionPackets`
+ * has picked a thread's lead by material rather than by score since run #13, for
+ * the same reason at a smaller scale. Here the unit is the paper's tiers.
+ *
+ * **It swaps rather than demotes**, so the paper keeps its shape: fifteen
+ * features every day, not twelve on a day the local outlets blocked us. A
+ * headline-only story trades tiers with the nearest-ranked story below it that
+ * *can* fill the slot, which is also the fix for the other half of the problem —
+ * run #42's ranks 16 and 17 were fully-sourced 208- and 213-word standards that
+ * would have made real features. Score and rank are never touched; only the
+ * treatment moves. A story can therefore sit high in the ranking and run short,
+ * which is the honest outcome when a story matters and the text is not there.
+ *
+ * `ladder` is the tiers, most prominent first, whose slots require real
+ * material; anything outside it (brief) is below all of them and accepts
+ * headline material, because a brief is a pointer and a headline is enough for
+ * one. An empty ladder disables the rule.
+ */
+export function resolveTiersByMaterial(
+  candidates: TierCandidate[],
+  ladder: string[],
+): { tiers: Map<string, string>; swaps: TierSwap[] } {
+  const tiers = new Map(candidates.map((c) => [c.ref, c.tier]));
+  const swaps: TierSwap[] = [];
+  if (ladder.length === 0) return { tiers, swaps };
+
+  const byRank = [...candidates].sort((a, b) => a.rank - b.rank);
+  // Anything off the ladder sits below every tier on it.
+  const depth = (tier: string) => {
+    const i = ladder.indexOf(tier);
+    return i === -1 ? ladder.length : i;
+  };
+  const canFill = (c: TierCandidate, tier: string) =>
+    (c.levels.get(tier) ?? "headline-only") !== "headline-only";
+
+  // Top-down, so a story demoted out of feature is reconsidered for the standard
+  // slot it lands in and demoted again if it cannot fill that either. Each swap
+  // moves the failing story strictly downwards, so this terminates.
+  for (const tier of ladder) {
+    for (const hole of byRank) {
+      if (tiers.get(hole.ref) !== tier || canFill(hole, tier)) continue;
+
+      // The nearest story below this tier that can fill it. Nearest, so the
+      // promotion reaches as short a distance down the ranking as it can.
+      const taker = byRank.find(
+        (c) => depth(tiers.get(c.ref)!) > depth(tier) && canFill(c, tier),
+      );
+      // A day on which nothing below has material either. Leave the slot alone:
+      // the packet's own ceiling still keeps the piece short and honest.
+      if (taker === undefined) break;
+
+      const takerFrom = tiers.get(taker.ref)!;
+      tiers.set(hole.ref, takerFrom);
+      tiers.set(taker.ref, tier);
+      swaps.push({
+        tier,
+        ref: hole.ref,
+        rank: hole.rank,
+        demotedTo: takerFrom,
+        takerRef: taker.ref,
+        takerRank: taker.rank,
+        takerFrom,
+      });
+    }
+  }
+
+  return { tiers, swaps };
+}
