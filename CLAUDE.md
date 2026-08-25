@@ -1010,6 +1010,24 @@ number is ambiguous. The next migration is **039**.
   written piece; `--full` prints the bodies
 
 **Experiments**
+- `npm run probe-source -- --robots <host>` — fetch a publisher's robots.txt and
+  probe every `Sitemap:` it declares, reporting which are **news sitemaps**
+  (they carry titles and publication dates, which is a feed in all but name).
+  **Start here rather than guessing paths**: robots.txt names the feeds. This is
+  the discovery mechanism for a source's endpoints, the same way `--probe` is for
+  embedding models, and for the same reason — `sources.yaml` records AP as having
+  no working feed on the strength of five URLs tried once, and that note is now
+  load-bearing for the paper's single largest contributor of material.
+- `npm run probe-source -- --feeds <host>` — battery of candidate feed and
+  sitemap paths, one at a time, honest UA first.
+- `npm run probe-source -- --resolve <url>` /
+  `--resolve-source <name> [--limit <n>]` — resolve aggregator interstitials to
+  the publisher's article, reporting which strategy worked. `--resolve-source`
+  pulls real links for a configured source out of `preprocessed_items`, so the
+  answer is a success rate over live data rather than one example. Strategies run
+  cheapest first: `decodeGoogleNewsToken` is offline and free, and if the feeds
+  still serve the older encoding then nothing else is needed and the resolution
+  belongs in the preprocessor beside the other redirector unwrapping.
 - `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
   determine which embedding models a provider actually serves, by making a
   one-text embedding call per candidate and reporting the returned dimension.
