@@ -772,6 +772,7 @@ async function main() {
               a.truncated ? `truncated ${a.chars}/${a.availableChars}` : `${a.chars} chars`,
               a.duplicateParagraphs > 0 ? `${a.duplicateParagraphs} dup para` : null,
               a.boilerplateParagraphs > 0 ? `${a.boilerplateParagraphs} furniture` : null,
+              a.truncatedTail ? "TRUNCATED TAIL CUT" : null,
               a.translationFailed ? "UNTRANSLATED" : null,
             ].filter((m) => m !== null);
             console.log(`  [${a.preprocessedItemId}] ${a.sourceName} — ${marks.join(", ")}`);

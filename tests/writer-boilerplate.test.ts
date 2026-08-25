@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { stripBoilerplate, isHeadlineEcho } from "../src/pipeline/writers/boilerplate.js";
+import {
+  stripBoilerplate,
+  isHeadlineEcho,
+  endsMidSentence,
+} from "../src/pipeline/writers/boilerplate.js";
 
 // Every rule here came from reading the first assembled packets for editor run
 // #112. Each test pins both the cut and a near-miss that must survive, the same
@@ -106,7 +110,7 @@ function testProseIsNeverCutForMentioningTheseThings() {
 }
 
 function testEmptyInputIsSafe() {
-  assert.deepEqual(stripBoilerplate(""), { text: "", dropped: 0 });
+  assert.deepEqual(stripBoilerplate(""), { text: "", dropped: 0, truncatedTail: false });
 }
 
 // --- headline echo ---
@@ -208,9 +212,120 @@ function testDistinctParagraphsAreAllKept() {
   assert.equal(out.dropped, 0);
 }
 
+// --- truncated feed teasers ---
+//
+// Run #43's rank 15 (S62865, La Nación) is the case: a ~1,800-character feed
+// body, well clear of the 800-char fetch floor, that stops mid-clause inside a
+// quotation. The fetch skipped it as "already long enough", and the writer
+// produced 180 words of real reporting and then narrated the break.
+
+const LANACION_TEASER =
+  "The Trump administration began deportation flights to Haiti on August 20, after " +
+  "Temporary Protected Status for more than 300,000 people expired. The first flight " +
+  "carried 161 people to Cap-Haïtien, on Haiti's north coast, according to Haiti's " +
+  "National Migration Office.\n\n" +
+  "Flights were routed to Cap-Haïtien because Port-au-Prince's airport is closed to " +
+  "U.S. commercial flights amid gang violence. Hours before the first flight departed, " +
+  "the DHS secretary posted on X.\n\n" +
+  "Cap-Haïtien itself is overwhelmed. Its population has grown from 350,000 in 2003 to " +
+  "roughly 800,000 as people displaced by the capital's crisis have flooded in. " +
+  "Residents say the city cannot absorb more arrivals.\n\n" +
+  "\u201cWe are not only receiving deportees from outside Haiti due to the political " +
+  "crisis; we also have people from";
+
+function testATeaserThatStopsMidClauseIsDetected() {
+  assert.equal(endsMidSentence(LANACION_TEASER), true);
+}
+
+function testTheDanglingClauseIsCutBackToTheLastFinishedSentence() {
+  const out = stripBoilerplate(LANACION_TEASER);
+  assert.equal(out.truncatedTail, true);
+  assert.ok(out.text.endsWith("cannot absorb more arrivals."));
+  // The reporting above it survives untouched.
+  assert.ok(out.text.includes("began deportation flights to Haiti on August 20,"));
+  assert.ok(!out.text.includes("we also have people from"));
+}
+
+function testAnEllipsisIsATruncationMarkerNotAnEnding() {
+  // Feed teasers trail off with an ellipsis; that is the publisher cutting the
+  // article, not a stylistic choice, and it must not read as a finished body.
+  assert.equal(endsMidSentence("The council met on Tuesday. It voted to\u2026"), true);
+  assert.equal(endsMidSentence("The council met on Tuesday. It voted to..."), true);
+  const out = stripBoilerplate("The council met on Tuesday. It voted to\u2026");
+  assert.equal(out.text, "The council met on Tuesday.");
+}
+
+function testACompleteBodyIsUntouched() {
+  const body =
+    "Prosecutors indicted nine people on Monday.\n\n" +
+    "The servers contained B300 units, which are banned from sale to China.";
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body);
+}
+
+function testASentenceClosedInsideAQuotationIsComplete() {
+  // The near-miss this rule must not fire on: the body ends properly, but the
+  // last character is a quotation mark rather than the full stop.
+  const body = "Barrack called it \u201can unnecessary escalation that does not help.\u201d";
+  assert.equal(endsMidSentence(body), false);
+  assert.equal(stripBoilerplate(body).text, body);
+  assert.equal(endsMidSentence("She said the plan was \u201cdead on arrival.\u201d"), false);
+}
+
+function testTerminalPunctuationOutsideEnglishCounts() {
+  // The paper carries Korean, Chinese and Japanese items; a full-width stop ends
+  // a sentence exactly as a period does.
+  assert.equal(endsMidSentence("\ud68c\uc758\uac00 \uc5f4\ub838\ub2e4\u3002"), false);
+  assert.equal(endsMidSentence("\u4f1a\u8b70\u304c\u958b\u304b\u308c\u305f\u3002"), false);
+}
+
+function testABodyWithNoFinishedSentenceIsLeftAlone() {
+  // Nothing to trim back to. Emptying it would destroy the only material there
+  // is; materialLevelOf and isHeadlineEcho judge it on its length instead.
+  const body = "Council weighs new rules on short-term rentals in the historic district";
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body);
+}
+
+function testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured() {
+  // A body whose last finished sentence sits near its start is not prose with a
+  // broken tail — it is a caption run or an extraction with no sentence
+  // structure. Cutting back to that first full stop throws away nearly
+  // everything to fix nothing, so the body is left whole. Same guard, and the
+  // same reason, as trimToBoundary's.
+  const body = "Overview. " + "Names and figures without punctuation ".repeat(12);
+  const out = stripBoilerplate(body);
+  assert.equal(endsMidSentence(body), true);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body.trimEnd());
+}
+
+function testFurnitureIsRemovedBeforeTheTailIsJudged() {
+  // The trim must see the body the writer would read. A tail marker can leave a
+  // different final sentence than the raw document had.
+  const body =
+    "The commission voted on Tuesday to open the proceeding.\n\n" +
+    "READ ALSO\n\n" +
+    "Some other headline that trails off";
+  const out = stripBoilerplate(body);
+  assert.equal(out.text, "The commission voted on Tuesday to open the proceeding.");
+  assert.equal(out.truncatedTail, false);
+}
+
 testCascadePbsHousePromoIsRemoved();
 testAnArticleAboutWritersSurvives();
 testAParagraphRepeatedInsideOneDocumentIsDropped();
 testDistinctParagraphsAreAllKept();
+testATeaserThatStopsMidClauseIsDetected();
+testTheDanglingClauseIsCutBackToTheLastFinishedSentence();
+testAnEllipsisIsATruncationMarkerNotAnEnding();
+testACompleteBodyIsUntouched();
+testASentenceClosedInsideAQuotationIsComplete();
+testTerminalPunctuationOutsideEnglishCounts();
+testABodyWithNoFinishedSentenceIsLeftAlone();
+testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured();
+testFurnitureIsRemovedBeforeTheTailIsJudged();
 
 console.log("writer boilerplate tests passed");

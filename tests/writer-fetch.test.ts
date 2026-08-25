@@ -49,7 +49,10 @@ function article(
     originalUrl: url,
     publishedAt: null,
     alsoAppearedIn: [],
-    feedText: "x".repeat(feedChars),
+    // A finished sentence: `endsMidSentence` reads the last character, and a
+    // body of bare filler would look truncated to it — which is the whole point
+    // of the rule, but not what these fixtures are testing.
+    feedText: feedChars > 0 ? `${"x".repeat(Math.max(0, feedChars - 1))}.` : "",
     feedTextChars: feedChars,
   };
 }
@@ -331,7 +334,51 @@ function testHostOfStripsWww() {
   assert.equal(hostOf("not a url"), "(unparseable)");
 }
 
+/** Same article, but the publisher cut the body mid-clause. */
+function truncatedArticle(id: number, feedChars: number): StoryArticle {
+  const body = `${"x".repeat(Math.max(0, feedChars - 30))}. The minister said the plan would`;
+  return { ...article(id, feedChars), feedText: body, feedTextChars: body.length };
+}
+
+function testALongBodyThatStopsMidSentenceIsStillFetched() {
+  // **Long is not the same as complete.** La Nación's ~1,800-character teasers
+  // clear the 800-char floor and stop mid-clause, so run #43's rank 15 was never
+  // requested and its writer was handed a fragment. Length does not excuse a
+  // body from the fetch when it plainly is not the whole article.
+  const plan = planFetch(
+    [storyOf("feature", [truncatedArticle(1, 2000)])],
+    CFG,
+    new Set(),
+  );
+  assert.equal(plan.targets.length, 1);
+  assert.equal(plan.skips.length, 0);
+}
+
+function testALongCompleteBodyIsStillSkipped() {
+  // The near-miss: the rule must not turn the floor off for everyone. A body
+  // that ends on a finished sentence is taken at its word, as before.
+  const plan = planFetch([storyOf("feature", [article(1, 2000)])], CFG, new Set());
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+  assert.match(plan.skips[0]!.detail, /already 2000 chars/);
+}
+
+function testATruncatedBodyOnACoolingHostIsStillSkipped() {
+  // Being truncated earns a fetch attempt, not an exemption from the cooldown.
+  const plan = planFetch(
+    [storyOf("feature", [truncatedArticle(1, 2000)])],
+    CFG,
+    new Set(["example.com"]),
+  );
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+  assert.match(plan.skips[0]!.detail, /cooldown/);
+}
+
 testOnlyThinArticlesAreFetched();
+testALongBodyThatStopsMidSentenceIsStillFetched();
+testALongCompleteBodyIsStillSkipped();
+testATruncatedBodyOnACoolingHostIsStillSkipped();
 testBriefTierIsOutOfScope();
 testCoolingHostsAreSkippedNotRequested();
 testOneRequestPerUrlEvenWhenItemsShareIt();

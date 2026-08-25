@@ -4293,3 +4293,79 @@ thin *articles*, which is a different quantity from a thin *piece* — 254 uniqu
 URLs and 104 thin ones says nothing about how many of the 150 slots that left
 empty. A non-zero count in a prominent tier now means the day ran out of material
 to trade with, not that a slot was mis-assigned.
+
+---
+
+## 2026-08-25 — A long feed body is not a complete one
+
+Run #43's rank 15, S62865, is 180 words of good reporting that ends:
+
+> "We are not only receiving deportees from outside Haiti due to the political
+> crisis; we also have people from" — the source cuts off there.
+
+The writer quoted a half-sentence and then told the reader it was a half-
+sentence. That is the failure this stage has been closing off for a dozen runs,
+and every guard against it was in place and irrelevant, because the guards are
+about what the *prompt* says and this was about what the *material* was.
+
+### The chain, and every link is confirmed
+
+`writers.fetch.feed_chars_floor` is 800: only fetch what the feed left short.
+La Nación's feed bodies run about 1,800 characters (materials audit for editor
+#121: 8 articles, median 1,813, **0 thin**) and they stop mid-clause. So:
+
+- The body cleared the floor, and `planFetch` skipped it as "already 1,813 chars".
+- The packet used the feed text — `fetched/feed = 0/1` on its inspect line.
+- The writer got a fragment ending inside an open quotation.
+
+Every stage between the feed and the writer measured that body by its length and
+found it generous. Prefilter, grouping, scoring and the editor all saw a
+well-sourced item; the tier resolver, one day old, correctly called it partial at
+standard rather than headline-only at feature, and it was right to — there is
+1,800 characters of material there. The material is just not *finished*.
+
+### The rule already existed and was pointed at the wrong truncation
+
+`trimToBoundary` carries this comment: "A writer quoting a half-sentence is a
+defect the assembler can prevent for free." It runs only when the tier budget
+cut a body, and `total_chars` is null on every tier, so it has been inert since
+sources stopped being rationed. The truncation that reached the paper was done by
+the publisher, upstream of anything that checked.
+
+So the fix is that rule, applied where the truncation actually happens:
+
+- **`endsMidSentence` overrides the length skip in `planFetch`.** A body that
+  stops mid-sentence is not the whole article however long it is, so length no
+  longer excuses it from the fetch. This is the cause fix: the point is to get
+  the real article, not to tidy the fragment.
+- **`stripBoilerplate` trims a dangling tail** back to the last finished
+  sentence. This is the net, for when the fetch fails anyway, and it runs on both
+  the fetched and feed candidates before the packet compares their lengths — the
+  same reason furniture is stripped before either is measured.
+
+Three details, each deliberate:
+
+**An ellipsis is a truncation marker, not an ending.** In a feed body "…" is the
+publisher cutting the article. Treating it as terminal is how a teaser passes for
+a finished piece, and it is far more common than La Nación's bare break.
+
+**The trim is skipped when it would cost most of the body.** A body whose last
+finished sentence sits in its first half is not prose with a broken tail — it is
+a caption run, a list, or an extraction with no sentence structure — and cutting
+back to that first full stop would throw away nearly everything to fix nothing.
+`trimToBoundary` has the identical guard for the identical reason.
+
+**It never empties a body.** When no sentence ever finished there is nothing to
+trim back to, and `materialLevelOf` and `isHeadlineEcho` judge the fragment on
+its length as before.
+
+### Cost
+
+Roughly 71 of editor #121's 218 in-scope articles were skipped as "already long
+enough". However many of those are truncated teasers now become fetch requests.
+That is the right place for the pipeline to spend: they are long-teaser stories
+that ranked into features and standards, which is exactly the material the paper
+is short of.
+
+`truncatedTail` is recorded per article and printed by `inspect packet --rank`,
+so the next run can say how often this fires and on which outlets.

@@ -77,6 +77,8 @@ export interface PacketArticle {
   duplicateParagraphs: number;
   /** Paragraphs removed as publisher furniture before anything else ran. */
   boilerplateParagraphs: number;
+  /** A trailing half-sentence was cut from this source. */
+  truncatedTail: boolean;
   translationFailed: boolean;
 }
 
@@ -411,7 +413,13 @@ export function assembleWriterPacket(
     const useFetched = fetchedText !== null && fetchedText.text.length > feed.text.length;
     const stripped = useFetched ? fetchedText : feed;
     const origin = useFetched ? fetched!.origin : ("feed" as const);
-    return { article, text: stripped.text, origin, boilerplate: stripped.dropped };
+    return {
+      article,
+      text: stripped.text,
+      origin,
+      boilerplate: stripped.dropped,
+      truncatedTail: stripped.truncatedTail,
+    };
   });
 
   // A source whose body says nothing the headline did not adds a slot and no
@@ -470,6 +478,7 @@ export function assembleWriterPacket(
       origin: r.origin,
       duplicateParagraphs: dropped[i]!,
       boilerplateParagraphs: r.boilerplate,
+      truncatedTail: r.truncatedTail,
       translationFailed: r.article.translationFailed,
     };
   });

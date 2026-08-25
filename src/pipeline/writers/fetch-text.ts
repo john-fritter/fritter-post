@@ -36,6 +36,7 @@ import {
   BROWSER_HINT_HEADERS,
   hostOf,
 } from "../../lib/http.js";
+import { endsMidSentence } from "./boilerplate.js";
 import { extractArticle } from "./extract.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "./materials.js";
 
@@ -133,7 +134,15 @@ export function planFetch(
         feedChars: article.feedTextChars,
       };
 
-      if (article.feedTextChars >= cfg.feed_chars_floor) {
+      // **Long is not the same as complete.** This skip reads a character count
+      // and calls it a finished article. La Nación publishes ~1,800-character
+      // teasers that stop mid-clause, well clear of the 800 floor, so run #43's
+      // rank 15 was never requested and its writer was handed a fragment that
+      // broke off inside a quotation — and then wrote about the break, which is
+      // the one thing the memo forbids. A body that stops mid-sentence is by
+      // definition not the whole article, however long it is, so length does not
+      // get to excuse it from the fetch.
+      if (article.feedTextChars >= cfg.feed_chars_floor && !endsMidSentence(article.feedText)) {
         skips.push({ ...base, detail: `feed body already ${article.feedTextChars} chars` });
         continue;
       }

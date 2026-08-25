@@ -467,6 +467,26 @@ cascadepbs.org sources each had a 574-character extraction beat a ~390-character
 feed body and then strip down to 286, worse than the teaser it replaced and worse
 in a way the raw comparison could not see.
 
+**A long feed body is not a complete one.** `feed_chars_floor` reads a character
+count and calls it a finished article. La Nación publishes ~1,800-character
+teasers that stop mid-clause, well clear of the 800 floor, so run #43's rank 15
+(S62865) was never requested and its writer was handed a fragment that broke off
+inside a quotation — then wrote 180 words of real reporting and ended by
+narrating the break: "…we also have people from" — the source cuts off there.
+Nothing upstream could see it; every stage between the feed and the writer
+measured that body by its length and found it generous. `endsMidSentence` now
+overrides the length skip in `planFetch` — a body that stops mid-sentence is by
+definition not the whole article — and `stripBoilerplate` cuts a dangling tail
+back to the last finished sentence, so a fetch that fails anyway still cannot
+hand the writer half a quote. **This is `trimToBoundary`'s own rule** ("a writer
+quoting a half-sentence is a defect the assembler can prevent for free"), which
+only ever fired when the *budget* truncated a body — and the budget is inert
+while `total_chars` is null. The truncation that reached the paper was the
+publisher's. An ellipsis counts as truncation, not as an ending. The trim is
+skipped when the last finished sentence sits in the first half of the body:
+that is a caption run or a structureless extraction rather than prose with a
+broken tail, and the same proportional guard is why `trimToBoundary` has one.
+
 **`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
 Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
 "appeared first on" footer, a `READ ALSO` list or Le Monde's live-blog comment box

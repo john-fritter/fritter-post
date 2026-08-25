@@ -107,10 +107,94 @@ export function isHeadlineEcho(title: string, text: string): boolean {
   return body.length - headline.length < ECHO_SLACK_CHARS;
 }
 
+/**
+ * Sentence-terminal punctuation, plus the closers that may follow it.
+ *
+ * An ellipsis is deliberately **not** terminal. In a feed body it is a
+ * truncation marker, not a stylistic trail-off, and treating it as an ending is
+ * how a teaser passes for a finished article.
+ */
+const TERMINAL_PUNCT = /[.!?。！？؟।]/;
+const TRAILING_CLOSERS = /[)\]"'”’»›\s]*$/;
+
+/**
+ * Does this body stop in the middle of a sentence?
+ *
+ * **A long feed body is not the same as a complete one.** La Nación publishes
+ * ~1,800-character teasers that stop mid-clause on an open quote. Run #43's
+ * rank 15 (S62865) was one: `feed_chars_floor` is 800, so the fetch skipped it
+ * as "already long enough", the writer was handed a fragment, and the piece
+ * ends `"We are not only receiving deportees from outside Haiti due to the
+ * political crisis; we also have people from" — the source cuts off there.`
+ * 180 words of real reporting, and then the writer narrating the packet, which
+ * is the one thing the standing memo forbids.
+ *
+ * Nothing upstream could see it. Every stage between the feed and the writer
+ * measured that body by its length and found it generous.
+ */
+export function endsMidSentence(text: string): boolean {
+  const trimmed = text.trimEnd();
+  if (trimmed.length === 0) return false;
+  // An explicit ellipsis is a truncation marker, whatever precedes it.
+  if (/(?:\.\.\.|…)["'”’»›)\]]*$/.test(trimmed)) return true;
+  const withoutClosers = trimmed.replace(TRAILING_CLOSERS, "");
+  if (withoutClosers.length === 0) return false;
+  return !TERMINAL_PUNCT.test(withoutClosers.slice(-1));
+}
+
+/**
+ * Drops a trailing half-sentence, back to the last sentence that finished.
+ *
+ * This is `trimToBoundary`'s rule — "a writer quoting a half-sentence is a
+ * defect the assembler can prevent for free" — applied to the case that
+ * actually produced one. `trimToBoundary` only ever runs when the *budget*
+ * truncated a body, and the budget is inert while `total_chars` is null; the
+ * truncation that reached run #43's paper was done by the publisher, upstream
+ * of anything that checked.
+ *
+ * Never empties a body. When no sentence in it ever finished there is nothing
+ * to trim back to, and a one-sentence fragment is left for `materialLevelOf`
+ * and `isHeadlineEcho` to judge on its length.
+ */
+export function trimTruncatedTail(text: string): { text: string; trimmed: boolean } {
+  if (!endsMidSentence(text)) return { text, trimmed: false };
+
+  let cut = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (!TERMINAL_PUNCT.test(text[i]!)) continue;
+    // An ellipsis is not an ending, so do not trim back to the middle of one.
+    if (text.slice(i, i + 3) === "..." || text[i] === "\u2026") continue;
+    if (i > 0 && (text[i - 1] === "." || text[i - 1] === "\u2026")) continue;
+    if (text.slice(i + 1, i + 3) === "..") continue;
+    cut = i;
+    break;
+  }
+  if (cut < 0) return { text, trimmed: false };
+
+  // Keep whatever closed the sentence: a full stop inside a quotation belongs
+  // with its closing mark.
+  let end = cut + 1;
+  while (end < text.length && /["'”’»›)\]]/.test(text[end]!)) end++;
+  const kept = text.slice(0, end).trimEnd();
+
+  // **Only honour a boundary that keeps most of the body**, which is the guard
+  // `trimToBoundary` already applies for the same reason. A body whose last
+  // finished sentence is near its start is not prose with a broken tail — it is
+  // a list, a caption run, or an extraction with no sentence structure at all,
+  // and cutting back to that first full stop would throw away nearly everything
+  // to fix nothing. Leave it whole and let `materialLevelOf` judge it on length.
+  if (kept.length === 0 || kept.length * 2 < text.trimEnd().length) {
+    return { text, trimmed: false };
+  }
+  return { text: kept, trimmed: true };
+}
+
 export interface StripResult {
   text: string;
   /** Number of paragraphs removed, for auditing what the rules are doing. */
   dropped: number;
+  /** True when a trailing half-sentence was cut. See trimTruncatedTail. */
+  truncatedTail: boolean;
 }
 
 /**
@@ -128,7 +212,7 @@ export interface StripResult {
  * reporting that happens to mention CNN is untouched.
  */
 export function stripBoilerplate(text: string): StripResult {
-  if (text.length === 0) return { text, dropped: 0 };
+  if (text.length === 0) return { text, dropped: 0, truncatedTail: false };
 
   const paragraphs = text.split(PARAGRAPH_SPLIT);
   const kept: string[] = [];
@@ -180,5 +264,12 @@ export function stripBoilerplate(text: string): StripResult {
     kept.push(paragraph);
   }
 
-  return { text: kept.join("\n\n"), dropped };
+  // Last, so the trim sees the body the writer would actually read: a tail
+  // marker or a repeated template paragraph can leave a different final
+  // sentence than the raw document had. Both candidates go through here before
+  // the packet compares their lengths, which is the same reason furniture is
+  // stripped before either is measured — a teaser must not win on text it is
+  // about to lose.
+  const tail = trimTruncatedTail(kept.join("\n\n"));
+  return { text: tail.text, dropped, truncatedTail: tail.trimmed };
 }
