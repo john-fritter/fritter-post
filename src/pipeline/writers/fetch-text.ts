@@ -36,7 +36,7 @@ import {
   BROWSER_HINT_HEADERS,
   hostOf,
 } from "../../lib/http.js";
-import { endsMidSentence } from "./boilerplate.js";
+import { stripBoilerplate } from "./boilerplate.js";
 import { extractArticle } from "./extract.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "./materials.js";
 
@@ -142,7 +142,18 @@ export function planFetch(
       // the one thing the memo forbids. A body that stops mid-sentence is by
       // definition not the whole article, however long it is, so length does not
       // get to excuse it from the fetch.
-      if (article.feedTextChars >= cfg.feed_chars_floor && !endsMidSentence(article.feedText)) {
+      //
+      // **Judged on the stripped body, never the raw one.** A feed whose last
+      // line is furniture — the Guardian's "Continue reading...", Ars Technica's
+      // "Read full article" — has no terminal punctuation at the end of the raw
+      // text and is a complete article all the same. Testing before furniture
+      // removal made the source audit's 14-day window show 611 such bodies
+      // across twelve outlets that are already 100% usable, every one of them a
+      // request we would have paid for and thrown away.
+      if (
+        article.feedTextChars >= cfg.feed_chars_floor &&
+        !stripBoilerplate(article.feedText).endedMidSentence
+      ) {
         skips.push({ ...base, detail: `feed body already ${article.feedTextChars} chars` });
         continue;
       }

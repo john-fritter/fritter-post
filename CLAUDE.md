@@ -476,7 +476,12 @@ narrating the break: "…we also have people from" — the source cuts off there
 Nothing upstream could see it; every stage between the feed and the writer
 measured that body by its length and found it generous. `endsMidSentence` now
 overrides the length skip in `planFetch` — a body that stops mid-sentence is by
-definition not the whole article — and `stripBoilerplate` cuts a dangling tail
+definition not the whole article — **judged on the stripped body, never the raw
+one**: a feed whose last line is furniture (the Guardian's "Continue reading…",
+Ars Technica's "Read full article") has no terminal punctuation at the end of
+the raw text and is a complete article all the same, and testing before the
+strip flagged 611 such bodies across twelve outlets that are already 100%
+usable — and `stripBoilerplate` cuts a dangling tail
 back to the last finished sentence, so a fetch that fails anyway still cannot
 hand the writer half a quote. **This is `trimToBoundary`'s own rule** ("a writer
 quoting a half-sentence is a defect the assembler can prevent for free"), which

@@ -363,6 +363,25 @@ function testALongCompleteBodyIsStillSkipped() {
   assert.match(plan.skips[0]!.detail, /already 2000 chars/);
 }
 
+function testAFeedFooterDoesNotTriggerAFetch() {
+  // Ars Technica and the Guardian close their feed bodies with furniture, so a
+  // complete article has no terminal punctuation at the end of the raw text.
+  // The plan judges the stripped body; otherwise the source audit's 14-day
+  // window would have produced 611 requests from outlets already 100% usable.
+  const complete =
+    "The commission voted on Tuesday to open the proceeding. " +
+    "Regulators said the review would take up to a year. ".repeat(20) +
+    "\n\nRead full article";
+  const withFooter = {
+    ...article(1, complete.length),
+    feedText: complete,
+    feedTextChars: complete.length,
+  };
+  const plan = planFetch([storyOf("feature", [withFooter])], CFG, new Set());
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+}
+
 function testATruncatedBodyOnACoolingHostIsStillSkipped() {
   // Being truncated earns a fetch attempt, not an exemption from the cooldown.
   const plan = planFetch(
@@ -378,6 +397,7 @@ function testATruncatedBodyOnACoolingHostIsStillSkipped() {
 testOnlyThinArticlesAreFetched();
 testALongBodyThatStopsMidSentenceIsStillFetched();
 testALongCompleteBodyIsStillSkipped();
+testAFeedFooterDoesNotTriggerAFetch();
 testATruncatedBodyOnACoolingHostIsStillSkipped();
 testBriefTierIsOutOfScope();
 testCoolingHostsAreSkippedNotRequested();

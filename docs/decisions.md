@@ -4369,3 +4369,37 @@ is short of.
 
 `truncatedTail` is recorded per article and printed by `inspect packet --rank`,
 so the next run can say how often this fires and on which outlets.
+
+### Correction, same day: the check has to run downstream of the strip
+
+The source audit measured what the rule above would actually do, and the first
+version of it was wrong in a way one example could not show. `planFetch` tested
+the **raw** feed body. A feed whose last line is furniture has no terminal
+punctuation at the end of the raw text and is a complete article all the same:
+
+- Ars Technica closes every feed body with "Read full article" / "Comments" —
+  **92 of its 92** long bodies in the 14-day window, and the source is already
+  100% usable.
+- The Guardian's three feeds end on "Continue reading…" — 116 bodies — which
+  `boilerplate.ts` has had a rule for since run #17.
+- Meduza 172, KTVZ 153, STAT News 47, Agência Pública 40, The Lever 23.
+
+Across twelve outlets that need no fetch at all, that was **611 requests we
+would have paid for and thrown away**, against a real population of about 97 per
+run. The rule is right and the placement was wrong: completeness is a property
+of the article, and the furniture is not part of the article.
+
+So `stripBoilerplate` now reports `endedMidSentence`, computed on the stripped
+body before the trim, and `planFetch` reads that. Ars Technica's two footers
+became boilerplate rules, cited to this audit.
+
+`endedMidSentence` is deliberately **not** the same flag as `truncatedTail`.
+`trimTruncatedTail` declines to cut when the last finished sentence sits in the
+first half of the body, but such a body is still incomplete — and that is the
+strongest case for going and fetching the real article, not the weakest. One
+flag says "this needs fetching", the other says "we cut something".
+
+The general lesson is one this stage keeps relearning at a different layer: a
+rule derived from one example is a hypothesis, and the population is what tests
+it. La Nación was real — 735 of its 798 long bodies stop without terminal
+punctuation — but it was 735 of 1,373, and the other 638 were furniture.

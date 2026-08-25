@@ -41,6 +41,12 @@ const LINE_RULES: Array<{ pattern: RegExp; note: string }> = [
   { pattern: /^the post .{1,200} appeared first on .{1,60}\.?$/i, note: "syndication footer" },
   // Guardian feed teasers end with this, rank 17.
   { pattern: /^continue reading\.\.\.$/i, note: "feed teaser marker" },
+  // Ars Technica closes every feed body with these. The source audit over the
+  // 14-day window found 92 of its 92 long bodies ending on one of them, which
+  // made a complete article look truncated to `endsMidSentence` — the reason
+  // that check runs on the stripped body and not the raw one.
+  { pattern: /^read full article\s*[→>»]?$/i, note: "Ars Technica feed footer" },
+  { pattern: /^comments$/i, note: "Ars Technica feed footer" },
   // Cascade PBS's house promo for a different programme, which Readability
   // returns as the article on every cascadepbs.org page. Run #118's rank 65 was
   // an ABC-v-FCC story whose first source read "In this episode of 'Beyond the
@@ -195,6 +201,16 @@ export interface StripResult {
   dropped: number;
   /** True when a trailing half-sentence was cut. See trimTruncatedTail. */
   truncatedTail: boolean;
+  /**
+   * Did the body stop mid-sentence *once its furniture was removed*?
+   *
+   * Not the same as `truncatedTail`, and the difference matters to the fetch.
+   * `trimTruncatedTail` declines to cut when the last finished sentence sits in
+   * the first half of the body — a structureless extraction, where trimming
+   * would cost more than it saves — but such a body is still incomplete, and
+   * still the strongest reason to go and get the real article.
+   */
+  endedMidSentence: boolean;
 }
 
 /**
@@ -212,7 +228,8 @@ export interface StripResult {
  * reporting that happens to mention CNN is untouched.
  */
 export function stripBoilerplate(text: string): StripResult {
-  if (text.length === 0) return { text, dropped: 0, truncatedTail: false };
+  if (text.length === 0)
+    return { text, dropped: 0, truncatedTail: false, endedMidSentence: false };
 
   const paragraphs = text.split(PARAGRAPH_SPLIT);
   const kept: string[] = [];
@@ -270,6 +287,12 @@ export function stripBoilerplate(text: string): StripResult {
   // the packet compares their lengths, which is the same reason furniture is
   // stripped before either is measured — a teaser must not win on text it is
   // about to lose.
-  const tail = trimTruncatedTail(kept.join("\n\n"));
-  return { text: tail.text, dropped, truncatedTail: tail.trimmed };
+  const stripped = kept.join("\n\n");
+  const tail = trimTruncatedTail(stripped);
+  return {
+    text: tail.text,
+    dropped,
+    truncatedTail: tail.trimmed,
+    endedMidSentence: endsMidSentence(stripped),
+  };
 }

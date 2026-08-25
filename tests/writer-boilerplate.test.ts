@@ -110,7 +110,12 @@ function testProseIsNeverCutForMentioningTheseThings() {
 }
 
 function testEmptyInputIsSafe() {
-  assert.deepEqual(stripBoilerplate(""), { text: "", dropped: 0, truncatedTail: false });
+  assert.deepEqual(stripBoilerplate(""), {
+    text: "",
+    dropped: 0,
+    truncatedTail: false,
+    endedMidSentence: false,
+  });
 }
 
 // --- headline echo ---
@@ -289,6 +294,46 @@ function testABodyWithNoFinishedSentenceIsLeftAlone() {
   assert.equal(out.text, body);
 }
 
+function testFeedFooterFurnitureDoesNotMakeAnArticleLookTruncated() {
+  // The correction the source audit forced. Ars Technica closes every feed body
+  // with "Read full article" / "Comments" — 92 of its 92 long bodies over the
+  // 14-day window — and the Guardian with "Continue reading...". Judged raw,
+  // none of them ends on terminal punctuation and all of them read as
+  // truncated; judged after furniture removal, they are complete articles.
+  // Across twelve outlets that are already 100% usable that was 611 fetch
+  // requests we would have paid for and thrown away.
+  const article =
+    "The commission voted on Tuesday to open the proceeding.\n\n" +
+    "Regulators said the review would take up to a year.";
+  for (const footer of ["Read full article", "Comments", "Continue reading..."]) {
+    const out = stripBoilerplate(`${article}\n\n${footer}`);
+    assert.equal(out.endedMidSentence, false, footer);
+    assert.equal(out.truncatedTail, false, footer);
+    assert.equal(out.text, article, footer);
+  }
+  // And the raw body genuinely does look truncated, which is the whole point:
+  // the check has to run downstream of the strip.
+  assert.equal(endsMidSentence(`${article}\n\nRead full article`), true);
+}
+
+function testARealTruncationSurvivesFurnitureRemoval() {
+  const out = stripBoilerplate(`${LANACION_TEASER}\n\nContinue reading...`);
+  assert.equal(out.endedMidSentence, true);
+  assert.equal(out.truncatedTail, true);
+  assert.ok(!out.text.includes("we also have people from"));
+}
+
+function testAStructurelessBodyIsStillReportedIncomplete() {
+  // trimTruncatedTail declines to cut here — the last finished sentence is in
+  // the first half — but the body is incomplete all the same, and that is the
+  // strongest reason to go and fetch the real article. The two flags differ on
+  // purpose.
+  const body = "Overview. " + "Names and figures without punctuation ".repeat(12);
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.endedMidSentence, true);
+}
+
 function testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured() {
   // A body whose last finished sentence sits near its start is not prose with a
   // broken tail — it is a caption run or an extraction with no sentence
@@ -325,6 +370,9 @@ testACompleteBodyIsUntouched();
 testASentenceClosedInsideAQuotationIsComplete();
 testTerminalPunctuationOutsideEnglishCounts();
 testABodyWithNoFinishedSentenceIsLeftAlone();
+testFeedFooterFurnitureDoesNotMakeAnArticleLookTruncated();
+testARealTruncationSurvivesFurnitureRemoval();
+testAStructurelessBodyIsStillReportedIncomplete();
 testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured();
 testFurnitureIsRemovedBeforeTheTailIsJudged();
 
