@@ -4403,3 +4403,49 @@ The general lesson is one this stage keeps relearning at a different layer: a
 rule derived from one example is a hypothesis, and the population is what tests
 it. La Nación was real — 735 of its 798 long bodies stop without terminal
 punctuation — but it was 735 of 1,373, and the other 638 were furniture.
+
+---
+
+## 2026-08-25 — The headline-echo check was defeated by its own upstream rule
+
+`isHeadlineEcho` exists so a source whose body says nothing its headline did not
+loses its packet slot. Run #112's rank 3 spent one of its twelve sources on a
+Google News stub reading `Poland says it thwarted a Russian plot … apnews.com`,
+and the rule was written for exactly that.
+
+The 14-day source audit measured how often it fires, and the answer was: not on
+the case it was written for. Of **106 Google News members across editor runs
+#118–#121, 99 contributed 64–140 characters** to writer packets — a headline
+each, admitted as a source.
+
+### Two rules that were each right, disagreeing
+
+`title.ts` strips a trailing separator plus a **bare domain** and deliberately
+nothing more. That restraint is itself evidence-driven: run #112 needed
+"… Goes Rogue? - **Willamette Week**" to keep its suffix, because an outlet name
+is not a domain and stripping it would mangle real headlines.
+
+`normalizeForCompare` stripped the **domain** form from both strings.
+
+So the title arrived as "… crackdown - AP News" and the body as
+"… crackdown - apnews.com". One end had an outlet name the strip did not touch;
+the other had a domain it did. They normalized to different strings,
+`body.startsWith(headline)` failed, and the stub was admitted. Neither rule was
+wrong on its own; they simply never agreed on what an aggregator suffix is.
+
+`normalizeForCompare` now runs two passes — the original whitespace-tolerant
+domain rule, which is still needed because the body form often carries no
+separator at all ("… in Warsaw  apnews.com", two spaces), then a
+separator-plus-short-tail rule that catches the outlet-name form. It is a
+comparison normalization and never reaches the reader, so trimming a real
+headline's trailing clause costs nothing: both sides get the same treatment, and
+a body with reporting in it still fails the `ECHO_SLACK_CHARS` length test.
+
+### What this does not fix
+
+The stub loses its packet slot; it keeps its place in the editor's source count,
+because `combined = relevance + source_weight·ln(sources)` measures cross-source
+pickup and AP covering a story is a real signal of prominence whether or not we
+can read the article. That is the intended behaviour and this changes nothing
+about it. What changes is that the writer stops being handed a headline and told
+it is a source.

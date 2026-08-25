@@ -499,7 +499,17 @@ are not sentences. Rules are whole-paragraph, high-precision, and each names the
 run and source it came from; `tests/writer-boilerplate.test.ts` pins both the cut
 and the near-miss prose that must survive. Sources whose body only repeats the
 headline (`isHeadlineEcho` — the Google News shape) lose their packet slot, but a
-packet is never emptied.
+packet is never emptied. **The two ends of that check have to normalize the same
+attribution the same way**, and for a long time they did not: `title.ts` strips a
+trailing bare *domain* and nothing else — run #112 needed "… Goes Rogue? -
+Willamette Week" to keep its suffix — so a Google News title arrived ending
+"- AP News" while its body ended "- apnews.com", `startsWith` failed, and a stub
+that was nothing but its own headline was admitted as a source. The 14-day source
+audit found 99 of 106 Google News members contributing 64–140 characters of
+exactly that to writer prompts. `normalizeForCompare` now strips the domain form
+and a separator-plus-short-tail alike; it is a comparison normalization that
+never reaches the reader, and a body with real reporting still fails the length
+test.
 
 A packet records what it could not supply: `materialLevel` is judged against the
 tier's own thresholds — the same 1,000 characters is thin for a feature and

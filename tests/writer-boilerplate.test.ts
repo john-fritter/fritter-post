@@ -167,6 +167,8 @@ testNprImageCreditIsRemoved();
 testProseIsNeverCutForMentioningTheseThings();
 testEmptyInputIsSafe();
 testGoogleNewsStubIsAnEcho();
+testAnAggregatorStubIsAnEchoWhenTheSuffixesDisagree();
+testASourceWithRealReportingIsNotAnEchoHoweverItIsAttributed();
 testAShortRealSummaryIsNotAnEcho();
 testHeadlineFollowedByRealTextIsNotAnEcho();
 testEmptyBodyIsAnEcho();
@@ -357,6 +359,52 @@ function testFurnitureIsRemovedBeforeTheTailIsJudged() {
   const out = stripBoilerplate(body);
   assert.equal(out.text, "The commission voted on Tuesday to open the proceeding.");
   assert.equal(out.truncatedTail, false);
+}
+
+function testAnAggregatorStubIsAnEchoWhenTheSuffixesDisagree() {
+  // The gap the source audit found. title.ts strips a trailing bare *domain*
+  // and nothing else — run #112 needed "… Goes Rogue? - Willamette Week" to
+  // keep its suffix — so a Google News title reaches here ending "- AP News"
+  // while its body ends "- apnews.com". The two normalized to different
+  // strings, startsWith failed, and the stub was admitted to the packet as a
+  // source. 99 of 106 Google News members over the 14-day window did this.
+  assert.equal(
+    isHeadlineEcho(
+      "Wife of active-duty Army sergeant is deported to Honduras - AP News",
+      "Wife of active-duty Army sergeant is deported to Honduras - apnews.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isHeadlineEcho(
+      "DOGE tech employees resigned after refusing to comply with Musk - Mashable",
+      "DOGE tech employees resigned after refusing to comply with Musk - mashable.com",
+    ),
+    true,
+  );
+}
+
+function testASourceWithRealReportingIsNotAnEchoHoweverItIsAttributed() {
+  // The near-miss. A body that opens with its own headline and then reports is
+  // the ordinary shape of an article, and the length test is what separates it
+  // from a stub. Widening the suffix strip must not touch that.
+  assert.equal(
+    isHeadlineEcho(
+      "Wife of active-duty Army sergeant is deported to Honduras - AP News",
+      "Wife of active-duty Army sergeant is deported to Honduras. Her husband, who " +
+        "has served eleven years, said he learned of the removal from a neighbour.",
+    ),
+    false,
+  );
+  // A headline whose own last clause follows a dash still matches its article.
+  assert.equal(
+    isHeadlineEcho(
+      "The plan is dead - officials say",
+      "The plan is dead, officials say. The vote was postponed indefinitely after " +
+        "three members withdrew their support on Tuesday afternoon.",
+    ),
+    false,
+  );
 }
 
 testCascadePbsHousePromoIsRemoved();

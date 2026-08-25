@@ -88,9 +88,33 @@ function normalizeForCompare(text: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase()
-    // Feeds that route through an aggregator append the publisher's domain to
-    // both the title and the body: "… in Warsaw - apnews.com".
+    // Feeds that route through an aggregator append an attribution to both the
+    // title and the body — but **not the same attribution**, which is what
+    // defeated this check for as long as it has existed.
+    //
+    // `title.ts` strips a trailing separator plus a *bare domain* and nothing
+    // else, on purpose: an outlet name is not a domain, and run #112 needed
+    // "… Goes Rogue? - Willamette Week" to keep its suffix. So the title that
+    // reaches here often ends "- AP News" while the body ends "- apnews.com",
+    // the two normalize to different strings, `startsWith` fails, and a stub
+    // that is nothing but its own headline is admitted to the packet as a
+    // source. The 14-day source audit found 99 of 106 Google News members
+    // contributing 64–140 characters of exactly this to writer prompts.
+    //
+    // So strip a trailing separator plus a short tail carrying no sentence
+    // punctuation, which covers the domain form and the outlet-name form
+    // alike. This normalization is for comparison only and never reaches the
+    // reader, so trimming a real headline's trailing clause costs nothing: both
+    // sides get the same treatment, and a body with actual reporting in it
+    // still fails the length test below.
+    //
+    // Two passes, and both are needed. The body form often carries no separator
+    // at all — run #112's stub was "… in Warsaw  apnews.com", two spaces — so
+    // the domain rule keeps its own whitespace-tolerant pattern, and the
+    // outlet-name rule requires a separator, without which it would eat the
+    // last word of any headline.
     .replace(/[\s-–—|]*\b[\w-]+\.(?:com|org|net|gov|co\.uk|io)\s*$/, "")
+    .replace(/\s*[-–—|]\s*[^-–—|.!?]{1,30}\s*$/, "")
     .trim();
 }
 
