@@ -731,6 +731,166 @@ async function main() {
       // Writer packets: the assembled prompt for one story, or a size summary
       // for the whole run. This is the writers stage's feedback loop — the
       // prompt is the product, so it has to be readable before any model sees it.
+      // **Can the writer actually get text out of this source?**
+      //
+      // The fetch is the one stage with no inspection view, and it is the stage
+      // whose answer decides what belongs in sources.yaml. `article_texts` has
+      // carried the evidence per item since migration 034 — whose own comment
+      // says "text_chars - feed_chars is the only honest measure of whether this
+      // stage earns its keep" — and nothing has ever read it back.
+      //
+      // Deliberately cross-run rather than scoped to one editor run. A single
+      // day is noise: a source with four articles that all happened to be
+      // fetchable proves nothing. The retention window is what there is to
+      // judge on.
+      case "fetch": {
+        const days = flags["days"] ? parseInt(flags["days"], 10) : 14;
+        const { rows } = await pool.query<{
+          source_name: string;
+          host: string;
+          status: string;
+          detail: string | null;
+          text_chars: number;
+          feed_chars: number;
+        }>(
+          `SELECT p.source_name, a.host, a.status, a.detail,
+                  a.text_chars, a.feed_chars
+           FROM article_texts a
+           JOIN preprocessed_items p ON p.id = a.preprocessed_item_id
+           WHERE a.fetched_at >= NOW() - ($1::int || ' days')::interval`,
+          [days],
+        );
+
+        if (rows.length === 0) {
+          console.log(`No article_texts rows in the last ${days} day(s).`);
+          break;
+        }
+
+        const THIN = 800;
+        const statusOrder = ["ok", "thin", "blocked", "error", "skipped"] as const;
+        const totals = new Map<string, number>();
+        for (const r of rows) totals.set(r.status, (totals.get(r.status) ?? 0) + 1);
+
+        console.log(`Article fetch outcomes — article_texts, last ${days} day(s)`);
+        console.log(
+          `  Rows: ${rows.length} across ${new Set(rows.map((r) => r.host)).size} host(s), ` +
+            `${new Set(rows.map((r) => r.source_name)).size} source(s)`,
+        );
+        console.log(
+          "  Status: " +
+            statusOrder.map((st) => `${totals.get(st) ?? 0} ${st}`).join(", "),
+        );
+
+        // Why we did not ask. A skip is a decision, and the three reasons mean
+        // very different things about a source: "feed already long enough" is
+        // the fetch working as designed, "cooldown" is a host refusing us.
+        const skipReasons = new Map<string, number>();
+        for (const r of rows) {
+          if (r.status !== "skipped") continue;
+          const d = r.detail ?? "(none)";
+          const key = /already \d+ chars/.test(d)
+            ? "feed body already long enough"
+            : d.includes("cooldown")
+              ? "host in cooldown after repeated failures"
+              : d.includes("refetch")
+                ? "already attempted within refetch window"
+                : d;
+          skipReasons.set(key, (skipReasons.get(key) ?? 0) + 1);
+        }
+        if (skipReasons.size > 0) {
+          console.log("\n── WHY WE DID NOT ASK");
+          for (const [reason, n] of [...skipReasons].sort((a, b) => b[1] - a[1])) {
+            console.log(`  ${String(n).padStart(5)}  ${reason}`);
+          }
+        }
+
+        const median = (xs: number[]): number => {
+          if (xs.length === 0) return 0;
+          const sorted = [...xs].sort((a, b) => a - b);
+          return sorted[Math.floor(sorted.length / 2)]!;
+        };
+
+        interface SourceStat {
+          source: string;
+          items: number;
+          counts: Map<string, number>;
+          feed: number[];
+          best: number[];
+          hosts: Set<string>;
+        }
+        const bySource = new Map<string, SourceStat>();
+        for (const r of rows) {
+          const stat = bySource.get(r.source_name) ?? {
+            source: r.source_name,
+            items: 0,
+            counts: new Map<string, number>(),
+            feed: [],
+            best: [],
+            hosts: new Set<string>(),
+          };
+          stat.items++;
+          stat.counts.set(r.status, (stat.counts.get(r.status) ?? 0) + 1);
+          stat.feed.push(r.feed_chars);
+          // What the writer would actually read: the packet takes whichever of
+          // the fetched text and the feed body is longer.
+          stat.best.push(Math.max(r.text_chars, r.feed_chars));
+          stat.hosts.add(r.host);
+          bySource.set(r.source_name, stat);
+        }
+
+        // **The sources.yaml decision metric.** Not "did the fetch succeed" —
+        // a source whose feed already carries full text never needs the fetch
+        // and should not be marked down for skipping it. The question is
+        // whether a writer ends up with something to work from, whatever route
+        // it came by.
+        const usable = (stat: SourceStat) =>
+          stat.best.filter((n) => n >= THIN).length / stat.items;
+
+        console.log(
+          `\n── PER SOURCE — what a writer ends up with (usable = best text ≥ ${THIN} chars)`,
+        );
+        console.log(
+          "  source                                   items usable   ok thin blkd  err skip   feed→best median",
+        );
+        const ranked = [...bySource.values()].sort(
+          (a, b) => usable(a) - usable(b) || b.items - a.items,
+        );
+        for (const stat of ranked) {
+          const c = (st: string) => String(stat.counts.get(st) ?? 0).padStart(4);
+          console.log(
+            `  ${stat.source.slice(0, 40).padEnd(40)} ${String(stat.items).padStart(5)} ` +
+              `${(usable(stat) * 100).toFixed(0).padStart(5)}% ` +
+              `${c("ok")} ${c("thin")} ${c("blocked")} ${c("error")} ${c("skipped")}   ` +
+              `${String(median(stat.feed)).padStart(6)} → ${String(median(stat.best)).padStart(6)}`,
+          );
+        }
+
+        // A source that can never clear the floor is a headline generator. That
+        // is not automatically a reason to drop it — a brief is a pointer and a
+        // headline is enough for one — but it is the shortlist to decide on,
+        // and it is the list nothing has ever printed.
+        const headlineOnly = ranked.filter((st) => usable(st) === 0);
+        if (headlineOnly.length > 0) {
+          console.log(
+            `\n── NEVER USABLE: ${headlineOnly.length} source(s) produced no article over ${THIN} chars`,
+          );
+          for (const stat of headlineOnly) {
+            const blocked = (stat.counts.get("blocked") ?? 0) + (stat.counts.get("error") ?? 0);
+            const why =
+              blocked > 0
+                ? `${blocked} refused/errored`
+                : (stat.counts.get("skipped") ?? 0) === stat.items
+                  ? "never attempted (cooldown or feed judged long enough)"
+                  : `${stat.counts.get("thin") ?? 0} fetched thin`;
+            console.log(
+              `  ${stat.source.slice(0, 40).padEnd(40)} ${String(stat.items).padStart(4)} items — ${why}`,
+            );
+            console.log(`      hosts: ${[...stat.hosts].join(", ")}`);
+          }
+        }
+        break;
+      }
+
       case "packet": {
         const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
         if (runId === undefined || Number.isNaN(runId)) {
@@ -938,6 +1098,10 @@ Commands:
   materials --editor-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
+  fetch [--days <n>]       Per-source article fetch outcomes from article_texts
+                           (default 14 days): what a writer ends up with per
+                           outlet, why we did not ask, and which sources have
+                           never produced a usable article
   packet --editor-run <n>  Writer packet sizes for every story of an editor run
   packet --editor-run <n> --rank <n>
                            Print the full assembled prompt for one story
