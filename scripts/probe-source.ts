@@ -27,6 +27,7 @@ import {
 import {
   decodeGoogleNewsToken,
   isGoogleNewsLink,
+  looksLikeArticleUrl,
 } from "../src/pipeline/collector/google-news.js";
 
 const TIMEOUT_MS = 20000;
@@ -161,6 +162,57 @@ interface Resolution {
   resolved: string | null;
   strategy: Strategy | null;
   detail: string;
+  /** null when no expected title was available to check against. */
+  verified: boolean | null;
+  destinationTitle: string | null;
+}
+
+/** Comparable form: case, punctuation and stopwords are not identity. */
+function titleTokens(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3),
+  );
+}
+
+/**
+ * Does the page at `url` actually carry the story the feed promised?
+ *
+ * **The probe must never report a success it has not checked.** The first
+ * version of this script did, and it reported 52 of 52 Google News links
+ * resolved when the true answer was zero — every "publisher URL" was the same
+ * 676-byte logo PNG. A tool that launders a guess into a finding is worse than
+ * no tool, because the next decision gets made on it.
+ */
+async function verifyDestination(
+  url: string,
+  expectedTitle: string,
+): Promise<{ ok: boolean; title: string | null; detail: string }> {
+  const p = await probe(url, true);
+  if (p.status === null || p.status >= 400 || !p.body) {
+    return { ok: false, title: null, detail: `HTTP ${p.status ?? "ERR"}, ${p.bytes}b` };
+  }
+  if (!/html/i.test(p.contentType)) {
+    return { ok: false, title: null, detail: `not HTML (${p.contentType}, ${p.bytes}b)` };
+  }
+  const match = p.body.match(/<title[^>]*>([\s\S]{0,300}?)<\/title>/i);
+  const title = match ? match[1]!.replace(/\s+/g, " ").trim() : null;
+  if (title === null) return { ok: false, title: null, detail: `no <title> in ${p.bytes}b` };
+
+  const want = titleTokens(expectedTitle);
+  const got = titleTokens(title);
+  if (want.size === 0) return { ok: false, title, detail: "feed title had no comparable words" };
+  let shared = 0;
+  for (const w of want) if (got.has(w)) shared++;
+  const ratio = shared / want.size;
+  return {
+    ok: ratio >= 0.5,
+    title,
+    detail: `${shared}/${want.size} title words matched (${(ratio * 100).toFixed(0)}%)`,
+  };
 }
 
 /**
@@ -170,46 +222,56 @@ interface Resolution {
  * serves the older encoding, nothing else is needed and the resolution can move
  * into the preprocessor beside the other redirector unwrapping. Only if that
  * comes back empty do the network strategies matter.
+ *
+ * Every candidate must clear `looksLikeArticleUrl` before it is offered, and
+ * when an expected title is available the destination is fetched and checked
+ * against it. Unverified is reported as unverified, never as resolved.
  */
-async function resolveOne(url: string): Promise<Resolution> {
+async function resolveOne(url: string, expectedTitle?: string): Promise<Resolution> {
+  const finish = async (
+    resolved: string,
+    strategy: Strategy,
+    detail: string,
+  ): Promise<Resolution> => {
+    if (expectedTitle === undefined) {
+      return { source: url, resolved, strategy, detail, verified: null, destinationTitle: null };
+    }
+    await sleep(POLITE_DELAY_MS);
+    const v = await verifyDestination(resolved, expectedTitle);
+    return {
+      source: url,
+      resolved,
+      strategy,
+      detail: `${detail}; ${v.detail}`,
+      verified: v.ok,
+      destinationTitle: v.title,
+    };
+  };
+
   const decoded = decodeGoogleNewsToken(url);
-  if (decoded !== null) {
-    return { source: url, resolved: decoded, strategy: "token-decode", detail: "offline" };
+  if (decoded !== null && looksLikeArticleUrl(decoded)) {
+    return finish(decoded, "token-decode", "offline");
   }
 
   const p = await probe(url, true);
-  if (p.redirectedTo && !isGoogleNewsLink(p.redirectedTo)) {
-    return {
-      source: url,
-      resolved: p.redirectedTo,
-      strategy: "redirect-follow",
-      detail: `HTTP ${p.status}`,
-    };
+  if (p.redirectedTo && looksLikeArticleUrl(p.redirectedTo)) {
+    return finish(p.redirectedTo, "redirect-follow", `HTTP ${p.status}`);
   }
 
-  // The interstitial is a JS shell, but it usually names the destination
-  // somewhere in it. Look for any absolute URL that is not Google's own.
+  // The interstitial is a JS shell. As of the 2026-08-25 probe it names no
+  // publisher URL at all — 580KB of page with no apnews.com in it — but the
+  // strategy stays because Google has changed this encoding before and may
+  // again. What it must not do is accept the page's furniture.
   if (p.body) {
     const candidates = [...p.body.matchAll(/https?:\/\/[^\s"'<>\\]+/g)]
       .map((m) => m[0])
-      .filter((u) => {
-        const h = hostOf(u);
-        return (
-          h !== "news.google.com" &&
-          !h.endsWith("google.com") &&
-          !h.endsWith("gstatic.com") &&
-          !h.endsWith("googleapis.com") &&
-          !h.endsWith("schema.org") &&
-          !h.endsWith("w3.org")
-        );
-      });
+      .filter(looksLikeArticleUrl);
     if (candidates.length > 0) {
-      return {
-        source: url,
-        resolved: candidates[0]!,
-        strategy: "interstitial-html",
-        detail: `${candidates.length} non-Google URL(s) in ${p.bytes}b page`,
-      };
+      return finish(
+        candidates[0]!,
+        "interstitial-html",
+        `${candidates.length} candidate(s) in ${p.bytes}b page`,
+      );
     }
   }
 
@@ -218,6 +280,8 @@ async function resolveOne(url: string): Promise<Resolution> {
     resolved: null,
     strategy: null,
     detail: `HTTP ${p.status ?? "ERR"}, ${p.bytes}b, no publisher URL found${p.note ? ` — ${p.note}` : ""}`,
+    verified: null,
+    destinationTitle: null,
   };
 }
 
@@ -235,21 +299,38 @@ async function resolveFromDb(sourceName: string, limit: number): Promise<void> {
 
   console.log(`\n=== resolving ${rows.length} real link(s) — ${sourceName} ===\n`);
   const byStrategy = new Map<string, number>();
+  let verified = 0;
+  let falsePositives = 0;
   for (const row of rows) {
-    const r = await resolveOne(row.canonical_url);
+    const r = await resolveOne(row.canonical_url, row.title);
     const key = r.strategy ?? "UNRESOLVED";
     byStrategy.set(key, (byStrategy.get(key) ?? 0) + 1);
-    console.log(`  ${key.padEnd(18)} ${row.title.slice(0, 62)}`);
-    console.log(`      ${r.resolved ?? r.detail}`);
+    if (r.verified === true) verified++;
+    if (r.resolved !== null && r.verified === false) falsePositives++;
+    const mark = r.verified === true ? "OK " : r.verified === false ? "WRONG" : "?  ";
+    console.log(`  ${mark} ${key.padEnd(18)} ${row.title.slice(0, 58)}`);
+    console.log(`       ${r.resolved ?? r.detail}`);
+    if (r.resolved !== null) console.log(`       ${r.detail}`);
+    if (r.destinationTitle) console.log(`       destination title: ${r.destinationTitle.slice(0, 90)}`);
     if (r.strategy !== "token-decode") await sleep(POLITE_DELAY_MS);
   }
 
-  console.log(`\n  ── by strategy`);
+  console.log(`\n  ── by strategy (claimed)`);
   for (const [k, n] of [...byStrategy].sort((a, b) => b[1] - a[1])) {
     console.log(`     ${String(n).padStart(4)}  ${k}  (${((n / rows.length) * 100).toFixed(0)}%)`);
   }
-  const resolved = rows.length - (byStrategy.get("UNRESOLVED") ?? 0);
-  console.log(`\n  ${resolved} of ${rows.length} resolved to a publisher URL.`);
+  console.log(`\n  ── verified against the feed's own title`);
+  console.log(`     ${String(verified).padStart(4)}  correct publisher article`);
+  console.log(`     ${String(falsePositives).padStart(4)}  RESOLVED BUT WRONG — a strategy is lying`);
+  console.log(
+    `     ${String(rows.length - verified - falsePositives).padStart(4)}  unresolved\n`,
+  );
+  if (falsePositives > 0) {
+    console.log(
+      `  A non-zero "resolved but wrong" count is a bug in the resolver, not a\n` +
+        `  property of the feed. Do not use these URLs.\n`,
+    );
+  }
 }
 
 function flagsOf(argv: string[]): Record<string, string> {

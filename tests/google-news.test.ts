@@ -3,6 +3,7 @@ import {
   isGoogleNewsLink,
   googleNewsToken,
   decodeGoogleNewsToken,
+  looksLikeArticleUrl,
 } from "../src/pipeline/collector/google-news.js";
 
 // AP Top News is the single largest contributor of material to the paper — 250
@@ -90,7 +91,52 @@ function testTheUrlStopsAtProtobufFraming() {
   assert.doesNotThrow(() => new URL(decoded));
 }
 
+function testGoogleAssetHostsAreNotArticles() {
+  // The 2026-08-25 probe reported 52 of 52 links resolved and every one was the
+  // same 676-byte PNG: each interstitial embeds the publisher's logo from
+  // lh3.googleusercontent.com, and "first absolute URL that is not google.com"
+  // takes the logo. A resolver that reports an unverified success is worse than
+  // one that reports nothing — a wrong URL sends the fetch to another page and
+  // teaches the host cooldown against a host that never refused us.
+  assert.equal(
+    looksLikeArticleUrl("https://lh3.googleusercontent.com/proxy/AbC123=w200-h200"),
+    false,
+  );
+  for (const u of [
+    "https://www.gstatic.com/images/branding/x.png",
+    "https://fonts.googleapis.com/css2?family=Roboto",
+    "https://www.youtube.com/watch?v=abc",
+    "https://news.google.com/rss/articles/CBMiXYZ",
+  ]) {
+    assert.equal(looksLikeArticleUrl(u), false, u);
+  }
+}
+
+function testAnAssetIsNeverAnArticleHoweverItIsHosted() {
+  assert.equal(looksLikeArticleUrl("https://apnews.com/logo.png"), false);
+  assert.equal(looksLikeArticleUrl("https://apnews.com/bundle/app.js"), false);
+  assert.equal(looksLikeArticleUrl("https://apnews.com/news-sitemap-content.xml"), false);
+}
+
+function testAHomepageIsNotAnArticle() {
+  assert.equal(looksLikeArticleUrl("https://apnews.com"), false);
+  assert.equal(looksLikeArticleUrl("https://apnews.com/"), false);
+}
+
+function testARealArticleUrlPasses() {
+  assert.equal(looksLikeArticleUrl("https://apnews.com/article/haiti-deportations-tps"), true);
+  assert.equal(looksLikeArticleUrl("https://apnews.com/live/trump-economy-news-08-25-2026"), true);
+  assert.equal(
+    looksLikeArticleUrl("https://www.wweek.com/news/2026/08/25/county-union-backs/"),
+    true,
+  );
+}
+
 testAggregatorLinksAreRecognised();
+testGoogleAssetHostsAreNotArticles();
+testAnAssetIsNeverAnArticleHoweverItIsHosted();
+testAHomepageIsNotAnArticle();
+testARealArticleUrlPasses();
 testTheTokenIsTakenFromEitherPathShape();
 testALegacyTokenGivesUpItsPublisherUrl();
 testAnOpaqueTokenReturnsNullRatherThanGuessing();

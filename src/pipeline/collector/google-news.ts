@@ -22,6 +22,15 @@
  *
  * Pure and offline, so it is unit-testable and costs nothing to try before any
  * network strategy runs.
+ *
+ * **What the 2026-08-25 probe settled.** Over 52 real links from AP Top News, AP
+ * Politics and Willamette Week: `decodeGoogleNewsToken` resolved 0, following
+ * redirects resolved 0, and the interstitial is a 580KB JavaScript shell with no
+ * publisher URL anywhere in it. `canonicalizeUrl`'s comment turns out to be
+ * right about the current encoding, and Google News resolution is a dead end for
+ * these feeds. The decoder stays because it is free, offline and correct for the
+ * older encoding some feeds still serve — but AP's article text has to come from
+ * somewhere else, and `apnews.com/news-sitemap-content.xml` is that somewhere.
  */
 
 /** A `news.google.com` article or read link, whatever the surrounding query. */
@@ -115,4 +124,62 @@ export function decodeGoogleNewsToken(url: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Hosts that serve Google's own assets rather than anybody's article.
+ *
+ * `googleusercontent.com` is the one that matters and the one the first version
+ * of this list missed. Every AP and Willamette Week interstitial embeds a
+ * publisher logo served from `lh3.googleusercontent.com`, so a resolver that
+ * takes "the first absolute URL that is not google.com" takes the logo. The
+ * 2026-08-25 probe reported 52 of 52 links resolved and every single one was
+ * the same 676-byte PNG.
+ */
+const GOOGLE_ASSET_HOSTS = [
+  "google.com",
+  "googleusercontent.com",
+  "gstatic.com",
+  "googleapis.com",
+  "googletagmanager.com",
+  "google-analytics.com",
+  "youtube.com",
+  "ggpht.com",
+];
+
+/** Extensions that are an asset, not a story. */
+const ASSET_EXTENSIONS =
+  /\.(?:png|jpe?g|gif|webp|svg|ico|css|js|mjs|woff2?|ttf|eot|mp4|webm|mp3|pdf|json|xml)$/i;
+
+/**
+ * Is this plausibly a publisher's article page?
+ *
+ * **A resolver that reports an unverified success is worse than one that
+ * reports nothing**, because a wrong URL sends the fetch to another page
+ * entirely and teaches the host cooldown against a host that never refused us.
+ * So the bar is deliberately high: a real host that is not Google's, a path
+ * with something in it, and not an asset.
+ *
+ * This is necessary and not sufficient — the caller still has to verify the
+ * destination is the *right* article, which is what title matching is for.
+ */
+export function looksLikeArticleUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+
+  const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+  if (host === "news.google.com") return false;
+  if (GOOGLE_ASSET_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return false;
+
+  // A bare origin is a homepage, not a story.
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (path.length <= 1) return false;
+  if (ASSET_EXTENSIONS.test(path)) return false;
+
+  return true;
 }
