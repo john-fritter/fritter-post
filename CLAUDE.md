@@ -631,7 +631,15 @@ cannot draw on the same source — but that guarantees nothing about *content*: 
 live blog assigned to one member carries every other member's events, which is
 why `isLiveBlog` exists and why it accepts any separator after "EN DIRECT" (run
 #20's T1 lead was Le Monde's `EN DIRECT, guerre en Ukraine`, 45,000 characters of
-the whole war). The guarantee is the sibling list: the lead is told every piece
+the whole war). **It reads the URL as well as the title, and it drops rather than
+reorders** — both learned from run #44's rank 2. AP titles its rolling coverage
+exactly like an article ("Canada launches retaliatory tariffs on US goods") and
+declares it in the path instead, so title detection never saw it; and the rule
+had been *inert for two months*, because it worked by ranking live blogs last and
+letting `max_articles` cut them off, and every cap went null when sources were
+unrationed on 2026-08-19. A live blog now leaves the packet the way a headline
+echo does — its body is not reporting on *this* story — and like that rule it
+never empties a packet: the only source a story has is still its source. The guarantee is the sibling list: the lead is told every piece
 below it and a sidebar or line is told the lead plus the others. It used to name
 sidebars only, which cost nothing at three members and cost two duplicated
 paragraphs at eleven. Static text, not a call — writers still never see each

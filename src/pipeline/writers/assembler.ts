@@ -208,19 +208,36 @@ export function dedupeParagraphs(
  * rank 3 spent 5,954 characters of feature budget on Le Monde's Ukraine live
  * blog, and the reviewer flagged it twice.
  *
- * Detected from the title, which live blogs announce plainly, and used only to
- * push them behind real articles in selection — never to delete them. On a
- * 27-candidate thread the live blog falls out of the packet; on a story where it
- * is the only source, it is still the source.
+ * **Not every publisher announces it in the title.** This read titles only, on
+ * the reasoning that live blogs say so plainly — true of Le Monde's "EN DIRECT,
+ * guerre en Ukraine" and false of AP, which titles its live coverage exactly
+ * like an article: run #44's rank 2 carried "Canada launches retaliatory tariffs
+ * on US goods", 24,455 characters of rolling coverage, 46% of a feature packet,
+ * and nothing here saw it. AP declares it in the URL instead — `/live/` — and a
+ * path segment the publisher chose is a stronger signal than a headline
+ * convention, so both are checked.
  */
-export function isLiveBlog(title: string): boolean {
+export function isLiveBlog(title: string, url?: string): boolean {
   // The separator is whatever the outlet felt like using. Run #20's T1 lead was
   // Le Monde's "EN DIRECT, guerre en Ukraine : …" — a comma, which the original
   // colon-or-dash pattern missed, so 45,000 characters of live blog became a
   // section lead's entire material and it wrote up two other members' stories.
-  return /^\s*(?:live|en direct|direct)\b\s*[::,\-–—]|^\s*live blog\b|\blive updates?\b/i.test(
-    title,
-  );
+  if (
+    /^\s*(?:live|en direct|direct)\b\s*[::,\-–—]|^\s*live blog\b|\blive updates?\b/i.test(
+      title,
+    )
+  ) {
+    return true;
+  }
+  if (url === undefined) return false;
+  try {
+    // Segment-exact, never a substring: /olive/ and /living/ are not live blogs.
+    return new URL(url).pathname
+      .split("/")
+      .some((seg) => /^(?:live|liveblog|live-blog|live-updates?|live-news)$/i.test(seg));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -244,8 +261,8 @@ export function selectArticles(
   // Stable: real articles keep their editorial order, live blogs keep theirs,
   // and the second group only ever fills slots the first did not want.
   const ordered = [
-    ...articles.filter((a) => !isLiveBlog(a.title)),
-    ...articles.filter((a) => isLiveBlog(a.title)),
+    ...articles.filter((a) => !isLiveBlog(a.title, a.canonicalUrl)),
+    ...articles.filter((a) => isLiveBlog(a.title, a.canonicalUrl)),
   ];
 
   // First pass: one article per parent outlet, in order.
@@ -271,7 +288,7 @@ export function selectArticles(
       preprocessedItemId: a.preprocessedItemId,
       sourceName: a.sourceName,
       title: a.title,
-      reason: isLiveBlog(a.title)
+      reason: isLiveBlog(a.title, a.canonicalUrl)
         ? `live blog, ranked behind articles (cap ${maxArticles})`
         : `beyond the ${maxArticles}-article cap for this tier`,
       kind: "length" as const,
@@ -432,8 +449,29 @@ export function assembleWriterPacket(
   // The story's source count is the editor's and is unaffected — this is about
   // what the writer reads. And the packet is never emptied: if every article is
   // a stub the best one stays, and the material level says what it is.
+  // **A live blog is dropped when the packet has a real article, and kept when
+  // it does not.** That was always the rule — "on a 27-candidate thread the live
+  // blog falls out of the packet; on a story where it is the only source, it is
+  // still the source" — but it was implemented by ranking live blogs last and
+  // letting `max_articles` cut them off. Unrationing the sources on 2026-08-19
+  // set every cap to null, so `full()` never returns true, both selection passes
+  // take everything, and the reordering has had no effect since. **The defence
+  // has been inert for two months and run #44 is where that showed:** AP's
+  // rolling tariffs coverage was 24,455 of a 53,088-character packet at rank 2,
+  // inside a thread whose other members are supposed to cover those very
+  // developments.
+  //
+  // This is not rationing and does not reopen that decision. Nothing is dropped
+  // here for being the 13th source or the 48,001st character; a live blog is
+  // dropped for the same reason a headline echo is — its body is not reporting
+  // on *this* story. It is one page carrying a day of entries about many, which
+  // is exactly what breaks the section's partition guarantee. And like the echo
+  // rule, it never empties a packet.
   const usable = resolvedAll.filter(
-    (r) => r.text.length >= cfg.min_article_chars && !isHeadlineEcho(r.article.title, r.text),
+    (r) =>
+      r.text.length >= cfg.min_article_chars &&
+      !isHeadlineEcho(r.article.title, r.text) &&
+      !isLiveBlog(r.article.title, r.article.canonicalUrl),
   );
   const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
   for (const r of resolvedAll) {
@@ -445,7 +483,9 @@ export function assembleWriterPacket(
       reason:
         r.text.length < cfg.min_article_chars
           ? `no usable body text (${r.text.length} chars after cleanup)`
-          : "body text only repeats the headline",
+          : isLiveBlog(r.article.title, r.article.canonicalUrl)
+            ? "live blog: rolling coverage of many stories, not this one"
+            : "body text only repeats the headline",
       kind: "no-text" as const,
     });
   }

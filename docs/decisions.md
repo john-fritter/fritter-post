@@ -4614,3 +4614,51 @@ corpus that grew 42% overnight; one run is thin evidence for retuning a
 concurrency that was itself lowered for rate limits once before. If the next run
 shows the same storm on a stable corpus, that is the evidence, and lowering
 `grouping.attach.concurrency` is the lever.
+
+---
+
+## 2026-08-26 — The live-blog defence had been inert for two months
+
+Run #44's rank 2 carried AP's rolling tariffs coverage: **24,455 characters, 46%
+of a 53,088-character feature packet**, inside thread T0 whose other members are
+supposed to cover exactly those developments. `isLiveBlog` exists to prevent
+this, has existed since run #112, and did nothing. It failed twice over.
+
+### It could not see AP's live blog
+
+Detection read the title, on the reasoning that live blogs announce themselves.
+True of Le Monde's `EN DIRECT, guerre en Ukraine`. **False of AP**, which titles
+its live coverage exactly like an article — "Canada launches retaliatory tariffs
+on US goods" — and declares it in the URL instead, `/live/`.
+
+A path segment the publisher chose is a stronger signal than a headline
+convention, so both are checked now. Segment-exact, never a substring: `/olive/`
+and `/living/` are not live blogs.
+
+### And it would have done nothing if it had
+
+This is the worse half. The rule was "the live blog falls out of the packet",
+implemented by ranking live blogs last in `selectArticles` and letting
+`max_articles` cut them off. **Unrationing the sources on 2026-08-19 set every
+cap to null**, so `full()` never returns true, both selection passes take
+everything, and the reordering has had no effect on any packet since.
+
+Two months of runs, a rule that reads as active in the code and in this log, and
+no behaviour behind it. Nothing failed; it simply stopped mattering, which is the
+kind of regression no counter catches.
+
+### Dropping is not rationing, and this does not reopen that decision
+
+Sources are not rationed and should not be: nothing is dropped for being the 13th
+source or the 48,001st character, because deciding what bears on a piece is the
+writer's judgment.
+
+A live blog is not dropped for its position or its length. It is dropped for the
+same reason a headline echo is — **its body is not reporting on this story**. It
+is one page carrying a day of entries about many, which is precisely what breaks
+the guarantee a section makes: material partitions by member, so two pieces
+cannot draw on the same source. A live blog defeats that by construction.
+
+So it joins `isHeadlineEcho` and `min_article_chars` in the packet's usability
+filter, and inherits that filter's guarantee: **a packet is never emptied.** On a
+story whose only source is a live blog, it is still the source.
