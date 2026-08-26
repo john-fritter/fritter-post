@@ -49,10 +49,21 @@
   type: wire
   group: wire
   notes: >
-    Google News RSS proxy for AP content, and a known compromise. Re-probed
-    2026-08-14: apnews.com/index.rss returns 401, four /hub/*.rss paths return
-    404 HTML, and feeds.apnews.com does not resolve. AP has no working public
-    feed we can find, so this stays.
+    Google News RSS proxy for AP content, and a known compromise.
+    **The "AP has no working public feed" note that stood here was wrong**, and
+    it was wrong in a way worth remembering: it rested on five URLs tried once on
+    2026-08-14, all of them RSS paths, and AP's robots.txt disallows /*.rss — so
+    that probe could only ever have failed. Guessing paths is not a search.
+    Probed properly 2026-08-25 by reading robots.txt, which *declares* six
+    sitemaps: apnews.com/news-sitemap-content.xml returns 200 text/xml with 528
+    entries carrying titles and publication timestamps, which is a feed in all
+    but name. Note the declared name — the guessable /news-sitemap.xml is a
+    near-empty 2-entry file, so a path battery would have found that and
+    concluded failure a second time.
+    Not switched to yet: a sitemap gives URLs, so the win depends on apnews.com
+    article pages extracting, which the fetch has never once attempted (the
+    cooldown is on news.google.com, not apnews.com), and on the /article/ versus
+    /live/ mix, since a live blog is 45,000 characters of everything at once.
     What it costs: item links are news.google.com interstitials, not articles,
     so nothing here is fetchable — run #112 carried 20 AP items with no body
     text. The bodies are the headline repeated plus the domain, which the
@@ -67,10 +78,13 @@
   type: wire
   group: wire
   notes: >
-    Google News RSS proxy scoped to AP politics. Same compromise and the same
-    2026-08-14 probe evidence as AP Top News above: no working direct AP feed
-    exists that we can reach, links are interstitials, bodies are headline
-    echoes that never reach a writer prompt.
+    Google News RSS proxy scoped to AP politics. Same compromise as AP Top News
+    above, and see its note: the 2026-08-14 "no working direct AP feed" finding
+    was an artifact of probing only RSS paths, which AP's robots.txt disallows.
+    Links here are interstitials and stay unresolvable — the 2026-08-25 probe put
+    52 real AP and Willamette Week links through token decoding, redirect
+    following and interstitial parsing and resolved **zero**; the interstitial is
+    a 580KB JavaScript shell with no apnews.com URL in it.
   parent: "AP"
 
 - name: Reuters Top News
@@ -361,7 +375,12 @@
   type: journalism
   group: national
   track: analysis
-  notes: Cultural criticism, left politics, longform.
+  notes: >
+    Cultural criticism, left politics, longform.
+    Probed 2026-08-25: robots.txt answers and declares /sitemap.xml, but that
+    sitemap and every candidate path return 403 with a 103-byte body under both
+    identities — the same shape as Inside Climate News. Zero items collected in
+    the 14 days to 2026-08-25, and a 403 at the collector in runs #55 and #56.
 
 - name: n+1
   url: https://www.nplusonemag.com/feed/
@@ -402,8 +421,13 @@
   type: journalism
   group: local
   notes: >
-    Portland alt-weekly. Native /feed/ and /rss.xml return 404; old nile.works
-    partner feed has DNS failure. Using Google News RSS proxy for current items.
+    Portland alt-weekly. The Google News proxy is why this source is 0% usable:
+    every link is an interstitial, so no article text is reachable and every WW
+    story reaches the writers as a headline.
+    The 404s recorded here no longer hold — the 2026-08-25 probe found a working
+    direct RSS feed on wweek.com returning 200 text/xml with 9 items. Switch
+    pending the exact path from that probe's output; a native feed makes these
+    articles fetchable and drops the aggregator title suffix as well.
 
 - name: Portland Mercury
   url: https://www.portlandmercury.com/feed/
@@ -590,10 +614,15 @@
   notes: Israeli-founded, Israeli-Palestinian critical journalism.
 
 - name: Mail & Guardian
-  url: https://mg.co.za/feed/
+  url: https://mg.co.za/rss
   type: journalism
   group: intl_broad
-  notes: South African independent. Helps close the Africa gap.
+  notes: >
+    South African independent. Helps close the Africa gap.
+    Was https://mg.co.za/feed/, which 404s — that is why this source recorded
+    zero items for the whole 14-day window to 2026-08-25 and showed as a
+    collector 404 in runs #55 and #56. Probed 2026-08-25: /rss returns 200
+    text/xml, 87,350 bytes, 50 items.
 
 # DROPPED — repeated 404; publication/feed may be defunct.
 # - name: The Continent
@@ -714,7 +743,12 @@
   url: https://insideclimatenews.org/feed/
   type: journalism
   group: climate
-  notes: Pulitzer-winning nonprofit climate journalism.
+  notes: >
+    Pulitzer-winning nonprofit climate journalism.
+    Probed 2026-08-25: robots.txt and every candidate path return 403 with a
+    103-byte body, under the honest and the browser identity alike, and the five
+    articles that reached editor runs in the 14-day window were all blocked at
+    the fetch. This host refuses us outright rather than serving a thin feed.
 
 - name: Grist
   url: https://grist.org/feed/
@@ -760,11 +794,17 @@
 # ─────────────────────────────────────────────
 
 - name: Labor Notes
-  url: https://labornotes.org/feed
+  url: https://labornotes.org/rss.xml
   type: journalism
   group: labor
-  notes: Best dedicated labor journalism in the US. Union news, strikes,
-    organizing.
+  notes: >
+    Best dedicated labor journalism in the US. Union news, strikes, organizing.
+    Was https://labornotes.org/feed, which returns 200 but is malformed — runs
+    #55 and #56 both died on it with "Unexpected close tag, Line 264, Column 9"
+    and the source contributed nothing for the whole window. Probed 2026-08-25:
+    /rss.xml returns 200 text/xml, 437,541 bytes, 25 items, against /feed's 10.
+    Item counts there are a regex over the body, not a parse, so whether
+    /rss.xml is well-formed is settled by the next collector run and not before.
 
 - name: Economic Policy Institute
   url: https://www.epi.org/feed/
