@@ -417,17 +417,20 @@
     will handle the internal duplication. [VERIFY]
 
 - name: Willamette Week
-  url: https://news.google.com/rss/search?q=wweek.com%20when:7d&hl=en-US&gl=US&ceid=US:en
+  url: https://www.wweek.com/arc/outboundfeeds/rss/?outputType=xml
   type: journalism
   group: local
   notes: >
-    Portland alt-weekly. The Google News proxy is why this source is 0% usable:
-    every link is an interstitial, so no article text is reachable and every WW
-    story reaches the writers as a headline.
-    The 404s recorded here no longer hold — the 2026-08-25 probe found a working
-    direct RSS feed on wweek.com returning 200 text/xml with 9 items. Switch
-    pending the exact path from that probe's output; a native feed makes these
-    articles fetchable and drops the aggregator title suffix as well.
+    Portland alt-weekly. Was a Google News RSS proxy, which is why this source
+    measured 0% usable over the 14 days to 2026-08-25: every link was an
+    interstitial, so no article text was reachable and every WW story arrived at
+    the writers as a headline.
+    The old note recorded /feed/ and /rss.xml as 404 and concluded no native feed
+    existed. Both are still 404; the feed is on the **Arc outbound path**, the
+    same shape OPB and the Oregonian already use here, which that probe never
+    tried. Verified 2026-08-26: 200 application/xml, 11,239 bytes, parses as XML,
+    11 items, and 8 of 8 sampled articles cleared 800 characters through
+    extractArticle + stripBoilerplate (1,894–5,086).
 
 - name: Portland Mercury
   url: https://www.portlandmercury.com/feed/
