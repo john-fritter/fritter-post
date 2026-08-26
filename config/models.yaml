@@ -400,6 +400,17 @@ editor_pass_1:
   retry_max_attempts: 5
   retry_base_ms: 2000
   reasoning_effort: "medium"
+  # Items per call when re-asking for scores that came back missing.
+  #
+  # The commonest fail-safe is not a failed call — it is a call that SUCCEEDS and
+  # silently omits one line. Run #39's batch 7 of 8 parsed 39 of 40, so one item
+  # went into the pile competition unjudged inside an otherwise clean run. Any of
+  # those 40 could have been the day's biggest story.
+  #
+  # Small, because a dropped line is much harder to hide in a short response, and
+  # because the usual straggler count is one or two — so this is normally a
+  # single cheap call rather than forty individual ones.
+  straggler_batch_size: 10
   singleton_pile_target: 100
   # Characters of English body text shown per SINGLETON being scored.
   #

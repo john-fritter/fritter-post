@@ -4691,12 +4691,38 @@ The Zod schema had carried `retry_max_attempts` and `retry_base_ms` on
 config never set them and the code never called the wrapper. A rule written down,
 a schema that anticipated it, and no behaviour behind either.
 
-Fixed the obvious way: the batch call goes through `callWithBackoff`, the config
-carries 5 attempts and a 2,000 ms base, and batches that still fail get one
-**sequential straggler re-ask** — the attach pass's pattern, for the same cause.
-A batch lost to a 429 storm was not rejected on its merits; it was queued behind
-nine siblings. Asking again during the storm repeats the conditions that caused
-it. Asking after, alone, does not.
+Fixed the obvious way: the batch call goes through `callWithBackoff` and the
+config carries 5 attempts and a 2,000 ms base.
+
+### But the batch is the wrong unit, and that is the bigger miss
+
+The first version of the straggler re-asked **failed batches**. That covers the
+429 and leaves the commonest failure untouched.
+
+There are three ways an item ends up unscored and only two of them fail the
+batch:
+
+| reason | batch reports |
+|---|---|
+| `LLM error` — the call threw after retries | failed |
+| `batch parse error` — nothing parsed | failed |
+| `missing/invalid line` — the call **succeeded** and the model omitted a line | **success** |
+
+The third is the one that recurs. Run #39's batch 7 of 8 parsed 39 of 40: one
+item was silently defaulted inside a run that reported no errors at all, and a
+whole-batch straggler would never have looked at it. Any of those 40 could have
+been the day's biggest story — that is the whole objection, and it is right.
+
+So the unit is the item. Every fail-safe path leaves `interest` null, which is
+exactly what makes `interest IS NULL` a reliable query, so that is what gets
+re-asked — sequentially, in chunks of `straggler_batch_size` (10). Small on
+purpose: a dropped line is far harder to hide in a short response than in a
+response covering forty items, and the usual straggler count is one or two, so
+this is normally a single cheap call rather than forty individual ones.
+
+A straggler that fails again does **not** overwrite the original fail-safe with a
+second one. Replacing one reason with another would read as progress in the logs
+while nothing had been recovered.
 
 ### 50 is a fabricated judgment, not an absent one
 

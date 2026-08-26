@@ -57,6 +57,10 @@ const BatchStageConfigSchema = StageConfigSchema.extend({
 
 const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
+  // Items per call when re-asking for scores that came back missing. Small on
+  // purpose: the commonest fail-safe is the model dropping one line from a batch
+  // of forty, and a dropped line is far harder to hide in a short response.
+  straggler_batch_size: z.number().int().positive(),
   // Characters of cluster describe-summary shown when scoring a cluster.
   // Separate from body_cap: a cluster's summary is already distilled, a
   // singleton's body is raw article text, and they want different budgets.

@@ -295,8 +295,17 @@ batched and concurrent at `concurrency: 10`, the highest in the pipeline, and
 until 2026-08-26 it was the one place the "any new batched, concurrent stage
 needs `callWithBackoff`" rule was never applied — the wrapper was not even
 imported, so a single 429 on the first and only attempt defaulted a whole batch
-of 40 items. Failed batches now retry under backoff and then get one **sequential
-straggler re-ask**, the attach pass's pattern for the same cause.
+of 40 items. Failed batches now retry under backoff, and then **every item that came back
+unscored** — not every failed batch — is re-asked sequentially in chunks of
+`straggler_batch_size`.
+
+**The item, not the call, is the unit**, because the commonest fail-safe does not
+fail the call. Three paths leave an item unscored: `LLM error` and `batch parse
+error` fail the batch, and `missing/invalid line` does not — the call *succeeds*
+and the model simply omits a line. Run #39's batch 7 of 8 parsed 39 of 40, so one
+item entered the pile competition unjudged inside an otherwise clean run, and any
+of those 40 could have been the day's biggest story. Every fail-safe path leaves
+`interest` null, which is what makes that the reliable marker to re-ask on.
 **`FAIL_SAFE_SCORE` is 0, not 50**: 50 sits mid-range and therefore *competed*,
 so whether an unjudged item reached the reader turned on where the day's pile
 cutoff happened to land — run #42's was 54 and four unscored clusters fell below

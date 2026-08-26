@@ -162,10 +162,12 @@ async function testEveryItemComesBackInBatchOrder() {
   // Results are matched to items downstream, so a reordering here would attach
   // scores to the wrong stories — silently, and with no way to notice.
   const batches = [[item(1), item(2)], [item(3)], [item(4), item(5)]];
-  const out = await scoreBatches(batches, pLimit(3), async (batch) => ({
-    results: scored(batch.map((i) => i.id)),
-    failed: false,
-  }));
+  const out = await scoreBatches(
+    batches,
+    pLimit(3),
+    async (batch) => ({ results: scored(batch.map((i) => i.id)), failed: false }),
+    10,
+  );
   assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3, 4, 5]);
   assert.equal(out.unscored, 0);
 }
@@ -173,34 +175,98 @@ async function testEveryItemComesBackInBatchOrder() {
 async function testAFailedBatchIsReAskedAndItsRetryWins() {
   const batches = [[item(1)], [item(2)], [item(3)]];
   const seen: string[] = [];
-  const out = await scoreBatches(batches, pLimit(3), async (batch, idx, _count, label) => {
-    seen.push(`${idx}${label}`);
-    // Batch 1 fails the first time and answers on the re-ask.
-    if (idx === 1 && label === "") return { results: failsafed([2]), failed: true };
-    return { results: scored(batch.map((i) => i.id)), failed: false };
-  });
-  assert.ok(seen.includes("1 [straggler]"), "the failed batch was re-asked");
-  assert.equal(seen.filter((c) => c.startsWith("0")).length, 1, "clean batches are not re-asked");
+  const out = await scoreBatches(
+    batches,
+    pLimit(3),
+    async (batch, idx, _count, label) => {
+      seen.push(`${idx}${label}`);
+      // Batch 1 fails the first time and answers on the re-ask.
+      if (idx === 1 && label === "") return { results: failsafed([2]), failed: true };
+      return { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
+  );
+  assert.ok(seen.some((c) => c.endsWith(" [straggler]")), "the unscored item was re-asked");
+  assert.equal(seen.filter((c) => c === "0").length, 1, "clean batches are not re-asked");
   assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
   assert.equal(out.results.find((r) => r.id === 2)!.score, 70, "the retry result replaced the fail-safe");
   assert.equal(out.unscored, 0);
 }
 
-async function testABatchThatFailsTwiceIsCountedUnscored() {
+async function testAnItemThatFailsTwiceIsCountedUnscored() {
+  // Items 1 and 2 are unscoreable however they are asked; item 3 is fine.
   const batches = [[item(1), item(2)], [item(3)]];
-  const out = await scoreBatches(batches, pLimit(2), async (batch, idx) =>
-    idx === 0
-      ? { results: failsafed(batch.map((i) => i.id)), failed: true }
-      : { results: scored(batch.map((i) => i.id)), failed: false },
+  const out = await scoreBatches(
+    batches,
+    pLimit(2),
+    async (batch) => {
+      const doomed = batch.some((i) => i.id === 1 || i.id === 2);
+      return doomed
+        ? { results: failsafed(batch.map((i) => i.id)), failed: true }
+        : { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
   );
-  assert.equal(out.unscored, 2, "both items of the failed batch are unscored");
+  assert.equal(out.unscored, 2, "both unscoreable items are counted");
   assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
   // They are still present, carrying the fail-safe, rather than vanishing.
   assert.equal(out.results.find((r) => r.id === 1)!.interest, null);
+  assert.equal(out.results.find((r) => r.id === 3)!.score, 70);
+}
+
+async function testASucceedingBatchWithOneMissingLineIsReAsked() {
+  // **The case a whole-batch straggler would miss**, and the commonest one. The
+  // call succeeds and parses 39 of 40; the batch reports success and one item is
+  // silently defaulted. Run #39's batch 7 of 8 did exactly this.
+  const batches = [[item(1), item(2), item(3)]];
+  let stragglerItems: number[] = [];
+  const out = await scoreBatches(
+    batches,
+    pLimit(1),
+    async (batch, _idx, _count, label) => {
+      if (label === "") {
+        // The model answers for 1 and 3 and simply omits 2. Batch: not failed.
+        return {
+          results: [...scored([1]), ...failsafed([2]), ...scored([3])],
+          failed: false,
+        };
+      }
+      stragglerItems = batch.map((i) => i.id);
+      return { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
+  );
+  assert.deepEqual(stragglerItems, [2], "only the missing item was re-asked");
+  assert.equal(out.unscored, 0);
+  assert.equal(out.results.find((r) => r.id === 2)!.score, 70);
+  assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
+}
+
+async function testAFailedStragglerDoesNotOverwriteWithAnotherFailSafe() {
+  // A straggler that fails again must not replace one fail-safe reason with
+  // another and look like progress.
+  const batches = [[item(1)]];
+  const out = await scoreBatches(
+    batches,
+    pLimit(1),
+    async (batch, _idx, _count, label) => ({
+      results: batch.map((i) => ({
+        id: i.id,
+        score: 0,
+        interest: null,
+        consequence: null,
+        reason: label === "" ? "fail-safe: LLM error" : "fail-safe: second failure",
+      })),
+      failed: true,
+    }),
+    10,
+  );
+  assert.equal(out.unscored, 1);
+  assert.equal(out.results[0]!.reason, "fail-safe: LLM error");
 }
 
 async function testNoBatchesIsNotAnError() {
-  const out = await scoreBatches([], pLimit(1), async () => ({ results: [], failed: false }));
+  const out = await scoreBatches([], pLimit(1), async () => ({ results: [], failed: false }), 10);
   assert.deepEqual(out.results, []);
   assert.equal(out.unscored, 0);
 }
@@ -208,7 +274,9 @@ async function testNoBatchesIsNotAnError() {
 async function runStragglerTests() {
   await testEveryItemComesBackInBatchOrder();
   await testAFailedBatchIsReAskedAndItsRetryWins();
-  await testABatchThatFailsTwiceIsCountedUnscored();
+  await testAnItemThatFailsTwiceIsCountedUnscored();
+  await testASucceedingBatchWithOneMissingLineIsReAsked();
+  await testAFailedStragglerDoesNotOverwriteWithAnotherFailSafe();
   await testNoBatchesIsNotAnError();
 }
 

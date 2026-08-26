@@ -299,15 +299,36 @@ async function processGroupingBatch(
 
 
 /**
- * Runs a set of batches concurrently, then re-asks any that failed, one at a
- * time.
+ * Scores every batch, then re-asks for **every item that came back unscored**.
  *
- * **The re-ask is sequential on purpose.** A batch lost to a 429 storm was not
- * rejected on its merits — it was queued behind nine siblings at
- * `concurrency: 10`. Asking again while the storm is on repeats the conditions
- * that caused it; asking after, alone, does not. Same reasoning as the attach
- * straggler, and the same bound: one pass. If a batch fails here too its items
- * stay unscored, and the caller says so.
+ * **The re-ask is per item, not per failed batch**, and that distinction is the
+ * whole point. There are three ways an item ends up unscored and only one of
+ * them fails the batch:
+ *
+ *   `LLM error`          the call threw after retries. Batch fails.
+ *   `batch parse error`  nothing in the response parsed. Batch fails.
+ *   `missing/invalid line`  the call **succeeded** and the model simply did not
+ *                        emit a line for that item, or emitted a malformed one.
+ *                        The batch reports success.
+ *
+ * The third is the common one and the easy one to miss. Run #39's batch 7 of 8
+ * parsed 39 of 40 lines: one item was silently defaulted inside an otherwise
+ * clean run, and a whole-batch straggler would not have looked at it. Any of the
+ * 40 could have been the day's biggest story.
+ *
+ * So the marker is the item, not the call. Every fail-safe path leaves
+ * `interest` null — that is what makes `interest IS NULL` a reliable query — so
+ * that is what gets re-asked.
+ *
+ * Sequential, and in small chunks. A batch lost to a 429 storm was queued behind
+ * nine siblings at `concurrency: 10`, so asking again during the storm repeats
+ * the conditions that caused it. Chunking small also removes the third failure
+ * mode's hiding place: at `straggler_batch_size` items a dropped line is a much
+ * smaller share of the response, and in the usual case — one or two stragglers —
+ * the re-ask is a single cheap call.
+ *
+ * Bounded at one pass. An item still unscored afterwards keeps `FAIL_SAFE_SCORE`
+ * and is counted, not hidden.
  */
 export async function scoreBatches(
   batches: EditorPass1BatchItem[][],
@@ -318,34 +339,59 @@ export async function scoreBatches(
     batchCount: number,
     label: string,
   ) => Promise<{ results: EditorPass1ItemResult[]; failed: boolean }>,
+  stragglerBatchSize: number,
 ): Promise<{ results: EditorPass1ItemResult[]; unscored: number }> {
   const first = (await Promise.all(
     batches.map((batch, idx) => limit(() => call(batch, idx, batches.length, ""))),
   )) as Array<{ results: EditorPass1ItemResult[]; failed: boolean }>;
 
-  const byIndex = new Map<number, EditorPass1ItemResult[]>();
-  const failedIdxs: number[] = [];
-  first.forEach((entry, idx) => {
-    byIndex.set(idx, entry.results);
-    if (entry.failed) failedIdxs.push(idx);
-  });
+  // Order is load-bearing: results are matched back to items downstream, so a
+  // reordering here would attach scores to the wrong stories, silently.
+  const ordered: EditorPass1ItemResult[] = first.flatMap((entry) => entry.results);
+  const byId = new Map(ordered.map((r) => [r.id, r]));
+  const itemById = new Map(batches.flat().map((i) => [i.id, i]));
 
-  let unscored = 0;
-  if (failedIdxs.length > 0) {
-    console.warn(
-      `[grouping-pass-1] stragglers: re-asking ${failedIdxs.length} failed batch(es) ` +
-        `sequentially, ${failedIdxs.reduce((n, i) => n + batches[i]!.length, 0)} item(s)`,
+  const unscoredIds = () =>
+    ordered.filter((r) => r.interest === null).map((r) => r.id);
+
+  const needed = unscoredIds();
+  if (needed.length === 0) return { results: ordered, unscored: 0 };
+
+  console.warn(
+    `[grouping-pass-1] stragglers: ${needed.length} item(s) came back unscored — ` +
+      `re-asking sequentially in chunks of ${stragglerBatchSize}`,
+  );
+
+  const chunks: EditorPass1BatchItem[][] = [];
+  for (let i = 0; i < needed.length; i += stragglerBatchSize) {
+    chunks.push(
+      needed
+        .slice(i, i + stragglerBatchSize)
+        .map((id) => itemById.get(id))
+        .filter((i): i is EditorPass1BatchItem => i !== undefined),
     );
-    for (const idx of failedIdxs) {
-      const retry = await call(batches[idx]!, idx, batches.length, " [straggler]");
-      byIndex.set(idx, retry.results);
-      if (retry.failed) unscored += batches[idx]!.length;
+  }
+
+  for (const [idx, chunk] of chunks.entries()) {
+    if (chunk.length === 0) continue;
+    const retry = await call(chunk, idx, chunks.length, " [straggler]");
+    for (const result of retry.results) {
+      // Only a real score replaces a fail-safe. A straggler that fails again
+      // must not overwrite one reason with another and look like progress.
+      if (result.interest === null) continue;
+      const existing = byId.get(result.id);
+      if (existing === undefined) continue;
+      Object.assign(existing, result);
     }
   }
 
-  const results: EditorPass1ItemResult[] = [];
-  for (let i = 0; i < batches.length; i++) results.push(...(byIndex.get(i) ?? []));
-  return { results, unscored };
+  const stillUnscored = unscoredIds().length;
+  console.log(
+    `[grouping-pass-1] stragglers: recovered ${needed.length - stillUnscored} of ` +
+      `${needed.length}, ${stillUnscored} still unscored`,
+  );
+
+  return { results: ordered, unscored: stillUnscored };
 }
 
 export async function runGroupingPass1(
@@ -386,6 +432,7 @@ export async function runGroupingPass1(
   const { temperature, max_tokens: maxTokens, batch_size: batchSize, concurrency } = stageConfig;
   const bodyCap = stageConfig.body_cap;
   const summaryCap = stageConfig.summary_cap;
+  const stragglerBatchSize = stageConfig.straggler_batch_size;
   const reasoningEffort = stageConfig.reasoning_effort;
   const provider = stageConfig.provider;
   const timeoutMs = stageConfig.timeout_ms;
@@ -441,6 +488,7 @@ export async function runGroupingPass1(
           systemPrompt, reasoningEffort, provider, timeoutMs, stream,
           stageConfig, label,
         ),
+      stragglerBatchSize,
     );
     const clusterResults = clusterScored.results;
 
@@ -475,6 +523,7 @@ export async function runGroupingPass1(
           systemPrompt, reasoningEffort, provider, timeoutMs, stream,
           stageConfig, label,
         ),
+      stragglerBatchSize,
     );
     const singletonResults = singletonScored.results;
 
