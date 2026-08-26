@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMProvider } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import { getClusteringItems } from "../preprocessor/assembler.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import {
@@ -45,7 +46,27 @@ export interface EditorPass1ItemResult {
 const AXIS_MAX = 50;
 
 /** Sum used when a line is missing or unparseable — the midpoint, as before. */
-const FAIL_SAFE_SCORE = 50;
+/**
+ * The score an item carries when it could not be scored.
+ *
+ * **Was 50, which is a fabricated judgment, not an absent one.** 50 sits in the
+ * middle of the 0–100 range and therefore *competes* — run #42's pile cutoff was
+ * 54 and four unscored clusters fell below it; run #40's cutoff was 49 and an
+ * unscored row went into the paper. Whether an unjudged item reached the reader
+ * was decided by where the day's cutoff happened to land.
+ *
+ * 0 says what is true: no judgment was made. The pile ranks by score and takes
+ * the top `pile_target`, so an unscored row is taken only when there are not
+ * enough judged rows to fill the paper — which, at ~480 scored rows for 150
+ * slots, is never in normal operation. It also means a total provider outage
+ * still produces a paper rather than an empty one, because every row is then
+ * equally unscored and the pile fills as before.
+ *
+ * The alternative was excluding unscored rows outright. That is right in normal
+ * operation and catastrophic in the outage case, and 0 gets the first without
+ * buying the second.
+ */
+const FAIL_SAFE_SCORE = 0;
 
 function clampAxis(value: number): number {
   return Math.max(0, Math.min(AXIS_MAX, value));
@@ -176,6 +197,23 @@ export function parseGroupingDigest(digest: string): ParsedGroupingCluster[] {
   return clusters;
 }
 
+/**
+ * Scores one batch, and says whether it had to fall back.
+ *
+ * **This stage is batched, concurrent, and had no retry at all.** CLAUDE.md has
+ * said since 2026-07-25 that any such stage needs `callWithBackoff`, because the
+ * failure mode is quiet — a rate-limited call returns a degraded-but-valid-
+ * looking result and the run reports success while losing work. Grouping-pass-1
+ * was the stage that rule was written about and the one place it was never
+ * applied: `callWithBackoff` was not even imported. At `concurrency: 10`, the
+ * highest in the pipeline, one 429 on the first and only attempt defaulted a
+ * whole batch of 40 items.
+ *
+ * Run #42 is what that costs: one 429 sent clusters C80–C83 into the pile
+ * competition carrying a fabricated score. They happened to fall below that
+ * run's cutoff of 54. Run #40's cutoff was 49, and a fail-safed row went into
+ * the paper unjudged.
+ */
 async function processGroupingBatch(
   items: EditorPass1BatchItem[],
   batchIndex: number,
@@ -189,9 +227,12 @@ async function processGroupingBatch(
   provider: LLMProvider | undefined,
   timeoutMs: number | undefined,
   stream: boolean | undefined,
-): Promise<EditorPass1ItemResult[]> {
+  retryConfig: { retry_max_attempts?: number; retry_base_ms?: number },
+  label = "",
+): Promise<{ results: EditorPass1ItemResult[]; failed: boolean }> {
   try {
-    const llmResult = await callLLM({
+    const llmResult = await callWithBackoff(
+      () => callLLM({
       stage: "grouping-pass-1",
       stageRunId: runId,
       model,
@@ -203,7 +244,10 @@ async function processGroupingBatch(
       provider,
       timeoutMs,
       stream,
-    });
+      }),
+      retryConfig,
+      `grouping-pass-1 batch ${batchIndex + 1}/${batchCount}${label}`,
+    );
 
     const expectedIds = items.map((item) => item.id);
     const parsed = parseBatchOutput(llmResult.text, expectedIds);
@@ -211,13 +255,16 @@ async function processGroupingBatch(
       console.warn(
         `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${items.length} items to score=50`,
       );
-      return items.map((item) => ({
-        id: item.id,
-        score: FAIL_SAFE_SCORE,
-        interest: null,
-        consequence: null,
-        reason: "fail-safe: batch parse error",
-      }));
+      return {
+        results: items.map((item) => ({
+          id: item.id,
+          score: FAIL_SAFE_SCORE,
+          interest: null,
+          consequence: null,
+          reason: "fail-safe: batch parse error",
+        })),
+        failed: true,
+      };
     }
 
     const log =
@@ -230,20 +277,75 @@ async function processGroupingBatch(
       console.log(log);
     }
 
-    return parsed.results;
+    return { results: parsed.results, failed: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — defaulting all ${items.length} items to score=50`,
+      `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}${label}: LLM call failed ` +
+        `after retries (${msg}) — ${items.length} item(s) unscored`,
     );
-    return items.map((item) => ({
-      id: item.id,
-      score: FAIL_SAFE_SCORE,
-      interest: null,
-      consequence: null,
-      reason: "fail-safe: LLM error",
-    }));
+    return {
+      results: items.map((item) => ({
+        id: item.id,
+        score: FAIL_SAFE_SCORE,
+        interest: null,
+        consequence: null,
+        reason: "fail-safe: LLM error",
+      })),
+      failed: true,
+    };
   }
+}
+
+
+/**
+ * Runs a set of batches concurrently, then re-asks any that failed, one at a
+ * time.
+ *
+ * **The re-ask is sequential on purpose.** A batch lost to a 429 storm was not
+ * rejected on its merits — it was queued behind nine siblings at
+ * `concurrency: 10`. Asking again while the storm is on repeats the conditions
+ * that caused it; asking after, alone, does not. Same reasoning as the attach
+ * straggler, and the same bound: one pass. If a batch fails here too its items
+ * stay unscored, and the caller says so.
+ */
+export async function scoreBatches(
+  batches: EditorPass1BatchItem[][],
+  limit: ReturnType<typeof pLimit>,
+  call: (
+    batch: EditorPass1BatchItem[],
+    batchIdx: number,
+    batchCount: number,
+    label: string,
+  ) => Promise<{ results: EditorPass1ItemResult[]; failed: boolean }>,
+): Promise<{ results: EditorPass1ItemResult[]; unscored: number }> {
+  const first = (await Promise.all(
+    batches.map((batch, idx) => limit(() => call(batch, idx, batches.length, ""))),
+  )) as Array<{ results: EditorPass1ItemResult[]; failed: boolean }>;
+
+  const byIndex = new Map<number, EditorPass1ItemResult[]>();
+  const failedIdxs: number[] = [];
+  first.forEach((entry, idx) => {
+    byIndex.set(idx, entry.results);
+    if (entry.failed) failedIdxs.push(idx);
+  });
+
+  let unscored = 0;
+  if (failedIdxs.length > 0) {
+    console.warn(
+      `[grouping-pass-1] stragglers: re-asking ${failedIdxs.length} failed batch(es) ` +
+        `sequentially, ${failedIdxs.reduce((n, i) => n + batches[i]!.length, 0)} item(s)`,
+    );
+    for (const idx of failedIdxs) {
+      const retry = await call(batches[idx]!, idx, batches.length, " [straggler]");
+      byIndex.set(idx, retry.results);
+      if (retry.failed) unscored += batches[idx]!.length;
+    }
+  }
+
+  const results: EditorPass1ItemResult[] = [];
+  for (let i = 0; i < batches.length; i++) results.push(...(byIndex.get(i) ?? []));
+  return { results, unscored };
 }
 
 export async function runGroupingPass1(
@@ -329,18 +431,18 @@ export async function runGroupingPass1(
     }
 
     const clusterLimit = pLimit(concurrency);
-    const clusterBatchResults = await Promise.all(
-      clusterBatches.map((batch, batchIdx) =>
-        clusterLimit(() =>
-          processGroupingBatch(
-            batch, batchIdx, clusterBatches.length,
-            runId, model, temperature, maxTokens,
-            systemPrompt, reasoningEffort, provider, timeoutMs, stream,
-          ),
+    const clusterScored = await scoreBatches(
+      clusterBatches,
+      clusterLimit,
+      (batch, batchIdx, batchCount, label) =>
+        processGroupingBatch(
+          batch, batchIdx, batchCount,
+          runId, model, temperature, maxTokens,
+          systemPrompt, reasoningEffort, provider, timeoutMs, stream,
+          stageConfig, label,
         ),
-      ),
     );
-    const clusterResults = clusterBatchResults.flat();
+    const clusterResults = clusterScored.results;
 
     // 8. Score singletons.
     //
@@ -363,18 +465,31 @@ export async function runGroupingPass1(
     }
 
     const singletonLimit = pLimit(concurrency);
-    const singletonBatchResults = await Promise.all(
-      singletonBatches.map((batch, batchIdx) =>
-        singletonLimit(() =>
-          processGroupingBatch(
-            batch, batchIdx, singletonBatches.length,
-            runId, model, temperature, maxTokens,
-            systemPrompt, reasoningEffort, provider, timeoutMs, stream,
-          ),
+    const singletonScored = await scoreBatches(
+      singletonBatches,
+      singletonLimit,
+      (batch, batchIdx, batchCount, label) =>
+        processGroupingBatch(
+          batch, batchIdx, batchCount,
+          runId, model, temperature, maxTokens,
+          systemPrompt, reasoningEffort, provider, timeoutMs, stream,
+          stageConfig, label,
         ),
-      ),
     );
-    const singletonResults = singletonBatchResults.flat();
+    const singletonResults = singletonScored.results;
+
+    // **An unscored row is visible, not silent.** It carries FAIL_SAFE_SCORE and
+    // a null interest axis, so `interest IS NULL` finds it — but nobody queries a
+    // database to find out a stage went wrong, so say it here too.
+    const totalUnscored = clusterScored.unscored + singletonScored.unscored;
+    if (totalUnscored > 0) {
+      console.warn(
+        `[grouping-pass-1] WARNING: ${totalUnscored} item(s) could not be scored ` +
+          `after the straggler re-ask. They carry score=${FAIL_SAFE_SCORE} and a null ` +
+          `interest axis, which keeps them out of the pile unless it is short of ` +
+          `judged candidates. Find them with: interest IS NULL.`,
+      );
+    }
 
     // 9. Persist results.
     const INSERT_CHUNK = 500;

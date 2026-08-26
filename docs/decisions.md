@@ -4662,3 +4662,71 @@ cannot draw on the same source. A live blog defeats that by construction.
 So it joins `isHeadlineEcho` and `min_article_chars` in the packet's usability
 filter, and inherits that filter's guarantee: **a packet is never emptied.** On a
 story whose only source is a live blog, it is still the source.
+
+---
+
+## 2026-08-26 — The scoring stage had no retry at all, and its fail-safe competed
+
+Replay #42 lost four clusters — C80 to C83 — to a single HTTP 429. Each was
+persisted with `score=50`, `interest=NULL`, `reason=fail-safe: LLM error`. They
+fell below that run's pile cutoff of 54 and did not reach the paper. Run #40's
+cutoff was 49, and a fail-safed row did.
+
+Two separate defects, and the first one is embarrassing.
+
+### `callWithBackoff` was never imported
+
+CLAUDE.md has said since 2026-07-25: "**Any new batched, concurrent stage needs
+it.** The failure mode is quiet: a rate-limited call that returns a
+degraded-but-valid-looking result is indistinguishable from a real model verdict,
+so the run reports success while losing work."
+
+Grouping-pass-1 is batched, concurrent, and runs at `concurrency: 10` — the
+highest in the pipeline, against prefilter's 8 and writers' 4. It is the stage
+that rule most obviously describes. `callWithBackoff` was **not imported into the
+file**. A 429 failed on the first and only attempt and defaulted forty items.
+
+The Zod schema had carried `retry_max_attempts` and `retry_base_ms` on
+`BatchStageConfigSchema` the whole time, and `editor_pass_1` inherits it. The
+config never set them and the code never called the wrapper. A rule written down,
+a schema that anticipated it, and no behaviour behind either.
+
+Fixed the obvious way: the batch call goes through `callWithBackoff`, the config
+carries 5 attempts and a 2,000 ms base, and batches that still fail get one
+**sequential straggler re-ask** — the attach pass's pattern, for the same cause.
+A batch lost to a 429 storm was not rejected on its merits; it was queued behind
+nine siblings. Asking again during the storm repeats the conditions that caused
+it. Asking after, alone, does not.
+
+### 50 is a fabricated judgment, not an absent one
+
+The subtler defect, and the one that decides whether an unjudged story reaches
+the reader.
+
+A fail-safe score of 50 sits in the middle of the 0–100 range, so it **competes**
+with real judgments. Whether an unscored row was published turned entirely on
+where the day's cutoff happened to land — 54 and it is dropped, 49 and it is
+printed. Neither outcome was chosen; both were accidents of the distribution.
+
+`FAIL_SAFE_SCORE` is now **0**, which says what is true: no judgment was made.
+The pile ranks by score and takes the top `pile_target`, so an unscored row is
+taken only when there are not enough judged rows to fill the paper — at ~480
+scored rows for 150 slots, never in normal operation.
+
+**Not excluded outright**, which was the other candidate. Exclusion is right in
+normal operation and catastrophic in the outage case: if the provider is down for
+the whole stage, every row is unscored, and exclusion yields no paper at all. 0
+gets the normal-operation behaviour without buying the outage behaviour, because
+when everything is 0 the pile fills exactly as it did before.
+
+An unscored row keeps its null `interest` axis, so `interest IS NULL` finds it,
+and the stage now closes with a warning naming the count — nobody queries a
+database to discover that a stage went wrong.
+
+### What is not being changed
+
+**`concurrency: 10`.** It is the highest in the pipeline and it is where the
+pressure comes from, but the stage had *no retry at all*; that is a sufficient
+explanation for what happened and lowering concurrency on the same day would
+confound the evidence. If a run with backoff in place still shows a 429 storm,
+that is when the number moves.

@@ -392,7 +392,13 @@ editor_pass_1:
   temperature: 0.1
   max_tokens: 24000
   batch_size: 40
+  # The highest concurrency in the pipeline, and until 2026-08-26 the only
+  # batched concurrent stage with no retry at all — callWithBackoff was not even
+  # imported. One 429 on the first and only attempt defaulted a whole batch of 40
+  # to a fabricated score. Run #42 lost clusters C80-C83 that way.
   concurrency: 10
+  retry_max_attempts: 5
+  retry_base_ms: 2000
   reasoning_effort: "medium"
   singleton_pile_target: 100
   # Characters of English body text shown per SINGLETON being scored.

@@ -290,6 +290,23 @@ Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
 (the directory keeps the historical name; the `editor_pass_1.*` config block
 supplies its model and prompt). Two functions:
 
+**A batch that fails is re-asked, and an unscored row scores 0.** This stage is
+batched and concurrent at `concurrency: 10`, the highest in the pipeline, and
+until 2026-08-26 it was the one place the "any new batched, concurrent stage
+needs `callWithBackoff`" rule was never applied — the wrapper was not even
+imported, so a single 429 on the first and only attempt defaulted a whole batch
+of 40 items. Failed batches now retry under backoff and then get one **sequential
+straggler re-ask**, the attach pass's pattern for the same cause.
+**`FAIL_SAFE_SCORE` is 0, not 50**: 50 sits mid-range and therefore *competed*,
+so whether an unjudged item reached the reader turned on where the day's pile
+cutoff happened to land — run #42's was 54 and four unscored clusters fell below
+it, run #40's was 49 and one was published. 0 says what is true, and the pile
+takes an unscored row only if it is short of judged candidates. Not excluded
+outright, because that is right in normal operation and catastrophic during a
+provider outage; 0 gets the first without buying the second. Unscored rows carry
+a null `interest` axis, so `interest IS NULL` finds them, and the stage warns
+with a count.
+
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
 clusters and singletons on the same scale. **The model emits two axes, not one**
 (`id;;interest;;consequence;;reason`, each 0–50); software sums them into
