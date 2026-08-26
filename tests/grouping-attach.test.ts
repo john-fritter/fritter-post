@@ -4,6 +4,7 @@ import {
   buildProtoGroups,
   chunkArray,
   parseAttachOutput,
+  trackAttachLoss,
 } from "../src/pipeline/grouping/index.js";
 import type { Cluster } from "../src/lib/cluster.js";
 import type { PreprocessedItemRow } from "../src/pipeline/preprocessor/assembler.js";
@@ -373,5 +374,73 @@ testParseAttachOutput_none();
 testParseAttachOutput_validAndOutOfRange();
 testParseAttachOutput_spaceSeparated();
 testCallCountScalesWithClustersAndGroups();
+
+
+// --- which judgments the storm lost ---
+//
+// Run #56: 158 provider attempts for 133 successes — 24 recoverable 429s and one
+// 300,006 ms timeout — on a news lane that had just grown 42%. callWithBackoff
+// does not retry timeouts, correctly, so that judgment was gone and the run was
+// degraded. It is now recoverable by a sequential re-ask, and these pin the
+// bookkeeping that decides what gets re-asked.
+
+function testACleanUnitIsNotLost() {
+  const lost = new Set<number>();
+  trackAttachLoss(lost, 3, [false, false]);
+  assert.equal(lost.has(3), false);
+}
+
+function testAnyFailedChunkLosesTheUnit() {
+  const lost = new Set<number>();
+  trackAttachLoss(lost, 3, [false, true, false]);
+  assert.equal(lost.has(3), true);
+}
+
+function testASiblingChunkAnsweringDoesNotRecoverTheLostOne() {
+  // The bug this helper exists for. Chunks partition a unit's candidates, so a
+  // chunk that answered says nothing about the candidates in one that did not.
+  // Clearing the flag per chunk-success made a two-chunk cluster that lost its
+  // first call look clean with half its candidates unseen.
+  const lost = new Set<number>();
+  trackAttachLoss(lost, 7, [true, false]);
+  assert.equal(lost.has(7), true, "first chunk failed; the unit is not clean");
+}
+
+function testACleanRerunClearsTheLoss() {
+  // What makes the straggler pass work: it re-runs every chunk of the unit, so
+  // a clean second pass legitimately un-marks it.
+  const lost = new Set<number>([7]);
+  trackAttachLoss(lost, 7, [false, false]);
+  assert.equal(lost.has(7), false);
+}
+
+function testAFailedRerunKeepsTheLoss() {
+  const lost = new Set<number>([7]);
+  trackAttachLoss(lost, 7, [true]);
+  assert.equal(lost.has(7), true);
+}
+
+function testAUnitWithNoChunksIsNotLost() {
+  // No candidates to offer is not a failure to offer them.
+  const lost = new Set<number>();
+  trackAttachLoss(lost, 1, []);
+  assert.equal(lost.size, 0);
+}
+
+function testUnitsAreTrackedIndependently() {
+  const lost = new Set<number>();
+  trackAttachLoss(lost, 1, [true]);
+  trackAttachLoss(lost, 2, [false]);
+  trackAttachLoss(lost, 3, [true]);
+  assert.deepEqual([...lost].sort(), [1, 3]);
+}
+
+testACleanUnitIsNotLost();
+testAnyFailedChunkLosesTheUnit();
+testASiblingChunkAnsweringDoesNotRecoverTheLostOne();
+testACleanRerunClearsTheLoss();
+testAFailedRerunKeepsTheLoss();
+testAUnitWithNoChunksIsNotLost();
+testUnitsAreTrackedIndependently();
 
 console.log("grouping attach tests passed");

@@ -252,11 +252,32 @@ report regenerated from the database can judge a run without the console log:
 `split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
 `split_components_split` / `split_freed_singletons`, and (migration 038)
 `describe_flagged` / `resplit_calls` / `resplit_failed_calls` /
-`resplit_clusters_split` / `resplit_freed_singletons`.
+`resplit_clusters_split` / `resplit_freed_singletons`, and (migration 039)
+`attach_unrecovered`.
 
-**If `attach_failed_calls` is non-zero, the cluster/singleton split understates
-real grouping and the run must not be used to judge cluster quality or tune
-`similarity_threshold`.** If `split_failed_calls` is non-zero, those components
+**A lost attach judgment is now recoverable, and `attach_unrecovered` is the one
+to read.** The concurrent phases are followed by one **sequential straggler
+re-ask** for every cluster and proto-group that lost a call. A call lost to
+congestion is not the same as a call that is too slow: `callWithBackoff`
+deliberately does not retry timeouts, which is right for a genuinely slow call
+and wrong for one that spent its budget queued behind a rate-limit storm. Run #56
+was the second kind — 158 provider attempts for 133 successes, 24 recoverable
+429s and one 300,006 ms timeout, on a news lane that had just grown 42% (483
+kept-news to 686) when AP switched to its sitemap. The corpus outgrew the
+concurrency budget and one judgment went with it. The re-ask runs after
+everything else, one call at a time, so it is a different regime rather than a
+repeat of the same one — the writers' straggler pattern, applied where a lost
+call is silent instead of visible.
+
+So the two counts diverge, and only one of them is a defect:
+`attach_failed_calls` counts provider calls that failed, which costs time and
+tokens; **`attach_unrecovered` (migration 039) counts judgments still missing
+after the re-ask, and a non-zero value means the cluster/singleton split
+understates real grouping and the run must not be used to judge cluster quality
+or tune `similarity_threshold`.** NULL means a run before 039, where
+`attach_failed_calls` carried that meaning. A unit is lost if **any** of its
+chunks failed — chunks partition its candidates, so a sibling chunk answering
+says nothing about the ones that went unseen. If `split_failed_calls` is non-zero, those components
 were left intact and may still be over-merged. NULL means the pass didn't run,
 which is not the same as zero.
 
@@ -981,7 +1002,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **039**.
+number is ambiguous. The next migration is **040**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

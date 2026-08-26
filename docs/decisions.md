@@ -4540,3 +4540,77 @@ consecutive collections; `/rss.xml` serves 25 items against `/feed`'s 10.
 Three sources, three dead endpoints, all three fixed by looking rather than by
 inference. The pattern across all four is one thing: **a note recording a
 conclusion outlives the evidence that produced it, and nothing re-tests it.**
+
+---
+
+## 2026-08-26 — A lost attach judgment is recoverable; a slow call still is not
+
+Run #56 came back degraded: `attach_failed_calls=1`, from 158 provider attempts
+for 133 successes — **24 recoverable 429s and one 300,006 ms timeout**. The
+counter did its job. It has existed since run #34 precisely so a run cannot hide
+this, and the reviewer correctly refused to call the run clean.
+
+But a counter cannot be acted on, and the interesting part is *why* it happened
+now. The same run switched AP from a Google News proxy to its own sitemap, and
+the news lane grew from 483 kept-news items to **686 — 42%** in one step.
+Grouping's attach concurrency was tuned for the smaller corpus. The corpus
+outgrew the budget and one judgment went with it.
+
+### The rule that lost it was right, and applied to the wrong case
+
+`callWithBackoff` does not retry timeouts, deliberately: "a call that ran to its
+configured ceiling will likely do it again, and the run #40 lesson was to bound
+those." That is correct for a call that is genuinely slow.
+
+It is wrong for a call that spent its budget **queued behind a rate-limit
+storm**, which is a property of what else was in flight rather than of the call.
+From inside `callWithBackoff` the two are indistinguishable — it sees one call —
+so the fix does not belong there.
+
+### The straggler re-ask
+
+The attach pass now records *which* judgments were lost, not just how many, and
+after the concurrent phases makes **one sequential re-ask** for those clusters
+and proto-groups. Sequential is the whole point: nothing else is in flight, so
+the pressure that caused the loss is gone, and "it will just do it again" does
+not apply the way it does to an inline retry during the storm.
+
+This is the writers' straggler pattern — a brief missing from a batch gets one
+follow-up call — applied to the stage where a lost call is *silent* rather than
+visible. Bounded at one pass: if the re-ask fails too, the judgment is still lost
+and the warning still fires. This makes recovery possible, it does not promise it.
+
+`evalCluster` and the newly extracted `evalProtoGroup` both read live state and
+return a verdict without mutating anything, so running them twice is safe — the
+same property that already lets the cascade re-run Phase A.
+
+### The bug in the first version of the bookkeeping
+
+The loss register initially cleared a unit's flag on each chunk *success*. Chunks
+partition a unit's candidates, so a two-chunk cluster that lost its first call
+and answered its second looked clean **with half its candidates never judged**.
+`trackAttachLoss` clears once per pass and then marks on any chunk failure, and
+seven tests pin it, including that exact case. Clearing per pass rather than
+never is what lets a clean re-ask legitimately un-mark a unit.
+
+### Two counts, one defect
+
+Migration 039 splits them, because they no longer mean the same thing:
+
+- `attach_failed_calls` — provider calls that failed, in the storm or the
+  re-ask. A cost in time and tokens. **Not itself a defect**, and warning about a
+  failure that was then recovered would train the reader to ignore the line that
+  matters.
+- `attach_unrecovered` — judgments still missing afterwards. This is what the
+  "do not judge cluster quality on this run" rule attaches to now.
+
+NULL means a run before 039, where `attach_failed_calls` carried both meanings —
+which it could, because until now they were the same thing.
+
+### What is not being changed
+
+**Attach concurrency.** The 429s were all recovered and the underlying cause is a
+corpus that grew 42% overnight; one run is thin evidence for retuning a
+concurrency that was itself lowered for rate limits once before. If the next run
+shows the same storm on a stable corpus, that is the evidence, and lowering
+`grouping.attach.concurrency` is the lever.
