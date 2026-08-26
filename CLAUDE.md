@@ -1007,6 +1007,14 @@ number is ambiguous. The next migration is **039**.
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
+- `npm run inspect -- timing` — per-stage durations for the latest run of each
+  stage, the sum, the wall clock across the lineage, and how much of that was
+  spent **between** stages rather than inside them. Every run table has written
+  `started_at` and `completed_at` since migration 002 and nothing read them back,
+  so "how long does the paper take" had no answer but whoever ran it saying
+  "about an hour" — which conflates the pipeline with the deploy, the audit and
+  the report around it. A stage that doubled in cost would be invisible until
+  someone noticed the wait
 - `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
   much body text each story's underlying articles carry, per tier, per source and
   per host, plus the fetch scope. Reports **feed body and after-fetch side by

@@ -743,6 +743,117 @@ async function main() {
       // day is noise: a source with four articles that all happened to be
       // fetchable proves nothing. The retention window is what there is to
       // judge on.
+      // **How long does the paper actually take?**
+      //
+      // Every stage has written started_at and completed_at since migration 002
+      // and nothing has ever read them back, so the only answer available has
+      // been whoever ran it saying "about an hour" — which conflates the
+      // pipeline with the deploy, the audit queries and the report around it.
+      // A stage that doubled in cost would be invisible until someone noticed
+      // the wait.
+      //
+      // Latest run of each stage by default, since that is the lineage anybody
+      // asking has just produced.
+      case "timing": {
+        const stages: Array<{ label: string; table: string }> = [
+          { label: "collector", table: "collector_runs" },
+          { label: "preprocessor", table: "preprocessor_runs" },
+          { label: "prefilter", table: "prefilter_runs" },
+          { label: "grouping", table: "grouping_runs" },
+          { label: "grouping-pass-1", table: "grouping_pass1_runs" },
+          { label: "thread", table: "thread_runs" },
+          { label: "editor", table: "editor_runs" },
+          { label: "writers", table: "writer_runs" },
+        ];
+
+        const rows: Array<{
+          label: string; id: number | null; started: Date | null;
+          completed: Date | null; seconds: number | null;
+        }> = [];
+        for (const stage of stages) {
+          const { rows: found } = await pool.query<{
+            id: string; started_at: Date; completed_at: Date | null; seconds: string | null;
+          }>(
+            `SELECT id::text, started_at, completed_at,
+                    EXTRACT(EPOCH FROM (completed_at - started_at))::text AS seconds
+             FROM ${stage.table} ORDER BY id DESC LIMIT 1`,
+          );
+          const r = found[0];
+          rows.push({
+            label: stage.label,
+            id: r ? Number(r.id) : null,
+            started: r ? r.started_at : null,
+            completed: r?.completed_at ?? null,
+            seconds: r?.seconds != null ? Number(r.seconds) : null,
+          });
+        }
+
+        const clock = (sec: number) => {
+          const m = Math.floor(sec / 60);
+          const s = Math.round(sec % 60);
+          return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+        };
+
+        console.log("Stage durations — latest run of each stage\n");
+        console.log("  stage             run        started              duration");
+        let stageTotal = 0;
+        for (const r of rows) {
+          if (r.id === null) {
+            console.log(`  ${r.label.padEnd(17)} (none)`);
+            continue;
+          }
+          const when = r.started ? r.started.toISOString().replace("T", " ").slice(0, 19) : "?";
+          // A null completed_at means in progress, or crashed before finishing —
+          // never zero. Saying so beats printing a 0 that reads like "instant".
+          const dur =
+            r.seconds === null ? "INCOMPLETE (no completed_at)" : clock(r.seconds);
+          if (r.seconds !== null) stageTotal += r.seconds;
+          console.log(
+            `  ${r.label.padEnd(17)} #${String(r.id).padEnd(9)} ${when}  ${dur}`,
+          );
+        }
+
+        console.log(`\n  Sum of stage durations:  ${clock(stageTotal)}`);
+
+        // Wall clock across the lineage, which is the number a person actually
+        // waited: it includes the gaps where a human or a script sat between
+        // stages, and the sum above does not.
+        const started = rows.map((r) => r.started).filter((d): d is Date => d !== null);
+        const ended = rows.map((r) => r.completed).filter((d): d is Date => d !== null);
+        if (started.length > 0 && ended.length > 0) {
+          const first = Math.min(...started.map((d) => d.getTime()));
+          const last = Math.max(...ended.map((d) => d.getTime()));
+          const wall = (last - first) / 1000;
+          console.log(`  Wall clock, first start to last finish: ${clock(wall)}`);
+          const gap = wall - stageTotal;
+          if (gap > 0) {
+            console.log(
+              `  Of which between stages: ${clock(gap)} — ` +
+                `orchestration, not the pipeline`,
+            );
+          }
+        }
+
+        // fetch-text has no run table of its own; article_texts is where it
+        // leaves a trace, and the spread of one editor run's fetched_at is the
+        // closest thing to its duration.
+        const { rows: fetchRows } = await pool.query<{ n: string; seconds: string | null }>(
+          `SELECT count(*)::text AS n,
+                  EXTRACT(EPOCH FROM (max(fetched_at) - min(fetched_at)))::text AS seconds
+           FROM article_texts
+           WHERE status <> 'skipped'
+             AND fetched_at >= NOW() - INTERVAL '24 hours'`,
+        );
+        const fr = fetchRows[0];
+        if (fr && Number(fr.n) > 0 && fr.seconds !== null) {
+          console.log(
+            `\n  fetch-text (no run table; ${fr.n} rows attempted in the last 24h) ` +
+              `spans ${clock(Number(fr.seconds))}`,
+          );
+        }
+        break;
+      }
+
       case "fetch": {
         const days = flags["days"] ? parseInt(flags["days"], 10) : 14;
         const { rows } = await pool.query<{
@@ -1098,6 +1209,9 @@ Commands:
   materials --editor-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
+  timing                   Per-stage durations for the latest run of each stage,
+                           plus wall clock across the lineage and how much of it
+                           was spent between stages rather than inside them
   fetch [--days <n>]       Per-source article fetch outcomes from article_texts
                            (default 14 days): what a writer ends up with per
                            outlet, why we did not ask, and which sources have
