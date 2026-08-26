@@ -794,6 +794,23 @@ async function main() {
           return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
         };
 
+        // **A replay mixes lineages, and the output has to say so.** Taking the
+        // latest row of each table is right for a full pipeline run and wrong
+        // for a replay from an existing preprocessor run: the collector and
+        // preprocessor rows are then hours or days older than the stages that
+        // actually ran, and their gap lands in the wall clock as if somebody had
+        // waited. Run #45's report had to discard this output for exactly that.
+        const newestStart = Math.max(
+          ...rows.map((r) => r.started?.getTime() ?? 0),
+          0,
+        );
+        // Anything that started more than this before the newest stage was not
+        // part of the same sitting. Generous, so a slow full run is never split.
+        const LINEAGE_WINDOW_MS = 6 * 3600_000;
+        const inLineage = (r: (typeof rows)[number]) =>
+          r.started !== null && newestStart - r.started.getTime() <= LINEAGE_WINDOW_MS;
+        const stale = rows.filter((r) => r.id !== null && !inLineage(r));
+
         console.log("Stage durations — latest run of each stage\n");
         console.log("  stage             run        started              duration");
         let stageTotal = 0;
@@ -807,19 +824,28 @@ async function main() {
           // never zero. Saying so beats printing a 0 that reads like "instant".
           const dur =
             r.seconds === null ? "INCOMPLETE (no completed_at)" : clock(r.seconds);
-          if (r.seconds !== null) stageTotal += r.seconds;
+          if (r.seconds !== null && inLineage(r)) stageTotal += r.seconds;
+          const mark = inLineage(r) ? "" : "   [earlier lineage]";
           console.log(
-            `  ${r.label.padEnd(17)} #${String(r.id).padEnd(9)} ${when}  ${dur}`,
+            `  ${r.label.padEnd(17)} #${String(r.id).padEnd(9)} ${when}  ${dur}${mark}`,
           );
         }
 
         console.log(`\n  Sum of stage durations:  ${clock(stageTotal)}`);
+        if (stale.length > 0) {
+          console.log(
+            `  ${stale.length} stage(s) marked [earlier lineage] did not run in this ` +
+              `sitting — a replay reuses them. The wall clock below spans only the ` +
+              `stages that did.`,
+          );
+        }
 
         // Wall clock across the lineage, which is the number a person actually
         // waited: it includes the gaps where a human or a script sat between
         // stages, and the sum above does not.
-        const started = rows.map((r) => r.started).filter((d): d is Date => d !== null);
-        const ended = rows.map((r) => r.completed).filter((d): d is Date => d !== null);
+        const fresh = rows.filter(inLineage);
+        const started = fresh.map((r) => r.started).filter((d): d is Date => d !== null);
+        const ended = fresh.map((r) => r.completed).filter((d): d is Date => d !== null);
         if (started.length > 0 && ended.length > 0) {
           const first = Math.min(...started.map((d) => d.getTime()));
           const last = Math.max(...ended.map((d) => d.getTime()));

@@ -480,12 +480,17 @@ export function assembleWriterPacket(
       preprocessedItemId: r.article.preprocessedItemId,
       sourceName: r.article.sourceName,
       title: r.article.title,
-      reason:
-        r.text.length < cfg.min_article_chars
+      // **The structural reason first, then the incidental one.** A live blog
+      // that also happens to have no cached text was reported as "no usable body
+      // text", which is true and useless: the length is an artifact of whether
+      // the fetch ran, while being a live blog is a property of the source that
+      // holds across every run. Run #45's audit could not tell whether the
+      // path-based rule had done the work or the empty cache had.
+      reason: isLiveBlog(r.article.title, r.article.canonicalUrl)
+        ? "live blog: rolling coverage of many stories, not this one"
+        : r.text.length < cfg.min_article_chars
           ? `no usable body text (${r.text.length} chars after cleanup)`
-          : isLiveBlog(r.article.title, r.article.canonicalUrl)
-            ? "live blog: rolling coverage of many stories, not this one"
-            : "body text only repeats the headline",
+          : "body text only repeats the headline",
       kind: "no-text" as const,
     });
   }

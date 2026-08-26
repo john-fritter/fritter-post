@@ -1064,7 +1064,11 @@ number is ambiguous. The next migration is **040**.
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
 - `npm run inspect -- timing` — per-stage durations for the latest run of each
   stage, the sum, the wall clock across the lineage, and how much of that was
-  spent **between** stages rather than inside them. Every run table has written
+  spent **between** stages rather than inside them. Stages whose run predates the
+  newest by more than six hours are marked `[earlier lineage]` and excluded from
+  the sum and the wall clock: a replay from an existing preprocessor run reuses
+  its upstream stages, and counting their age as a gap made run #45's report
+  discard the output entirely. Every run table has written
   `started_at` and `completed_at` since migration 002 and nothing read them back,
   so "how long does the paper take" had no answer but whoever ran it saying
   "about an hour" — which conflates the pipeline with the deploy, the audit and
