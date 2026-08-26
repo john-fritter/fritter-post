@@ -4449,3 +4449,94 @@ pickup and AP covering a story is a real signal of prominence whether or not we
 can read the article. That is the intended behaviour and this changes nothing
 about it. What changes is that the writer stops being handed a headline and told
 it is a source.
+
+---
+
+## 2026-08-26 — AP is reachable, and the note that said otherwise was the bug
+
+AP Top News and AP Politics were between them the single largest contributor of
+material to the paper — 250 items reached editor runs in the 14 days to
+2026-08-25, ahead of OPB and SCMP — and their usable rate was **0%**. Every item
+was a headline.
+
+### Two assumptions, both wrong, both sitting in comments where they read as facts
+
+**"AP has no working public feed we can find."** That note in `sources.yaml`
+rested on five URLs tried once on 2026-08-14. All five were RSS paths, and AP's
+robots.txt contains `Disallow: /*.rss`. **That probe could only ever have
+failed.** Reading robots.txt instead — which *declares* six sitemaps — finds
+`news-sitemap-content.xml`: 200 text/xml, 529 entries with titles and
+publication timestamps, spanning about 28 hours.
+
+Note the declared name. The guessable `/news-sitemap.xml` is a near-empty
+2-entry file, so a path battery would have found that one and concluded failure a
+second time. Guessing paths is not a search; robots.txt is the search.
+
+**"The Google News token is an opaque identifier with no URL in it."** That one
+in `canonicalizeUrl` turned out to be *right*, and is now settled rather than
+assumed: 52 real links through token decoding, redirect following and
+interstitial parsing resolved zero. The interstitial is a 580KB JavaScript shell
+with no `apnews.com` in it. Google News resolution is a dead end and the module
+docs say so, so nobody re-runs it.
+
+### What the sitemap actually gives, measured through the real path
+
+518 of 529 entries are `/article/`; 6 `/photo-gallery/`, 3 `/live/`, 2
+`/newsletter/`. Fifteen sampled pages, fetched and run through `extractArticle`
+then `stripBoilerplate` — not a generic curl, because anything less measures a
+different pipeline than the one that writes the paper — **all fifteen cleared
+800 characters.**
+
+The three `/live/` pages extracted 20,000–39,000 characters. Those are live blogs
+and they are a known shape: `isLiveBlog` and the junk filter stand between them
+and a writer packet. Three of 529 is a rounding error, but it is the number to
+watch if the front page ever leads on one.
+
+### The design
+
+`format: news-sitemap` on a source. Same transport as the feed path, same
+identity rule, different parse.
+
+**A sitemap carries no body, and that is the cost.** Items arrive with a null
+body, so they reach the prefilter, grouping and scoring on their titles alone,
+and only the ~150 reaching the editor get their text fetched. This is not a
+regression — the Google News items they replace carried a ~100-character headline
+echo that `isHeadlineEcho` stripped anyway — and the proxy's title-only items
+demonstrably survived those stages in numbers. But it is a real property, and the
+first run is where it gets tested.
+
+**`max_age_hours`, because a sitemap does not window itself.** AP's spans ~28
+hours against a daily collector, 281 of 529 inside 24. Without a window the tail
+is re-collected daily for the cross-run dedup to discard again. Default 24, which
+matches both the collector's cadence and the `when:24h` the proxies used, so the
+corpus stays comparable across the change. An entry with no date is **kept**: a
+missing timestamp is not evidence of age.
+
+**`exclude_paths`, because the case for collecting AP rests on reading its
+robots.txt.** That file permits `/article/` and `/live/`, sets no `Crawl-delay`,
+and disallows exactly one specific article. That one is in the source entry and
+dropped by the collector. Exact paths, never prefixes — a prefix rule would
+quietly grow to cover articles the publisher never excluded, and the value of the
+list is that it diffs against the robots.txt it came from. **A rule you read but
+do not follow is worse than one you never read.**
+
+### Cost
+
+Roughly 25 AP items a run becomes roughly 281, a ~21% larger corpus and
+proportionally more prefilter calls. That is the price of the largest source in
+the paper going from headlines to articles.
+
+### The same probe, three more findings
+
+**Willamette Week** was a Google News proxy for the same reason and with the same
+0% result. Its feed is on the Arc outbound path — the shape OPB and the Oregonian
+already use in this very file — which the probe that declared it dead never
+tried. 8 of 8 sampled articles extract.
+
+**Mail & Guardian** was pointed at a 404; `/rss` serves 50 items. **Labor Notes**
+was pointed at a body that returns 200 and is malformed, which killed two
+consecutive collections; `/rss.xml` serves 25 items against `/feed`'s 10.
+
+Three sources, three dead endpoints, all three fixed by looking rather than by
+inference. The pattern across all four is one thing: **a note recording a
+conclusion outlives the evidence that produced it, and nothing re-tests it.**

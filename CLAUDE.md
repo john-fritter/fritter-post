@@ -126,6 +126,20 @@ lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
 serve the same feed to any browser. 404/410/5xx are never retried: those mean
 the feed is actually gone or broken, and a second request buys nothing.
 
+**A sitemap is a feed when a publisher serves no feed.** `format: news-sitemap`
+on a source reads a Google News sitemap instead of RSS — same transport, same
+identity rule, different parse. It exists for AP, which serves no RSS
+(`Disallow: /*.rss`) and whose Google News proxy yields interstitials: 52 real
+links, three resolution strategies, **zero** publisher URLs recovered. AP's own
+robots.txt declares `news-sitemap-content.xml` — 529 entries, 518 of them
+`/article/`, and 15 of 15 sampled pages cleared 800 characters through the real
+path. A sitemap carries **no body**, so these items reach the prefilter, grouping
+and scoring on their titles alone and get their text from the fetch stage;
+that is not a regression from a headline echo, but it is the property to watch.
+`max_age_hours` windows the collection because a sitemap does not window itself
+(AP's spans ~28 hours against a daily collector), and `exclude_paths` carries the
+publisher's own robots.txt disallows so the rule is followed rather than noted.
+
 **Parse failures log their neighbourhood.** A malformed feed throws a sax error
 naming a line and column but not the markup, and by the time anyone reads the
 log the feed body is gone. `parseFeedText` prints the surrounding lines before

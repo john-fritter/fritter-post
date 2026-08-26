@@ -11,15 +11,31 @@ const RawSourceSchema = z.object({
   group: z.string().optional(),
   notes: z.string().optional(),
   parent: z.string().optional(),
+  // How the collector reads this endpoint. `rss` is everything with a feed;
+  // `news-sitemap` is a publisher's own Google News sitemap, which is a feed in
+  // all but name and the only route to outlets that serve no RSS at all. See
+  // src/pipeline/collector/sitemap.ts.
+  format: z.enum(["rss", "news-sitemap"]).optional(),
+  // Only meaningful for `news-sitemap`: a sitemap does not window itself the way
+  // a feed does. AP's spans ~28 hours against a daily collector, so without a
+  // window the tail is re-collected every day for the cross-run dedup to discard
+  // again. 0 disables the window.
+  max_age_hours: z.number().int().nonnegative().optional(),
+  // Exact URL paths this publisher's robots.txt disallows, which the collector
+  // drops. Kept per source and written out in full rather than pattern-matched,
+  // so the list is auditable against the robots.txt it came from and stale
+  // entries are visible. Re-check when re-probing a source.
+  exclude_paths: z.array(z.string()).optional(),
 });
 
 type RawSource = z.infer<typeof RawSourceSchema>;
 
 const RawSourcesSchema = z.array(RawSourceSchema);
 
-export type Source = Omit<RawSource, "track" | "group"> & {
+export type Source = Omit<RawSource, "track" | "group" | "format"> & {
   track: "news" | "analysis";
   group: string | null;
+  format: "rss" | "news-sitemap";
 };
 
 const SOURCES_PATH = path.join(
@@ -45,7 +61,7 @@ export function loadSources(): Source[] {
         `[sources] unknown track "${s.track}" for source "${s.name}" — defaulting to "news"`
       );
     }
-    return { ...s, track, group: s.group ?? null };
+    return { ...s, track, group: s.group ?? null, format: s.format ?? "rss" };
   });
   return cached;
 }

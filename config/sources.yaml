@@ -44,48 +44,43 @@
 # Cross-source clustering should weight wire pickup heavily.
 # ─────────────────────────────────────────────
 
-- name: AP Top News
-  url: https://news.google.com/rss/search?q=apnews.com%20when:24h&hl=en-US&gl=US&ceid=US:en
+- name: AP News
+  url: https://apnews.com/news-sitemap-content.xml
+  format: news-sitemap
+  max_age_hours: 24
   type: wire
   group: wire
-  notes: >
-    Google News RSS proxy for AP content, and a known compromise.
-    **The "AP has no working public feed" note that stood here was wrong**, and
-    it was wrong in a way worth remembering: it rested on five URLs tried once on
-    2026-08-14, all of them RSS paths, and AP's robots.txt disallows /*.rss — so
-    that probe could only ever have failed. Guessing paths is not a search.
-    Probed properly 2026-08-25 by reading robots.txt, which *declares* six
-    sitemaps: apnews.com/news-sitemap-content.xml returns 200 text/xml with 528
-    entries carrying titles and publication timestamps, which is a feed in all
-    but name. Note the declared name — the guessable /news-sitemap.xml is a
-    near-empty 2-entry file, so a path battery would have found that and
-    concluded failure a second time.
-    Not switched to yet: a sitemap gives URLs, so the win depends on apnews.com
-    article pages extracting, which the fetch has never once attempted (the
-    cooldown is on news.google.com, not apnews.com), and on the /article/ versus
-    /live/ mix, since a live blog is 45,000 characters of everything at once.
-    What it costs: item links are news.google.com interstitials, not articles,
-    so nothing here is fetchable — run #112 carried 20 AP items with no body
-    text. The bodies are the headline repeated plus the domain, which the
-    packet assembler now detects (isHeadlineEcho) and leaves out of writer
-    prompts. The items still count as sources for the editor's prominence
-    formula, which is the reason to keep them.
-    Title suffixes ("- apnews.com") are stripped by the preprocessor.
   parent: "AP"
-
-- name: AP Politics
-  url: https://news.google.com/rss/search?q=apnews.com%20politics%20when:24h&hl=en-US&gl=US&ceid=US:en
-  type: wire
-  group: wire
+  # AP's robots.txt permits /article/ and /live/ under its generic block and sets
+  # no Crawl-delay, with exactly one specific article disallowed. That one is
+  # here so the rule is followed rather than noted. Re-check on any re-probe.
+  exclude_paths:
+    - /article/border-immigration-election-2182fec11fa008ec96c4202e5656d19e
   notes: >
-    Google News RSS proxy scoped to AP politics. Same compromise as AP Top News
-    above, and see its note: the 2026-08-14 "no working direct AP feed" finding
-    was an artifact of probing only RSS paths, which AP's robots.txt disallows.
-    Links here are interstitials and stay unresolvable — the 2026-08-25 probe put
-    52 real AP and Willamette Week links through token decoding, redirect
-    following and interstitial parsing and resolved **zero**; the interstitial is
-    a 580KB JavaScript shell with no apnews.com URL in it.
-  parent: "AP"
+    Replaces AP Top News and AP Politics, which were both Google News RSS
+    proxies and between them the single largest contributor of material to the
+    paper — 250 items reached editor runs in the 14 days to 2026-08-25 — at 0%
+    usable. Every link was an interstitial: 52 real links put through token
+    decoding, redirect following and interstitial parsing resolved **zero**, and
+    the interstitial is a 580KB JavaScript shell with no apnews.com URL in it.
+    The old note here said AP served no working feed. It was wrong, and the way
+    it was wrong is worth keeping: it rested on five URLs tried once, all of them
+    RSS paths, and AP disallows /*.rss — so that probe could only ever have
+    failed. Reading robots.txt instead finds six declared sitemaps. Verified
+    2026-08-26: news-sitemap-content.xml returns 200 text/xml with 529 entries,
+    518 of them /article/, 6 /photo-gallery/, 3 /live/, 2 /newsletter/, spanning
+    ~28 hours with 281 inside 24. Fifteen sampled pages run through the real path
+    (extractArticle + stripBoilerplate) all cleared 800 characters.
+    Note the declared name: the guessable /news-sitemap.xml is a near-empty
+    2-entry file, so a path battery would have concluded failure a second time.
+    What it costs: a sitemap carries no body, so these items reach the prefilter,
+    grouping and scoring on their titles alone, and only those that reach the
+    editor get their text fetched. Not a regression — the proxy items carried a
+    ~100-character headline echo that isHeadlineEcho stripped anyway — but it is
+    the thing to watch in the first run.
+    The three /live/ entries are live blogs and extracted 20,000-39,000
+    characters; the junk filter and isLiveBlog are what stand between those and a
+    writer packet.
 
 - name: Reuters Top News
   url: https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US
