@@ -1020,9 +1020,22 @@ number is ambiguous. The next migration is **039**.
   load-bearing for the paper's single largest contributor of material.
 - `npm run probe-source -- --feeds <host>` — battery of candidate feed and
   sitemap paths, one at a time, honest UA first.
+- `npm run probe-source -- --sitemap <url> [--limit <n>]` — parse a news
+  sitemap, report its URL-shape mix, then run a sample through the **real
+  extractor** (`extractArticle` + `stripBoilerplate`) and report the characters a
+  writer packet would carry. A sitemap answers only half the question: it hands
+  over URLs and titles, and the text still has to come out of the page. Anything
+  that measures less than the real path measures a different pipeline than the
+  one that writes the paper.
 - `npm run probe-source -- --resolve <url>` /
   `--resolve-source <name> [--limit <n>]` — resolve aggregator interstitials to
-  the publisher's article, reporting which strategy worked. `--resolve-source`
+  the publisher's article, reporting which strategy worked. Verifies by fetching
+  the destination and matching its title against the feed item's, and reports
+  "resolved but wrong" separately: the first version of this reported 52 of 52
+  AP links resolved when the true answer was zero, because every interstitial
+  embeds the publisher's logo on `googleusercontent.com` and the exclusion list
+  did not cover it. A probe that launders a guess into a finding is worse than no
+  probe. `--resolve-source`
   pulls real links for a configured source out of `preprocessed_items`, so the
   answer is a success rate over live data rather than one example. Strategies run
   cheapest first: `decodeGoogleNewsToken` is offline and free, and if the feeds

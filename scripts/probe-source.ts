@@ -29,6 +29,8 @@ import {
   isGoogleNewsLink,
   looksLikeArticleUrl,
 } from "../src/pipeline/collector/google-news.js";
+import { extractArticle } from "../src/pipeline/writers/extract.js";
+import { stripBoilerplate } from "../src/pipeline/writers/boilerplate.js";
 
 const TIMEOUT_MS = 20000;
 const POLITE_DELAY_MS = 1500;
@@ -333,6 +335,96 @@ async function resolveFromDb(sourceName: string, limit: number): Promise<void> {
   }
 }
 
+/**
+ * Does a sitemap actually give us articles a writer can use?
+ *
+ * A sitemap answers only half the question. It hands over URLs and titles; the
+ * text still has to come out of the page, and **the fetch has never once
+ * requested apnews.com** — the cooldown that hides AP is on news.google.com, so
+ * whether Readability finds prose on an AP article page is completely untested.
+ * A sitemap we cannot extract from is worth exactly what the interstitials were.
+ *
+ * So this runs the real path: fetch the page, `extractArticle`, then
+ * `stripBoilerplate`, and report the characters a packet would actually carry.
+ * Anything less measures a different pipeline than the one that writes the paper.
+ */
+async function probeSitemapExtraction(sitemapUrl: string, limit: number): Promise<void> {
+  console.log(`\n=== extraction from ${sitemapUrl} ===\n`);
+  const sm = await probe(sitemapUrl, true);
+  console.log(`  sitemap: ${describe(sm)}`);
+  if (!sm.body) return;
+
+  const entries = [...sm.body.matchAll(/<url>([\s\S]*?)<\/url>/g)].map((m) => {
+    const block = m[1]!;
+    const loc = block.match(/<loc>([^<]+)<\/loc>/)?.[1]?.trim() ?? "";
+    const title = block.match(/<news:title>([^<]*)<\/news:title>/)?.[1]?.trim() ?? "";
+    const date = block.match(/<news:publication_date>([^<]*)</)?.[1]?.trim() ?? "";
+    return { loc, title, date };
+  });
+  console.log(`  ${entries.length} entries parsed`);
+
+  // The shape question, before the extraction question. A live blog is one URL
+  // carrying every event of a running story — run #20's T1 lead was 45,000
+  // characters of the whole Ukraine war — so a sitemap that is mostly /live/ is
+  // a different proposition from one that is mostly /article/.
+  const byShape = new Map<string, number>();
+  for (const e of entries) {
+    const seg = (() => {
+      try {
+        return new URL(e.loc).pathname.split("/").filter(Boolean)[0] ?? "(root)";
+      } catch {
+        return "(unparseable)";
+      }
+    })();
+    byShape.set(seg, (byShape.get(seg) ?? 0) + 1);
+  }
+  console.log("\n  ── URL shape (first path segment)");
+  for (const [seg, n] of [...byShape].sort((a, b) => b[1] - a[1])) {
+    console.log(`     ${String(n).padStart(5)}  /${seg}/  (${((n / entries.length) * 100).toFixed(0)}%)`);
+  }
+
+  // Sample across shapes rather than off the top, or a sitemap sorted by date
+  // answers only for whatever the last hour happened to publish.
+  const shapes = [...byShape.keys()];
+  const sample: typeof entries = [];
+  for (let i = 0; sample.length < limit && i < entries.length; i++) {
+    for (const shape of shapes) {
+      const found = entries.find(
+        (e) => !sample.includes(e) && e.loc.includes(`/${shape}/`),
+      );
+      if (found && sample.length < limit) sample.push(found);
+    }
+    if (sample.length >= Math.min(limit, entries.length)) break;
+  }
+
+  console.log(`\n  ── extraction on ${sample.length} sampled article(s)\n`);
+  let usable = 0;
+  for (const e of sample) {
+    await sleep(POLITE_DELAY_MS);
+    const page = await probe(e.loc, true);
+    if (!page.body || page.status === null || page.status >= 400) {
+      console.log(`  FAIL  ${String(page.status ?? "ERR").padEnd(4)} ${e.loc.slice(0, 84)}`);
+      console.log(`        ${page.note || `${page.bytes}b`}`);
+      continue;
+    }
+    const extracted = extractArticle(page.body);
+    const stripped = stripBoilerplate(extracted.text);
+    const chars = stripped.text.length;
+    if (chars >= 800) usable++;
+    console.log(
+      `  ${chars >= 800 ? "OK  " : "THIN"}  ${String(chars).padStart(6)}c  ` +
+        `(page ${page.bytes}b) ${e.loc.slice(0, 74)}`,
+    );
+    console.log(`        feed title: ${e.title.slice(0, 88)}`);
+    if (extracted.title) console.log(`        page title: ${extracted.title.slice(0, 88)}`);
+    if (chars > 0) console.log(`        opens: ${stripped.text.slice(0, 120).replace(/\s+/g, " ")}`);
+  }
+  console.log(
+    `\n  ${usable} of ${sample.length} extracted 800+ characters — ` +
+      `the bar the fetch already uses for "usable".\n`,
+  );
+}
+
 function flagsOf(argv: string[]): Record<string, string> {
   const flags: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -355,6 +447,9 @@ async function main(): Promise<void> {
     const r = await resolveOne(flags["resolve"]);
     console.log(`\n  strategy: ${r.strategy ?? "UNRESOLVED"}`);
     console.log(`  result:   ${r.resolved ?? r.detail}\n`);
+  } else if (flags["sitemap"] && flags["sitemap"] !== "true") {
+    const limit = flags["limit"] ? parseInt(flags["limit"], 10) : 12;
+    await probeSitemapExtraction(flags["sitemap"], limit);
   } else if (flags["resolve-source"] && flags["resolve-source"] !== "true") {
     const limit = flags["limit"] ? parseInt(flags["limit"], 10) : 20;
     await resolveFromDb(flags["resolve-source"], limit);
@@ -366,6 +461,10 @@ async function main(): Promise<void> {
   --feeds <host>              Try a battery of candidate feed and sitemap paths.
   --resolve <url>             Resolve one aggregator link, reporting which
                               strategy worked.
+  --sitemap <url> [--limit n] Parse a news sitemap, report the URL-shape mix,
+                              then run a sample through the real extractor
+                              (extractArticle + stripBoilerplate) and report the
+                              characters a writer packet would carry.
   --resolve-source <name>     Take recent real links for a configured source out
                   [--limit n] of preprocessed_items and resolve each, reporting
                               the success rate per strategy.
