@@ -1082,8 +1082,11 @@ number is ambiguous. The next migration is **040**.
   the feed column alone says the features were written from teasers
 - `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
   packets: sizes for every story, or the full prompt for one. Prints
-  **headline-only counts per tier** and any tier swaps `resolveTiersByMaterial`
-  made. Run #42's audit could not state that 37 of its 150 pieces were
+  **headline-only counts per tier**, any tier swaps `resolveTiersByMaterial`
+  made, and **why sources were left out of packets**, grouped by reason — the
+  per-story `omit` count has always been there and the reasons only ever printed
+  under `--rank`, so run #46's audit could not say whether AP's live page left
+  the packet because the live-blog rule fired or because its cache was empty. Run #42's audit could not state that 37 of its 150 pieces were
   headline-only because the materials audit counts thin *articles*, which is a
   different quantity from a thin *piece*; a non-zero count in a prominent tier
   now means the day ran out of material to trade with, not a mis-assigned slot

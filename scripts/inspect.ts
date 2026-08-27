@@ -772,16 +772,23 @@ async function main() {
         }> = [];
         for (const stage of stages) {
           const { rows: found } = await pool.query<{
-            id: string; started_at: Date; completed_at: Date | null; seconds: string | null;
+            run_id: string; started_at: Date; completed_at: Date | null; seconds: string | null;
           }>(
-            `SELECT id::text, started_at, completed_at,
+            // **`id::text AS run_id`, not `id::text`.** A cast expression keeps
+            // the underlying column's name, so `SELECT id::text` names its
+            // output column `id` — and SQL resolves `ORDER BY id` to the output
+            // column before the table column. That sorted the ids as strings:
+            // "9" above "99" above "57" above "123". Every stage came back as
+            // run #9 and the whole report was silently wrong about which runs it
+            // was timing. Aliasing the cast leaves `id` bound to the integer.
+            `SELECT id::text AS run_id, started_at, completed_at,
                     EXTRACT(EPOCH FROM (completed_at - started_at))::text AS seconds
              FROM ${stage.table} ORDER BY id DESC LIMIT 1`,
           );
           const r = found[0];
           rows.push({
             label: stage.label,
-            id: r ? Number(r.id) : null,
+            id: r ? Number(r.run_id) : null,
             started: r ? r.started_at : null,
             completed: r?.completed_at ?? null,
             seconds: r?.seconds != null ? Number(r.seconds) : null,
@@ -863,18 +870,24 @@ async function main() {
         // fetch-text has no run table of its own; article_texts is where it
         // leaves a trace, and the spread of one editor run's fetched_at is the
         // closest thing to its duration.
+        // fetch-text has no run table, so its only trace is when its rows were
+        // written. Scoped to the same window as the lineage above: over 24 hours
+        // this spans several runs and reads as one very slow stage — the first
+        // version reported "127m 59s" for 31 rows written across a whole day.
         const { rows: fetchRows } = await pool.query<{ n: string; seconds: string | null }>(
           `SELECT count(*)::text AS n,
                   EXTRACT(EPOCH FROM (max(fetched_at) - min(fetched_at)))::text AS seconds
            FROM article_texts
            WHERE status <> 'skipped'
-             AND fetched_at >= NOW() - INTERVAL '24 hours'`,
+             AND fetched_at >= NOW() - ($1::int || ' hours')::interval`,
+          [LINEAGE_WINDOW_MS / 3600_000],
         );
         const fr = fetchRows[0];
         if (fr && Number(fr.n) > 0 && fr.seconds !== null) {
           console.log(
-            `\n  fetch-text (no run table; ${fr.n} rows attempted in the last 24h) ` +
-              `spans ${clock(Number(fr.seconds))}`,
+            `\n  fetch-text has no run table. ${fr.n} row(s) written in the last ` +
+              `${LINEAGE_WINDOW_MS / 3600_000}h, spanning ${clock(Number(fr.seconds))} — ` +
+              `an approximation, and one that covers every fetch in the window.`,
           );
         }
         break;
@@ -1108,6 +1121,31 @@ async function main() {
             `    ${tier.padEnd(9)} ${String(inTier.length).padStart(3)} pieces — ` +
               `${at("full")} full, ${at("partial")} partial, ${at("headline-only")} headline-only`,
           );
+        }
+
+        // **Why sources were left out, not just how many.** The per-story table
+        // has carried an `omit` count since it was written, and the reasons only
+        // ever printed under `--rank`. Run #46's audit could not say whether AP's
+        // live page left the packet because the live-blog rule fired or because
+        // its cache was empty — the count was 3 and the reasons were one drill-in
+        // away, on a command the audit had not been asked to run.
+        const omissionReasons = new Map<string, number>();
+        for (const { packet } of packets) {
+          for (const o of packet.omitted) {
+            // Collapse the numbers out of "no usable body text (0 chars ...)"
+            // so the shapes group instead of splintering per article.
+            const key = o.reason.replace(/\d+/g, "N");
+            omissionReasons.set(key, (omissionReasons.get(key) ?? 0) + 1);
+          }
+        }
+        if (omissionReasons.size > 0) {
+          const totalOmitted = [...omissionReasons.values()].reduce((a, b) => a + b, 0);
+          console.log("");
+          console.log(`  Sources left out of packets: ${totalOmitted}`);
+          for (const [reason, n] of [...omissionReasons].sort((a, b) => b[1] - a[1])) {
+            console.log(`    ${String(n).padStart(4)}  ${reason}`);
+          }
+          console.log("    (use --rank <n> for the per-article detail)");
         }
 
         console.log("");

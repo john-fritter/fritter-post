@@ -4756,3 +4756,88 @@ pressure comes from, but the stage had *no retry at all*; that is a sufficient
 explanation for what happened and lowering concurrency on the same day would
 confound the evidence. If a run with backoff in place still shows a 429 storm,
 that is when the number moves.
+
+---
+
+## 2026-08-27 — Two audits that could not conclude, and one that did
+
+### The per-item straggler worked, on exactly the case it was built for
+
+Pass-1 #43 re-scored grouping #57's 480 rows, the same input pass-1 #42 saw. Its
+stdout carries the line the whole redesign was about:
+
+```
+[grouping-pass-1] batch 4/10: parsed-lines=39/40; fail-safe-defaulted=1
+```
+
+The call **succeeded** and parsed 39 of 40. That is `missing/invalid line` — the
+path that does not fail the batch, and the one a whole-batch straggler would have
+walked straight past. The per-item re-ask caught it: **0 rows with `interest IS
+NULL`**, against 4 in run #42. The recovered row was `S63708`, 9 → 21.
+
+That is the objection that prompted the redesign, reproduced and answered in one
+run.
+
+### `inspect timing` was sorting run ids as strings
+
+The output named run **#9** for seven of eight stages, and editor **#99**, when
+the real latest runs were collector #57 through writers #45.
+
+```sql
+SELECT id::text, started_at, ... FROM collector_runs ORDER BY id DESC LIMIT 1
+```
+
+A cast expression keeps the underlying column's name, so `id::text` names its
+output column `id` — and SQL resolves `ORDER BY id` against **output** columns
+before table columns. So the sort ran on text: `"9"` above `"99"` above `"57"`
+above `"123"`. Every duration, every `[earlier lineage]` mark and the whole wall
+clock were computed over the wrong rows, and the report read as plausible
+throughout. Aliasing the cast (`id::text AS run_id`) leaves `id` bound to the
+integer.
+
+Two lessons, and the second is the uncomfortable one. A tool added to answer a
+question was wrong on its first real use, in a way only the data revealed — the
+run ids looked odd, and nothing else would have. And the `[earlier lineage]`
+feature added the same day made the wrong output look *more* credible, because it
+explained away exactly the anomaly the bug produced.
+
+### `inspect packet` counted omissions and never said why
+
+The whole-run form has printed an `omit` column per story since it was written;
+the reasons only ever printed under `--rank`. So the audit could see that AP's
+live page left story C4's packet — `arts=3, omit=3` — and could not say whether
+the live-blog rule had fired or the empty fetch cache had done it. The right
+refusal was made: no claim, and the gap named.
+
+It now prints omission reasons grouped and counted, with the numbers collapsed
+out so shapes group rather than splinter per article.
+
+### Measured, not fixed: scoring is not stable across runs
+
+The same 480 rows, the same model, temperature 0.1, scored twice:
+
+| | |
+|---|---|
+| median absolute difference | 5 points |
+| mean | 6.70 |
+| maximum | 32 |
+| **rows crossing the pile cutoff of 54** | **57 of 480** |
+
+Roughly **12% of pile membership is run-to-run noise**. Nothing here is broken —
+this is what an LLM judgment at temperature 0.1 costs — but it bounds what any
+single run can be used for. Tuning `similarity_threshold` or judging cluster
+quality on one run was already discouraged for other reasons; this says the
+scoring layer alone moves an eighth of the paper's composition between identical
+runs.
+
+Not acted on. The obvious lever is `temperature: 0` for this stage, and the
+config already notes that judgment stages want repeatability while the writers
+want prose. That is worth an experiment, not a same-day change.
+
+### Also observed
+
+Pass-1 took **463s** on the input that took **58s** in run #42 — an eightfold
+swing with no code path that explains it, and long enough that a 420-second
+command wrapper truncated the stdout. Provider variance is the likely answer.
+It matters for one reason: it puts a wide band on any answer to "how long does
+the paper take".
