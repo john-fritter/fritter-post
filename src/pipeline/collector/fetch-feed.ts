@@ -2,6 +2,12 @@ import Parser from "rss-parser";
 import { synthesizeGuid } from "./guid.js";
 import { decodeFeedBytes } from "./charset.js";
 import {
+  parseNewsSitemap,
+  withinWindow,
+  withoutExcludedPaths,
+  looksLikeSitemapIndex,
+} from "./sitemap.js";
+import {
   HONEST_USER_AGENT,
   BROWSER_USER_AGENT,
   BROWSER_HINT_HEADERS,
@@ -12,6 +18,16 @@ import type { Source } from "../../config/sources.js";
 // src/lib/http.ts for the 403-escalation rule they encode.
 
 const TIMEOUT_MS = 20_000;
+
+/**
+ * Window applied to a news sitemap when the source does not set its own.
+ *
+ * Matches the daily cadence the collector runs on, and the `when:24h` window the
+ * Google News proxies it replaces already used, so the corpus this produces is
+ * comparable to the one before it. AP's sitemap spans about 28 hours, of which
+ * 281 of 529 entries fall inside 24.
+ */
+const DEFAULT_SITEMAP_MAX_AGE_HOURS = 24;
 
 const ACCEPT_HEADER =
   "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8";
@@ -147,7 +163,62 @@ async function parseFeedText(sourceName: string, text: string) {
   }
 }
 
+/**
+ * A publisher's news sitemap, read as a feed.
+ *
+ * The transport is the feed path's — same identity rule, same charset handling —
+ * and only the parse differs. Items arrive with a **null body**, which is the
+ * whole point and the whole cost: a sitemap carries a URL, a headline and a
+ * time, so the article text has to come from the fetch stage, and every item
+ * from one is guaranteed to be requested there because a null body is under any
+ * `feed_chars_floor`.
+ *
+ * `item_guid` is synthesized from name + URL + title exactly as a guid-less feed
+ * item is, so re-collecting the same entry tomorrow deduplicates on the same key
+ * as everything else.
+ */
+async function fetchNewsSitemap(source: Source): Promise<FetchedItem[]> {
+  const xml = await fetchFeedText(source.url);
+
+  // Fail loudly rather than collecting nothing. A sitemap index parses fine and
+  // contains no articles, so the run would otherwise report this as a
+  // successful zero-item source and say nothing about why.
+  if (looksLikeSitemapIndex(xml)) {
+    throw new Error(
+      `${source.url} is a sitemap index, not a news sitemap — it lists other ` +
+        `sitemaps rather than articles. Point the source at one of the sitemaps ` +
+        `it declares.`,
+    );
+  }
+
+  const entries = withoutExcludedPaths(
+    withinWindow(
+      parseNewsSitemap(xml),
+      source.max_age_hours ?? DEFAULT_SITEMAP_MAX_AGE_HOURS,
+    ),
+    source.exclude_paths,
+  );
+
+  return entries.map((entry) => ({
+    item_guid: synthesizeGuid(source.name, entry.url, entry.title),
+    original_url: entry.url,
+    title: entry.title,
+    // A sitemap has no body. Downstream this reads as an item the fetch stage
+    // must supply text for, which is exactly what it is.
+    body: null,
+    author: null,
+    published_at: entry.publishedAt,
+    raw_entry: {
+      title: entry.title,
+      link: entry.url,
+      isoDate: entry.publishedAt?.toISOString(),
+    } as Parser.Item & CustomItemFields,
+  }));
+}
+
 export async function fetchFeed(source: Source): Promise<FetchedItem[]> {
+  if (source.format === "news-sitemap") return fetchNewsSitemap(source);
+
   const feed = await parseFeedText(source.name, await fetchFeedText(source.url));
   const results: FetchedItem[] = [];
 

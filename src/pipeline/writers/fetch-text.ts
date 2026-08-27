@@ -36,12 +36,42 @@ import {
   BROWSER_HINT_HEADERS,
   hostOf,
 } from "../../lib/http.js";
+import { stripBoilerplate } from "./boilerplate.js";
 import { extractArticle } from "./extract.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "./materials.js";
 
 const ACCEPT_HEADER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
 export type FetchStatus = "ok" | "thin" | "blocked" | "error" | "skipped";
+
+/**
+ * May a row of this status replace an existing attempt? Only a real attempt may.
+ *
+ * **A skip never overwrites an attempt.** A skip row means "never asked", and
+ * writing one over a real result throws away what the run before it paid for.
+ * This used to be a per-skip-reason flag that the planner set, which meant it
+ * could be — and was — left off the reason that needed it most: the
+ * `refetch_after_hours` skip fires *because* a recent attempt exists, so it
+ * clobbered the very row it was reading. Re-running fetch-text against one
+ * editor run erased that run's own article text. AP went from 100% usable at a
+ * 4,269-character median to 14% at 0 between two reports written on the same
+ * day, with no fetch in between that could have failed. `feed body already long
+ * enough` is the same shape: a feed that grew past the floor would delete the
+ * fetched article underneath it.
+ *
+ * The cooldown case the flag was written for is one instance of this rule, not
+ * an exception to it: a cooldown skip is *caused* by earlier failures on the
+ * host, so recording it over them erases the evidence that produced it. Run
+ * #112 ended with every nytimes.com and news.google.com row marked `skipped`,
+ * and the next run found no failures, lifted the cooldown, and re-requested all
+ * 36.
+ *
+ * Deriving it from the status rather than passing it in is the point: the rule
+ * is a property of what is being written, so no caller can get it wrong.
+ */
+export function overwritesAttempts(status: FetchStatus): boolean {
+  return status !== "skipped";
+}
 
 /** One URL to fetch, plus every item that shares it. */
 export interface FetchTarget {
@@ -57,17 +87,6 @@ export interface FetchSkip {
   host: string;
   feedChars: number;
   detail: string;
-  /**
-   * True when this skip must not overwrite an existing attempt row.
-   *
-   * A cooldown skip is *caused* by earlier failures on the host, so recording it
-   * over those failures erases the evidence that produced it. Run #112 ended
-   * with every nytimes.com and news.google.com row marked `skipped` — and since
-   * a skip means "never attempted", the next run would have found no failures,
-   * lifted the cooldown, and re-requested all 36. The cooldown has to remember
-   * why it exists.
-   */
-  preservesAttempt?: boolean;
 }
 
 export interface FetchPlan {
@@ -133,7 +152,26 @@ export function planFetch(
         feedChars: article.feedTextChars,
       };
 
-      if (article.feedTextChars >= cfg.feed_chars_floor) {
+      // **Long is not the same as complete.** This skip reads a character count
+      // and calls it a finished article. La Nación publishes ~1,800-character
+      // teasers that stop mid-clause, well clear of the 800 floor, so run #43's
+      // rank 15 was never requested and its writer was handed a fragment that
+      // broke off inside a quotation — and then wrote about the break, which is
+      // the one thing the memo forbids. A body that stops mid-sentence is by
+      // definition not the whole article, however long it is, so length does not
+      // get to excuse it from the fetch.
+      //
+      // **Judged on the stripped body, never the raw one.** A feed whose last
+      // line is furniture — the Guardian's "Continue reading...", Ars Technica's
+      // "Read full article" — has no terminal punctuation at the end of the raw
+      // text and is a complete article all the same. Testing before furniture
+      // removal made the source audit's 14-day window show 611 such bodies
+      // across twelve outlets that are already 100% usable, every one of them a
+      // request we would have paid for and thrown away.
+      if (
+        article.feedTextChars >= cfg.feed_chars_floor &&
+        !stripBoilerplate(article.feedText).endedMidSentence
+      ) {
         skips.push({ ...base, detail: `feed body already ${article.feedTextChars} chars` });
         continue;
       }
@@ -146,11 +184,7 @@ export function planFetch(
         continue;
       }
       if (cooldownHosts.has(host)) {
-        skips.push({
-          ...base,
-          detail: `host in cooldown after repeated failures`,
-          preservesAttempt: true,
-        });
+        skips.push({ ...base, detail: `host in cooldown after repeated failures` });
         continue;
       }
 
@@ -377,12 +411,8 @@ async function upsert(
     feedChars: number;
     detail: string | null;
   },
-  /**
-   * When set, an existing row is only replaced if it is itself a skip. Used for
-   * cooldown skips, which must not overwrite the failures that caused them.
-   */
-  onlyOverwriteSkips = false,
 ): Promise<void> {
+  const onlyOverwriteSkips = overwritesAttempts(row.status) === false;
   await pool.query(
     `INSERT INTO article_texts
        (preprocessed_item_id, canonical_url, host, status, http_status,
@@ -521,7 +551,6 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
         feedChars: skip.feedChars,
         detail: skip.detail,
       },
-      skip.preservesAttempt === true,
     );
   }
 

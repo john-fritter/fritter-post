@@ -103,6 +103,8 @@ interface EditorRunRow {
   items_standard: number;
   items_brief: number;
   items_cut: number;
+  tie_break_calls: number | null;
+  tie_break_failed_calls: number | null;
 }
 
 interface EditorStoryRow {
@@ -559,6 +561,23 @@ async function main() {
           console.log(`  brief     ${run.items_brief}`);
           console.log(`  cut       ${run.items_cut}`);
 
+          // NULL is a run before migration 040, where the console was the only
+          // record. Zero is a run that lost nothing; they are not the same, so
+          // they do not print the same.
+          if (run.tie_break_calls === null) {
+            console.log("\n── TIE-BREAK  (not recorded — run predates migration 040)");
+          } else {
+            console.log("\n── TIE-BREAK");
+            console.log(`  calls     ${run.tie_break_calls}`);
+            console.log(`  failed    ${run.tie_break_failed_calls}`);
+            if ((run.tie_break_failed_calls ?? 0) > 0) {
+              console.log(
+                `  Every item in a failed group is ordered by ref instead, which is\n` +
+                  `  alphabetical. At a tier boundary that decides feature vs standard.`,
+              );
+            }
+          }
+
           // Resolve cluster titles from the grouping digest so the ranked list
           // can show readable titles.
           const clusterTitles = new Map<number, string>();
@@ -731,6 +750,352 @@ async function main() {
       // Writer packets: the assembled prompt for one story, or a size summary
       // for the whole run. This is the writers stage's feedback loop — the
       // prompt is the product, so it has to be readable before any model sees it.
+      // **Can the writer actually get text out of this source?**
+      //
+      // The fetch is the one stage with no inspection view, and it is the stage
+      // whose answer decides what belongs in sources.yaml. `article_texts` has
+      // carried the evidence per item since migration 034 — whose own comment
+      // says "text_chars - feed_chars is the only honest measure of whether this
+      // stage earns its keep" — and nothing has ever read it back.
+      //
+      // Deliberately cross-run rather than scoped to one editor run. A single
+      // day is noise: a source with four articles that all happened to be
+      // fetchable proves nothing. The retention window is what there is to
+      // judge on.
+      // **How long does the paper actually take?**
+      //
+      // Every stage has written started_at and completed_at since migration 002
+      // and nothing has ever read them back, so the only answer available has
+      // been whoever ran it saying "about an hour" — which conflates the
+      // pipeline with the deploy, the audit queries and the report around it.
+      // A stage that doubled in cost would be invisible until someone noticed
+      // the wait.
+      //
+      // Latest run of each stage by default, since that is the lineage anybody
+      // asking has just produced.
+      case "timing": {
+        const stages: Array<{ label: string; table: string }> = [
+          { label: "collector", table: "collector_runs" },
+          { label: "preprocessor", table: "preprocessor_runs" },
+          { label: "prefilter", table: "prefilter_runs" },
+          { label: "grouping", table: "grouping_runs" },
+          { label: "grouping-pass-1", table: "grouping_pass1_runs" },
+          { label: "thread", table: "thread_runs" },
+          { label: "editor", table: "editor_runs" },
+          { label: "writers", table: "writer_runs" },
+        ];
+
+        const rows: Array<{
+          label: string; id: number | null; started: Date | null;
+          completed: Date | null; seconds: number | null;
+        }> = [];
+        for (const stage of stages) {
+          const { rows: found } = await pool.query<{
+            run_id: string; started_at: Date; completed_at: Date | null; seconds: string | null;
+          }>(
+            // **`id::text AS run_id`, not `id::text`.** A cast expression keeps
+            // the underlying column's name, so `SELECT id::text` names its
+            // output column `id` — and SQL resolves `ORDER BY id` to the output
+            // column before the table column. That sorted the ids as strings:
+            // "9" above "99" above "57" above "123". Every stage came back as
+            // run #9 and the whole report was silently wrong about which runs it
+            // was timing. Aliasing the cast leaves `id` bound to the integer.
+            `SELECT id::text AS run_id, started_at, completed_at,
+                    EXTRACT(EPOCH FROM (completed_at - started_at))::text AS seconds
+             FROM ${stage.table} ORDER BY id DESC LIMIT 1`,
+          );
+          const r = found[0];
+          rows.push({
+            label: stage.label,
+            id: r ? Number(r.run_id) : null,
+            started: r ? r.started_at : null,
+            completed: r?.completed_at ?? null,
+            seconds: r?.seconds != null ? Number(r.seconds) : null,
+          });
+        }
+
+        const clock = (sec: number) => {
+          const m = Math.floor(sec / 60);
+          const s = Math.round(sec % 60);
+          return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+        };
+
+        // **A replay mixes lineages, and the output has to say so.** Taking the
+        // latest row of each table is right for a full pipeline run and wrong
+        // for a replay from an existing preprocessor run: the collector and
+        // preprocessor rows are then hours or days older than the stages that
+        // actually ran, and their gap lands in the wall clock as if somebody had
+        // waited. Run #45's report had to discard this output for exactly that.
+        const newestStart = Math.max(
+          ...rows.map((r) => r.started?.getTime() ?? 0),
+          0,
+        );
+        // Anything that started more than this before the newest stage was not
+        // part of the same sitting. Generous, so a slow full run is never split.
+        const LINEAGE_WINDOW_MS = 6 * 3600_000;
+        const inLineage = (r: (typeof rows)[number]) =>
+          r.started !== null && newestStart - r.started.getTime() <= LINEAGE_WINDOW_MS;
+        const stale = rows.filter((r) => r.id !== null && !inLineage(r));
+
+        // **A downstream stage cannot start before the upstream one it reads.**
+        // The six-hour window catches a replay from a *days*-old preprocessor
+        // run and misses the case that actually reached a report: editor #123
+        // and writers #45 ran at 21:51 and 21:52, and grouping-pass-1 #43 and
+        // thread #21 ran at 00:43 and 00:51 the next morning. Every row was
+        // inside six hours of every other, so nothing was marked, and the
+        // command reported a 332m wall clock and a 308m "orchestration gap"
+        // that no one ever waited — it was the distance between two separate
+        // sittings, and #123's paper was not written from #43's scores at all.
+        //
+        // Time-of-day proximity was never the question. Order is, and the
+        // stage list is already in pipeline order, so a stage that starts
+        // before one above it demonstrably did not consume it.
+        const outOfOrder: string[] = [];
+        let highWater = -Infinity;
+        let highWaterLabel = "";
+        for (const r of rows) {
+          if (r.started === null || !inLineage(r)) continue;
+          const t = r.started.getTime();
+          if (t < highWater) outOfOrder.push(`${r.label} < ${highWaterLabel}`);
+          else {
+            highWater = t;
+            highWaterLabel = r.label;
+          }
+        }
+        const oneLineage = outOfOrder.length === 0;
+
+        console.log("Stage durations — latest run of each stage\n");
+        console.log("  stage             run        started              duration");
+        let stageTotal = 0;
+        for (const r of rows) {
+          if (r.id === null) {
+            console.log(`  ${r.label.padEnd(17)} (none)`);
+            continue;
+          }
+          const when = r.started ? r.started.toISOString().replace("T", " ").slice(0, 19) : "?";
+          // A null completed_at means in progress, or crashed before finishing —
+          // never zero. Saying so beats printing a 0 that reads like "instant".
+          const dur =
+            r.seconds === null ? "INCOMPLETE (no completed_at)" : clock(r.seconds);
+          if (r.seconds !== null && inLineage(r)) stageTotal += r.seconds;
+          const mark = inLineage(r) ? "" : "   [earlier lineage]";
+          console.log(
+            `  ${r.label.padEnd(17)} #${String(r.id).padEnd(9)} ${when}  ${dur}${mark}`,
+          );
+        }
+
+        console.log(`\n  Sum of stage durations:  ${clock(stageTotal)}`);
+        if (stale.length > 0) {
+          console.log(
+            `  ${stale.length} stage(s) marked [earlier lineage] did not run in this ` +
+              `sitting — a replay reuses them. The wall clock below spans only the ` +
+              `stages that did.`,
+          );
+        }
+
+        // Wall clock across the lineage, which is the number a person actually
+        // waited: it includes the gaps where a human or a script sat between
+        // stages, and the sum above does not.
+        const fresh = rows.filter(inLineage);
+        const started = fresh.map((r) => r.started).filter((d): d is Date => d !== null);
+        const ended = fresh.map((r) => r.completed).filter((d): d is Date => d !== null);
+        if (!oneLineage) {
+          console.log(
+            `\n  NOT ONE LINEAGE — ${outOfOrder.join(", ")}. A stage cannot have ` +
+              `consumed\n  one that started after it. These are the latest runs of ` +
+              `each stage, but they\n  are not one run of the pipeline, so no wall ` +
+              `clock is reported: the span\n  between them is the distance between two ` +
+              `sittings, not a wait anybody sat\n  through. The per-stage durations ` +
+              `above are still each stage's own.`,
+          );
+        } else if (started.length > 0 && ended.length > 0) {
+          const first = Math.min(...started.map((d) => d.getTime()));
+          const last = Math.max(...ended.map((d) => d.getTime()));
+          const wall = (last - first) / 1000;
+          console.log(`  Wall clock, first start to last finish: ${clock(wall)}`);
+          const gap = wall - stageTotal;
+          if (gap > 0) {
+            console.log(
+              `  Of which between stages: ${clock(gap)} — ` +
+                `orchestration, not the pipeline`,
+            );
+          }
+        }
+
+        // fetch-text has no run table of its own; article_texts is where it
+        // leaves a trace, and the spread of one editor run's fetched_at is the
+        // closest thing to its duration.
+        // fetch-text has no run table, so its only trace is when its rows were
+        // written. Scoped to the same window as the lineage above: over 24 hours
+        // this spans several runs and reads as one very slow stage — the first
+        // version reported "127m 59s" for 31 rows written across a whole day.
+        const { rows: fetchRows } = await pool.query<{ n: string; seconds: string | null }>(
+          `SELECT count(*)::text AS n,
+                  EXTRACT(EPOCH FROM (max(fetched_at) - min(fetched_at)))::text AS seconds
+           FROM article_texts
+           WHERE status <> 'skipped'
+             AND fetched_at >= NOW() - ($1::int || ' hours')::interval`,
+          [LINEAGE_WINDOW_MS / 3600_000],
+        );
+        const fr = fetchRows[0];
+        if (fr && Number(fr.n) > 0 && fr.seconds !== null) {
+          console.log(
+            `\n  fetch-text has no run table. ${fr.n} row(s) written in the last ` +
+              `${LINEAGE_WINDOW_MS / 3600_000}h, spanning ${clock(Number(fr.seconds))} — ` +
+              `an approximation, and one that covers every fetch in the window.`,
+          );
+        }
+        break;
+      }
+
+      case "fetch": {
+        const days = flags["days"] ? parseInt(flags["days"], 10) : 14;
+        const { rows } = await pool.query<{
+          source_name: string;
+          host: string;
+          status: string;
+          detail: string | null;
+          text_chars: number;
+          feed_chars: number;
+        }>(
+          `SELECT p.source_name, a.host, a.status, a.detail,
+                  a.text_chars, a.feed_chars
+           FROM article_texts a
+           JOIN preprocessed_items p ON p.id = a.preprocessed_item_id
+           WHERE a.fetched_at >= NOW() - ($1::int || ' days')::interval`,
+          [days],
+        );
+
+        if (rows.length === 0) {
+          console.log(`No article_texts rows in the last ${days} day(s).`);
+          break;
+        }
+
+        const THIN = 800;
+        const statusOrder = ["ok", "thin", "blocked", "error", "skipped"] as const;
+        const totals = new Map<string, number>();
+        for (const r of rows) totals.set(r.status, (totals.get(r.status) ?? 0) + 1);
+
+        console.log(`Article fetch outcomes — article_texts, last ${days} day(s)`);
+        console.log(
+          `  Rows: ${rows.length} across ${new Set(rows.map((r) => r.host)).size} host(s), ` +
+            `${new Set(rows.map((r) => r.source_name)).size} source(s)`,
+        );
+        console.log(
+          "  Status: " +
+            statusOrder.map((st) => `${totals.get(st) ?? 0} ${st}`).join(", "),
+        );
+
+        // Why we did not ask. A skip is a decision, and the three reasons mean
+        // very different things about a source: "feed already long enough" is
+        // the fetch working as designed, "cooldown" is a host refusing us.
+        const skipReasons = new Map<string, number>();
+        for (const r of rows) {
+          if (r.status !== "skipped") continue;
+          const d = r.detail ?? "(none)";
+          const key = /already \d+ chars/.test(d)
+            ? "feed body already long enough"
+            : d.includes("cooldown")
+              ? "host in cooldown after repeated failures"
+              : d.includes("refetch")
+                ? "already attempted within refetch window"
+                : d;
+          skipReasons.set(key, (skipReasons.get(key) ?? 0) + 1);
+        }
+        if (skipReasons.size > 0) {
+          console.log("\n── WHY WE DID NOT ASK");
+          for (const [reason, n] of [...skipReasons].sort((a, b) => b[1] - a[1])) {
+            console.log(`  ${String(n).padStart(5)}  ${reason}`);
+          }
+        }
+
+        const median = (xs: number[]): number => {
+          if (xs.length === 0) return 0;
+          const sorted = [...xs].sort((a, b) => a - b);
+          return sorted[Math.floor(sorted.length / 2)]!;
+        };
+
+        interface SourceStat {
+          source: string;
+          items: number;
+          counts: Map<string, number>;
+          feed: number[];
+          best: number[];
+          hosts: Set<string>;
+        }
+        const bySource = new Map<string, SourceStat>();
+        for (const r of rows) {
+          const stat = bySource.get(r.source_name) ?? {
+            source: r.source_name,
+            items: 0,
+            counts: new Map<string, number>(),
+            feed: [],
+            best: [],
+            hosts: new Set<string>(),
+          };
+          stat.items++;
+          stat.counts.set(r.status, (stat.counts.get(r.status) ?? 0) + 1);
+          stat.feed.push(r.feed_chars);
+          // What the writer would actually read: the packet takes whichever of
+          // the fetched text and the feed body is longer.
+          stat.best.push(Math.max(r.text_chars, r.feed_chars));
+          stat.hosts.add(r.host);
+          bySource.set(r.source_name, stat);
+        }
+
+        // **The sources.yaml decision metric.** Not "did the fetch succeed" —
+        // a source whose feed already carries full text never needs the fetch
+        // and should not be marked down for skipping it. The question is
+        // whether a writer ends up with something to work from, whatever route
+        // it came by.
+        const usable = (stat: SourceStat) =>
+          stat.best.filter((n) => n >= THIN).length / stat.items;
+
+        console.log(
+          `\n── PER SOURCE — what a writer ends up with (usable = best text ≥ ${THIN} chars)`,
+        );
+        console.log(
+          "  source                                   items usable   ok thin blkd  err skip   feed→best median",
+        );
+        const ranked = [...bySource.values()].sort(
+          (a, b) => usable(a) - usable(b) || b.items - a.items,
+        );
+        for (const stat of ranked) {
+          const c = (st: string) => String(stat.counts.get(st) ?? 0).padStart(4);
+          console.log(
+            `  ${stat.source.slice(0, 40).padEnd(40)} ${String(stat.items).padStart(5)} ` +
+              `${(usable(stat) * 100).toFixed(0).padStart(5)}% ` +
+              `${c("ok")} ${c("thin")} ${c("blocked")} ${c("error")} ${c("skipped")}   ` +
+              `${String(median(stat.feed)).padStart(6)} → ${String(median(stat.best)).padStart(6)}`,
+          );
+        }
+
+        // A source that can never clear the floor is a headline generator. That
+        // is not automatically a reason to drop it — a brief is a pointer and a
+        // headline is enough for one — but it is the shortlist to decide on,
+        // and it is the list nothing has ever printed.
+        const headlineOnly = ranked.filter((st) => usable(st) === 0);
+        if (headlineOnly.length > 0) {
+          console.log(
+            `\n── NEVER USABLE: ${headlineOnly.length} source(s) produced no article over ${THIN} chars`,
+          );
+          for (const stat of headlineOnly) {
+            const blocked = (stat.counts.get("blocked") ?? 0) + (stat.counts.get("error") ?? 0);
+            const why =
+              blocked > 0
+                ? `${blocked} refused/errored`
+                : (stat.counts.get("skipped") ?? 0) === stat.items
+                  ? "never attempted (cooldown or feed judged long enough)"
+                  : `${stat.counts.get("thin") ?? 0} fetched thin`;
+            console.log(
+              `  ${stat.source.slice(0, 40).padEnd(40)} ${String(stat.items).padStart(4)} items — ${why}`,
+            );
+            console.log(`      hosts: ${[...stat.hosts].join(", ")}`);
+          }
+        }
+        break;
+      }
+
       case "packet": {
         const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
         if (runId === undefined || Number.isNaN(runId)) {
@@ -772,6 +1137,7 @@ async function main() {
               a.truncated ? `truncated ${a.chars}/${a.availableChars}` : `${a.chars} chars`,
               a.duplicateParagraphs > 0 ? `${a.duplicateParagraphs} dup para` : null,
               a.boilerplateParagraphs > 0 ? `${a.boilerplateParagraphs} furniture` : null,
+              a.truncatedTail ? "TRUNCATED TAIL CUT" : null,
               a.translationFailed ? "UNTRANSLATED" : null,
             ].filter((m) => m !== null);
             console.log(`  [${a.preprocessedItemId}] ${a.sourceName} — ${marks.join(", ")}`);
@@ -789,6 +1155,54 @@ async function main() {
           const sections = new Set(packets.map((p) => p.packet.section?.ref).filter(Boolean));
           console.log(`  Sections:                ${sections.size} (${sectionPieces} pieces)`);
         }
+        // The number run #42's audit had no way to state: how much of each tier
+        // is running on a headline. 37 of its 150 pieces were headline-only,
+        // three of them features, and nothing in the reports said so — the
+        // materials audit counted thin *articles*, which is a different thing
+        // from a thin *piece*. Tiers whose slots require material are resolved
+        // before this point, so a non-zero count here is a day the paper ran out
+        // of material to trade with, not a slot mis-assignment.
+        console.log("");
+        console.log("  Material by tier:");
+        const tierOrder = ["feature", "standard", "brief"];
+        const seen = [...new Set(packets.map((p) => p.packet.tier))].sort(
+          (a, b) => (tierOrder.indexOf(a) + 1 || 99) - (tierOrder.indexOf(b) + 1 || 99),
+        );
+        for (const tier of seen) {
+          const inTier = packets.filter((p) => p.packet.tier === tier);
+          const at = (level: string) =>
+            inTier.filter((p) => p.packet.materialLevel === level).length;
+          console.log(
+            `    ${tier.padEnd(9)} ${String(inTier.length).padStart(3)} pieces — ` +
+              `${at("full")} full, ${at("partial")} partial, ${at("headline-only")} headline-only`,
+          );
+        }
+
+        // **Why sources were left out, not just how many.** The per-story table
+        // has carried an `omit` count since it was written, and the reasons only
+        // ever printed under `--rank`. Run #46's audit could not say whether AP's
+        // live page left the packet because the live-blog rule fired or because
+        // its cache was empty — the count was 3 and the reasons were one drill-in
+        // away, on a command the audit had not been asked to run.
+        const omissionReasons = new Map<string, number>();
+        for (const { packet } of packets) {
+          for (const o of packet.omitted) {
+            // Collapse the numbers out of "no usable body text (0 chars ...)"
+            // so the shapes group instead of splintering per article.
+            const key = o.reason.replace(/\d+/g, "N");
+            omissionReasons.set(key, (omissionReasons.get(key) ?? 0) + 1);
+          }
+        }
+        if (omissionReasons.size > 0) {
+          const totalOmitted = [...omissionReasons.values()].reduce((a, b) => a + b, 0);
+          console.log("");
+          console.log(`  Sources left out of packets: ${totalOmitted}`);
+          for (const [reason, n] of [...omissionReasons].sort((a, b) => b[1] - a[1])) {
+            console.log(`    ${String(n).padStart(4)}  ${reason}`);
+          }
+          console.log("    (use --rank <n> for the per-article detail)");
+        }
+
         console.log("");
         console.log("  rank tier      ref     section     arts  omit  material       chars  fetched/feed");
         for (const { packet, promptChars } of packets) {
@@ -914,6 +1328,13 @@ Commands:
   materials --editor-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
+  timing                   Per-stage durations for the latest run of each stage,
+                           plus wall clock across the lineage and how much of it
+                           was spent between stages rather than inside them
+  fetch [--days <n>]       Per-source article fetch outcomes from article_texts
+                           (default 14 days): what a writer ends up with per
+                           outlet, why we did not ask, and which sources have
+                           never produced a usable article
   packet --editor-run <n>  Writer packet sizes for every story of an editor run
   packet --editor-run <n> --rank <n>
                            Print the full assembled prompt for one story

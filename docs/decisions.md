@@ -4159,3 +4159,832 @@ The floor fix worked. `S57832` still says "No further details were available fro
 the source" at 27 words, and `S57492` says "a separate question the sources do
 not address" — a 143-word piece flagging the limit of its own analysis, which is
 a different shape from the headline-only padding and may want its own rule.
+
+---
+
+## 2026-08-24 — A slot the material cannot fill is worse than no slot
+
+Run #42 (editor #120) is the first paper audited end to end before building the
+publisher. It passed every integrity check — 150/150 pieces persisted, ranks
+contiguous, zero failed calls — and the review that came back listed length
+outliers, a smoke-gate miss and a recovered token-budget error. None of those is
+the thing wrong with the paper.
+
+**37 of the 150 published pieces were written on headline-only material.** A
+quarter of the paper, and not distributed like noise:
+
+| tier | headline-only | of |
+|---|---|---|
+| feature | 3 | 15 |
+| standard | 11 | 60 |
+| brief | 23 | 75 |
+
+Ranks 7, 9 and 14 — three of the fifteen front-page slots — were 46-, 50- and
+56-word stubs. Rank 18 was twenty-four words: "The Cicero Institute, founded by
+venture capitalist Joe Lonsdale, led Republican efforts to clear homeless people
+from the streets, the New York Times reports." Rank 7 (S61342) wrote one
+sentence and then, below a horizontal rule, a note to whoever was reading it:
+"That's all the source carries. The headline promises dismantling a third of the
+system, but the article body does not state that."
+
+### These are not writing failures
+
+Every one of them is a writer doing what a headline-only packet tells it to —
+write what you have, go no further, and a ceiling with no floor so nothing pushes
+it to pad. That machinery works. What it cannot do is decline the slot. A
+four-hundred-word feature position handed 400 characters of teaser produces
+either invention or an apology, and the accumulated fixes in this stage have
+successfully steered it away from invention.
+
+The audit's own source-boundary list makes the point: four candidate sentences,
+and the two that are genuine defects (S61342, S61332) are both headline-only
+pieces in slots too large for them. The other two are actors declining to
+comment, which is reporting. Fix the slot and the language problem goes with it.
+
+### The pipeline already knew
+
+Nothing about this was discovered at write time. The fetch cooldown had given up
+on `oregonlive.com` and `nytimes.com` before the run started — S61342 and S61618
+are those two hosts. S61332 is a Google News item, and `sources.yaml` has said in
+its own notes since the AP feed was added that those links are interstitials with
+no article behind them.
+
+Note which hosts those are. `opb.org` and `oregonlive.com` are both in the
+cooldown list, and they are the Oregon local beat — the beat the bio weights
+hardest and which therefore scores highest in grouping-pass-1. **The front page
+is systematically starved on precisely its highest-relevance subject**, and will
+be every day until those hosts stop serving a device check.
+
+### The editor cannot see this and should not have to
+
+`combined = relevance + source_weight·ln(sources)`, then tiers by rank position
+from fixed counts. Both inputs are upstream judgments about what the reader
+should care about; neither is about whether text exists. Teaching the editor
+about fetchability would be teaching a ranking formula about HTTP.
+
+`applyPaperBudget` could not catch it either — it drops from the bottom of the
+rank order and never looks at a packet's contents.
+
+### The fix is the section rule, one level up
+
+`assembleSectionPackets` has assigned a thread's lead by material rather than by
+score since run #13, when the Gaza section led with a 47-word stub while a
+180-word fully-sourced piece ran beneath it as a sidebar. The reasoning
+generalizes exactly: the unit is the paper's tiers instead of a section's roles.
+
+`resolveTiersByMaterial` runs between assembly and rendering. A story whose
+packet comes out headline-only *at the tier it holds* trades tiers with the
+nearest-ranked story below it that can fill the slot. Config is
+`writers.packet.tiers_requiring_material: [feature, standard]`; `brief` is
+deliberately absent, because a brief is a pointer and a headline is enough for
+one. An empty list disables the rule.
+
+Three properties, each deliberate:
+
+**Material level is read at the tier being asked about, not the tier assigned.**
+`materialLevelOf` already reads each tier's own thresholds, so 1,500 characters
+is headline-only for a feature and partial for a standard. That is what makes a
+demotion mean something rather than relabel a stub: the demoted piece gets a real
+word band it can actually fill.
+
+**It swaps rather than demotes.** The paper keeps fifteen features on a day the
+local outlets block us, instead of shrinking to twelve. This also fixes the
+other half of the problem — run #42's ranks 16 and 17 were fully-sourced 208- and
+213-word standards that would have made real features, sitting one place below
+the line while three stubs held feature slots.
+
+**Ranks and scores are never touched**, matching the section rule's promise. Only
+the treatment moves. A story can therefore sit high in the ranking and run short,
+which is the honest outcome when a story matters and the text is not there.
+
+The pass is top-down, so a story demoted out of feature is reconsidered for the
+standard slot it lands in and demoted again if it cannot fill that either.
+Each swap moves the failing story strictly downwards, so it terminates. When
+nothing below has material either — a day the whole corpus is teasers — the slot
+is left alone and the packet's own ceiling still keeps the piece short.
+
+Threads participate, judged on their section lead, since the lead is what
+occupies the slot.
+
+### What is not being changed, and why
+
+**The length outliers.** Fourteen pieces outside their band, the worst a
+651-word feature against a 600 ceiling and three 46–48-word briefs against 45.
+Soft targets missed by under 10%.
+
+**A deterministic minimum word count**, which the review recommended. This is the
+one recommendation that would actively regress the stage. A floor is a number, a
+number beats an instruction, and floors are what produced run #24's five "No
+further details were available from the source" pieces — the lesson recorded
+under "The floor was the last thing asking for it" four days ago. `targetPhrase`
+renders a ceiling with no floor for anything short of a full packet, on purpose.
+
+**The recovered brief-batch token exhaustion.** One call in eight spent its 8,000
+output tokens with an empty body and the retry recovered it. That is
+`callWithBackoff` doing the job it was given after run #35, when budget
+exhaustion was deliberately placed on the retryable side of the timeout line.
+The mechanism worked; there is nothing to fix.
+
+### Instrumentation
+
+`inspect packet --editor-run` now prints headline-only counts per tier. Run
+#42's audit could not state the finding above because the materials audit counts
+thin *articles*, which is a different quantity from a thin *piece* — 254 unique
+URLs and 104 thin ones says nothing about how many of the 150 slots that left
+empty. A non-zero count in a prominent tier now means the day ran out of material
+to trade with, not that a slot was mis-assigned.
+
+---
+
+## 2026-08-25 — A long feed body is not a complete one
+
+Run #43's rank 15, S62865, is 180 words of good reporting that ends:
+
+> "We are not only receiving deportees from outside Haiti due to the political
+> crisis; we also have people from" — the source cuts off there.
+
+The writer quoted a half-sentence and then told the reader it was a half-
+sentence. That is the failure this stage has been closing off for a dozen runs,
+and every guard against it was in place and irrelevant, because the guards are
+about what the *prompt* says and this was about what the *material* was.
+
+### The chain, and every link is confirmed
+
+`writers.fetch.feed_chars_floor` is 800: only fetch what the feed left short.
+La Nación's feed bodies run about 1,800 characters (materials audit for editor
+#121: 8 articles, median 1,813, **0 thin**) and they stop mid-clause. So:
+
+- The body cleared the floor, and `planFetch` skipped it as "already 1,813 chars".
+- The packet used the feed text — `fetched/feed = 0/1` on its inspect line.
+- The writer got a fragment ending inside an open quotation.
+
+Every stage between the feed and the writer measured that body by its length and
+found it generous. Prefilter, grouping, scoring and the editor all saw a
+well-sourced item; the tier resolver, one day old, correctly called it partial at
+standard rather than headline-only at feature, and it was right to — there is
+1,800 characters of material there. The material is just not *finished*.
+
+### The rule already existed and was pointed at the wrong truncation
+
+`trimToBoundary` carries this comment: "A writer quoting a half-sentence is a
+defect the assembler can prevent for free." It runs only when the tier budget
+cut a body, and `total_chars` is null on every tier, so it has been inert since
+sources stopped being rationed. The truncation that reached the paper was done by
+the publisher, upstream of anything that checked.
+
+So the fix is that rule, applied where the truncation actually happens:
+
+- **`endsMidSentence` overrides the length skip in `planFetch`.** A body that
+  stops mid-sentence is not the whole article however long it is, so length no
+  longer excuses it from the fetch. This is the cause fix: the point is to get
+  the real article, not to tidy the fragment.
+- **`stripBoilerplate` trims a dangling tail** back to the last finished
+  sentence. This is the net, for when the fetch fails anyway, and it runs on both
+  the fetched and feed candidates before the packet compares their lengths — the
+  same reason furniture is stripped before either is measured.
+
+Three details, each deliberate:
+
+**An ellipsis is a truncation marker, not an ending.** In a feed body "…" is the
+publisher cutting the article. Treating it as terminal is how a teaser passes for
+a finished piece, and it is far more common than La Nación's bare break.
+
+**The trim is skipped when it would cost most of the body.** A body whose last
+finished sentence sits in its first half is not prose with a broken tail — it is
+a caption run, a list, or an extraction with no sentence structure — and cutting
+back to that first full stop would throw away nearly everything to fix nothing.
+`trimToBoundary` has the identical guard for the identical reason.
+
+**It never empties a body.** When no sentence ever finished there is nothing to
+trim back to, and `materialLevelOf` and `isHeadlineEcho` judge the fragment on
+its length as before.
+
+### Cost
+
+Roughly 71 of editor #121's 218 in-scope articles were skipped as "already long
+enough". However many of those are truncated teasers now become fetch requests.
+That is the right place for the pipeline to spend: they are long-teaser stories
+that ranked into features and standards, which is exactly the material the paper
+is short of.
+
+`truncatedTail` is recorded per article and printed by `inspect packet --rank`,
+so the next run can say how often this fires and on which outlets.
+
+### Correction, same day: the check has to run downstream of the strip
+
+The source audit measured what the rule above would actually do, and the first
+version of it was wrong in a way one example could not show. `planFetch` tested
+the **raw** feed body. A feed whose last line is furniture has no terminal
+punctuation at the end of the raw text and is a complete article all the same:
+
+- Ars Technica closes every feed body with "Read full article" / "Comments" —
+  **92 of its 92** long bodies in the 14-day window, and the source is already
+  100% usable.
+- The Guardian's three feeds end on "Continue reading…" — 116 bodies — which
+  `boilerplate.ts` has had a rule for since run #17.
+- Meduza 172, KTVZ 153, STAT News 47, Agência Pública 40, The Lever 23.
+
+Across twelve outlets that need no fetch at all, that was **611 requests we
+would have paid for and thrown away**, against a real population of about 97 per
+run. The rule is right and the placement was wrong: completeness is a property
+of the article, and the furniture is not part of the article.
+
+So `stripBoilerplate` now reports `endedMidSentence`, computed on the stripped
+body before the trim, and `planFetch` reads that. Ars Technica's two footers
+became boilerplate rules, cited to this audit.
+
+`endedMidSentence` is deliberately **not** the same flag as `truncatedTail`.
+`trimTruncatedTail` declines to cut when the last finished sentence sits in the
+first half of the body, but such a body is still incomplete — and that is the
+strongest case for going and fetching the real article, not the weakest. One
+flag says "this needs fetching", the other says "we cut something".
+
+The general lesson is one this stage keeps relearning at a different layer: a
+rule derived from one example is a hypothesis, and the population is what tests
+it. La Nación was real — 735 of its 798 long bodies stop without terminal
+punctuation — but it was 735 of 1,373, and the other 638 were furniture.
+
+---
+
+## 2026-08-25 — The headline-echo check was defeated by its own upstream rule
+
+`isHeadlineEcho` exists so a source whose body says nothing its headline did not
+loses its packet slot. Run #112's rank 3 spent one of its twelve sources on a
+Google News stub reading `Poland says it thwarted a Russian plot … apnews.com`,
+and the rule was written for exactly that.
+
+The 14-day source audit measured how often it fires, and the answer was: not on
+the case it was written for. Of **106 Google News members across editor runs
+#118–#121, 99 contributed 64–140 characters** to writer packets — a headline
+each, admitted as a source.
+
+### Two rules that were each right, disagreeing
+
+`title.ts` strips a trailing separator plus a **bare domain** and deliberately
+nothing more. That restraint is itself evidence-driven: run #112 needed
+"… Goes Rogue? - **Willamette Week**" to keep its suffix, because an outlet name
+is not a domain and stripping it would mangle real headlines.
+
+`normalizeForCompare` stripped the **domain** form from both strings.
+
+So the title arrived as "… crackdown - AP News" and the body as
+"… crackdown - apnews.com". One end had an outlet name the strip did not touch;
+the other had a domain it did. They normalized to different strings,
+`body.startsWith(headline)` failed, and the stub was admitted. Neither rule was
+wrong on its own; they simply never agreed on what an aggregator suffix is.
+
+`normalizeForCompare` now runs two passes — the original whitespace-tolerant
+domain rule, which is still needed because the body form often carries no
+separator at all ("… in Warsaw  apnews.com", two spaces), then a
+separator-plus-short-tail rule that catches the outlet-name form. It is a
+comparison normalization and never reaches the reader, so trimming a real
+headline's trailing clause costs nothing: both sides get the same treatment, and
+a body with reporting in it still fails the `ECHO_SLACK_CHARS` length test.
+
+### What this does not fix
+
+The stub loses its packet slot; it keeps its place in the editor's source count,
+because `combined = relevance + source_weight·ln(sources)` measures cross-source
+pickup and AP covering a story is a real signal of prominence whether or not we
+can read the article. That is the intended behaviour and this changes nothing
+about it. What changes is that the writer stops being handed a headline and told
+it is a source.
+
+---
+
+## 2026-08-26 — AP is reachable, and the note that said otherwise was the bug
+
+AP Top News and AP Politics were between them the single largest contributor of
+material to the paper — 250 items reached editor runs in the 14 days to
+2026-08-25, ahead of OPB and SCMP — and their usable rate was **0%**. Every item
+was a headline.
+
+### Two assumptions, both wrong, both sitting in comments where they read as facts
+
+**"AP has no working public feed we can find."** That note in `sources.yaml`
+rested on five URLs tried once on 2026-08-14. All five were RSS paths, and AP's
+robots.txt contains `Disallow: /*.rss`. **That probe could only ever have
+failed.** Reading robots.txt instead — which *declares* six sitemaps — finds
+`news-sitemap-content.xml`: 200 text/xml, 529 entries with titles and
+publication timestamps, spanning about 28 hours.
+
+Note the declared name. The guessable `/news-sitemap.xml` is a near-empty
+2-entry file, so a path battery would have found that one and concluded failure a
+second time. Guessing paths is not a search; robots.txt is the search.
+
+**"The Google News token is an opaque identifier with no URL in it."** That one
+in `canonicalizeUrl` turned out to be *right*, and is now settled rather than
+assumed: 52 real links through token decoding, redirect following and
+interstitial parsing resolved zero. The interstitial is a 580KB JavaScript shell
+with no `apnews.com` in it. Google News resolution is a dead end and the module
+docs say so, so nobody re-runs it.
+
+### What the sitemap actually gives, measured through the real path
+
+518 of 529 entries are `/article/`; 6 `/photo-gallery/`, 3 `/live/`, 2
+`/newsletter/`. Fifteen sampled pages, fetched and run through `extractArticle`
+then `stripBoilerplate` — not a generic curl, because anything less measures a
+different pipeline than the one that writes the paper — **all fifteen cleared
+800 characters.**
+
+The three `/live/` pages extracted 20,000–39,000 characters. Those are live blogs
+and they are a known shape: `isLiveBlog` and the junk filter stand between them
+and a writer packet. Three of 529 is a rounding error, but it is the number to
+watch if the front page ever leads on one.
+
+### The design
+
+`format: news-sitemap` on a source. Same transport as the feed path, same
+identity rule, different parse.
+
+**A sitemap carries no body, and that is the cost.** Items arrive with a null
+body, so they reach the prefilter, grouping and scoring on their titles alone,
+and only the ~150 reaching the editor get their text fetched. This is not a
+regression — the Google News items they replace carried a ~100-character headline
+echo that `isHeadlineEcho` stripped anyway — and the proxy's title-only items
+demonstrably survived those stages in numbers. But it is a real property, and the
+first run is where it gets tested.
+
+**`max_age_hours`, because a sitemap does not window itself.** AP's spans ~28
+hours against a daily collector, 281 of 529 inside 24. Without a window the tail
+is re-collected daily for the cross-run dedup to discard again. Default 24, which
+matches both the collector's cadence and the `when:24h` the proxies used, so the
+corpus stays comparable across the change. An entry with no date is **kept**: a
+missing timestamp is not evidence of age.
+
+**`exclude_paths`, because the case for collecting AP rests on reading its
+robots.txt.** That file permits `/article/` and `/live/`, sets no `Crawl-delay`,
+and disallows exactly one specific article. That one is in the source entry and
+dropped by the collector. Exact paths, never prefixes — a prefix rule would
+quietly grow to cover articles the publisher never excluded, and the value of the
+list is that it diffs against the robots.txt it came from. **A rule you read but
+do not follow is worse than one you never read.**
+
+### Cost
+
+Roughly 25 AP items a run becomes roughly 281, a ~21% larger corpus and
+proportionally more prefilter calls. That is the price of the largest source in
+the paper going from headlines to articles.
+
+### The same probe, three more findings
+
+**Willamette Week** was a Google News proxy for the same reason and with the same
+0% result. Its feed is on the Arc outbound path — the shape OPB and the Oregonian
+already use in this very file — which the probe that declared it dead never
+tried. 8 of 8 sampled articles extract.
+
+**Mail & Guardian** was pointed at a 404; `/rss` serves 50 items. **Labor Notes**
+was pointed at a body that returns 200 and is malformed, which killed two
+consecutive collections; `/rss.xml` serves 25 items against `/feed`'s 10.
+
+Three sources, three dead endpoints, all three fixed by looking rather than by
+inference. The pattern across all four is one thing: **a note recording a
+conclusion outlives the evidence that produced it, and nothing re-tests it.**
+
+---
+
+## 2026-08-26 — A lost attach judgment is recoverable; a slow call still is not
+
+Run #56 came back degraded: `attach_failed_calls=1`, from 158 provider attempts
+for 133 successes — **24 recoverable 429s and one 300,006 ms timeout**. The
+counter did its job. It has existed since run #34 precisely so a run cannot hide
+this, and the reviewer correctly refused to call the run clean.
+
+But a counter cannot be acted on, and the interesting part is *why* it happened
+now. The same run switched AP from a Google News proxy to its own sitemap, and
+the news lane grew from 483 kept-news items to **686 — 42%** in one step.
+Grouping's attach concurrency was tuned for the smaller corpus. The corpus
+outgrew the budget and one judgment went with it.
+
+### The rule that lost it was right, and applied to the wrong case
+
+`callWithBackoff` does not retry timeouts, deliberately: "a call that ran to its
+configured ceiling will likely do it again, and the run #40 lesson was to bound
+those." That is correct for a call that is genuinely slow.
+
+It is wrong for a call that spent its budget **queued behind a rate-limit
+storm**, which is a property of what else was in flight rather than of the call.
+From inside `callWithBackoff` the two are indistinguishable — it sees one call —
+so the fix does not belong there.
+
+### The straggler re-ask
+
+The attach pass now records *which* judgments were lost, not just how many, and
+after the concurrent phases makes **one sequential re-ask** for those clusters
+and proto-groups. Sequential is the whole point: nothing else is in flight, so
+the pressure that caused the loss is gone, and "it will just do it again" does
+not apply the way it does to an inline retry during the storm.
+
+This is the writers' straggler pattern — a brief missing from a batch gets one
+follow-up call — applied to the stage where a lost call is *silent* rather than
+visible. Bounded at one pass: if the re-ask fails too, the judgment is still lost
+and the warning still fires. This makes recovery possible, it does not promise it.
+
+`evalCluster` and the newly extracted `evalProtoGroup` both read live state and
+return a verdict without mutating anything, so running them twice is safe — the
+same property that already lets the cascade re-run Phase A.
+
+### The bug in the first version of the bookkeeping
+
+The loss register initially cleared a unit's flag on each chunk *success*. Chunks
+partition a unit's candidates, so a two-chunk cluster that lost its first call
+and answered its second looked clean **with half its candidates never judged**.
+`trackAttachLoss` clears once per pass and then marks on any chunk failure, and
+seven tests pin it, including that exact case. Clearing per pass rather than
+never is what lets a clean re-ask legitimately un-mark a unit.
+
+### Two counts, one defect
+
+Migration 039 splits them, because they no longer mean the same thing:
+
+- `attach_failed_calls` — provider calls that failed, in the storm or the
+  re-ask. A cost in time and tokens. **Not itself a defect**, and warning about a
+  failure that was then recovered would train the reader to ignore the line that
+  matters.
+- `attach_unrecovered` — judgments still missing afterwards. This is what the
+  "do not judge cluster quality on this run" rule attaches to now.
+
+NULL means a run before 039, where `attach_failed_calls` carried both meanings —
+which it could, because until now they were the same thing.
+
+### What is not being changed
+
+**Attach concurrency.** The 429s were all recovered and the underlying cause is a
+corpus that grew 42% overnight; one run is thin evidence for retuning a
+concurrency that was itself lowered for rate limits once before. If the next run
+shows the same storm on a stable corpus, that is the evidence, and lowering
+`grouping.attach.concurrency` is the lever.
+
+---
+
+## 2026-08-26 — The live-blog defence had been inert for two months
+
+Run #44's rank 2 carried AP's rolling tariffs coverage: **24,455 characters, 46%
+of a 53,088-character feature packet**, inside thread T0 whose other members are
+supposed to cover exactly those developments. `isLiveBlog` exists to prevent
+this, has existed since run #112, and did nothing. It failed twice over.
+
+### It could not see AP's live blog
+
+Detection read the title, on the reasoning that live blogs announce themselves.
+True of Le Monde's `EN DIRECT, guerre en Ukraine`. **False of AP**, which titles
+its live coverage exactly like an article — "Canada launches retaliatory tariffs
+on US goods" — and declares it in the URL instead, `/live/`.
+
+A path segment the publisher chose is a stronger signal than a headline
+convention, so both are checked now. Segment-exact, never a substring: `/olive/`
+and `/living/` are not live blogs.
+
+### And it would have done nothing if it had
+
+This is the worse half. The rule was "the live blog falls out of the packet",
+implemented by ranking live blogs last in `selectArticles` and letting
+`max_articles` cut them off. **Unrationing the sources on 2026-08-19 set every
+cap to null**, so `full()` never returns true, both selection passes take
+everything, and the reordering has had no effect on any packet since.
+
+Two months of runs, a rule that reads as active in the code and in this log, and
+no behaviour behind it. Nothing failed; it simply stopped mattering, which is the
+kind of regression no counter catches.
+
+### Dropping is not rationing, and this does not reopen that decision
+
+Sources are not rationed and should not be: nothing is dropped for being the 13th
+source or the 48,001st character, because deciding what bears on a piece is the
+writer's judgment.
+
+A live blog is not dropped for its position or its length. It is dropped for the
+same reason a headline echo is — **its body is not reporting on this story**. It
+is one page carrying a day of entries about many, which is precisely what breaks
+the guarantee a section makes: material partitions by member, so two pieces
+cannot draw on the same source. A live blog defeats that by construction.
+
+So it joins `isHeadlineEcho` and `min_article_chars` in the packet's usability
+filter, and inherits that filter's guarantee: **a packet is never emptied.** On a
+story whose only source is a live blog, it is still the source.
+
+---
+
+## 2026-08-26 — The scoring stage had no retry at all, and its fail-safe competed
+
+Replay #42 lost four clusters — C80 to C83 — to a single HTTP 429. Each was
+persisted with `score=50`, `interest=NULL`, `reason=fail-safe: LLM error`. They
+fell below that run's pile cutoff of 54 and did not reach the paper. Run #40's
+cutoff was 49, and a fail-safed row did.
+
+Two separate defects, and the first one is embarrassing.
+
+### `callWithBackoff` was never imported
+
+CLAUDE.md has said since 2026-07-25: "**Any new batched, concurrent stage needs
+it.** The failure mode is quiet: a rate-limited call that returns a
+degraded-but-valid-looking result is indistinguishable from a real model verdict,
+so the run reports success while losing work."
+
+Grouping-pass-1 is batched, concurrent, and runs at `concurrency: 10` — the
+highest in the pipeline, against prefilter's 8 and writers' 4. It is the stage
+that rule most obviously describes. `callWithBackoff` was **not imported into the
+file**. A 429 failed on the first and only attempt and defaulted forty items.
+
+The Zod schema had carried `retry_max_attempts` and `retry_base_ms` on
+`BatchStageConfigSchema` the whole time, and `editor_pass_1` inherits it. The
+config never set them and the code never called the wrapper. A rule written down,
+a schema that anticipated it, and no behaviour behind either.
+
+Fixed the obvious way: the batch call goes through `callWithBackoff` and the
+config carries 5 attempts and a 2,000 ms base.
+
+### But the batch is the wrong unit, and that is the bigger miss
+
+The first version of the straggler re-asked **failed batches**. That covers the
+429 and leaves the commonest failure untouched.
+
+There are three ways an item ends up unscored and only two of them fail the
+batch:
+
+| reason | batch reports |
+|---|---|
+| `LLM error` — the call threw after retries | failed |
+| `batch parse error` — nothing parsed | failed |
+| `missing/invalid line` — the call **succeeded** and the model omitted a line | **success** |
+
+The third is the one that recurs. Run #39's batch 7 of 8 parsed 39 of 40: one
+item was silently defaulted inside a run that reported no errors at all, and a
+whole-batch straggler would never have looked at it. Any of those 40 could have
+been the day's biggest story — that is the whole objection, and it is right.
+
+So the unit is the item. Every fail-safe path leaves `interest` null, which is
+exactly what makes `interest IS NULL` a reliable query, so that is what gets
+re-asked — sequentially, in chunks of `straggler_batch_size` (10). Small on
+purpose: a dropped line is far harder to hide in a short response than in a
+response covering forty items, and the usual straggler count is one or two, so
+this is normally a single cheap call rather than forty individual ones.
+
+A straggler that fails again does **not** overwrite the original fail-safe with a
+second one. Replacing one reason with another would read as progress in the logs
+while nothing had been recovered.
+
+### 50 is a fabricated judgment, not an absent one
+
+The subtler defect, and the one that decides whether an unjudged story reaches
+the reader.
+
+A fail-safe score of 50 sits in the middle of the 0–100 range, so it **competes**
+with real judgments. Whether an unscored row was published turned entirely on
+where the day's cutoff happened to land — 54 and it is dropped, 49 and it is
+printed. Neither outcome was chosen; both were accidents of the distribution.
+
+`FAIL_SAFE_SCORE` is now **0**, which says what is true: no judgment was made.
+The pile ranks by score and takes the top `pile_target`, so an unscored row is
+taken only when there are not enough judged rows to fill the paper — at ~480
+scored rows for 150 slots, never in normal operation.
+
+**Not excluded outright**, which was the other candidate. Exclusion is right in
+normal operation and catastrophic in the outage case: if the provider is down for
+the whole stage, every row is unscored, and exclusion yields no paper at all. 0
+gets the normal-operation behaviour without buying the outage behaviour, because
+when everything is 0 the pile fills exactly as it did before.
+
+An unscored row keeps its null `interest` axis, so `interest IS NULL` finds it,
+and the stage now closes with a warning naming the count — nobody queries a
+database to discover that a stage went wrong.
+
+### What is not being changed
+
+**`concurrency: 10`.** It is the highest in the pipeline and it is where the
+pressure comes from, but the stage had *no retry at all*; that is a sufficient
+explanation for what happened and lowering concurrency on the same day would
+confound the evidence. If a run with backoff in place still shows a 429 storm,
+that is when the number moves.
+
+---
+
+## 2026-08-27 — Two audits that could not conclude, and one that did
+
+### The per-item straggler worked, on exactly the case it was built for
+
+Pass-1 #43 re-scored grouping #57's 480 rows, the same input pass-1 #42 saw. Its
+stdout carries the line the whole redesign was about:
+
+```
+[grouping-pass-1] batch 4/10: parsed-lines=39/40; fail-safe-defaulted=1
+```
+
+The call **succeeded** and parsed 39 of 40. That is `missing/invalid line` — the
+path that does not fail the batch, and the one a whole-batch straggler would have
+walked straight past. The per-item re-ask caught it: **0 rows with `interest IS
+NULL`**, against 4 in run #42. The recovered row was `S63708`, 9 → 21.
+
+That is the objection that prompted the redesign, reproduced and answered in one
+run.
+
+### `inspect timing` was sorting run ids as strings
+
+The output named run **#9** for seven of eight stages, and editor **#99**, when
+the real latest runs were collector #57 through writers #45.
+
+```sql
+SELECT id::text, started_at, ... FROM collector_runs ORDER BY id DESC LIMIT 1
+```
+
+A cast expression keeps the underlying column's name, so `id::text` names its
+output column `id` — and SQL resolves `ORDER BY id` against **output** columns
+before table columns. So the sort ran on text: `"9"` above `"99"` above `"57"`
+above `"123"`. Every duration, every `[earlier lineage]` mark and the whole wall
+clock were computed over the wrong rows, and the report read as plausible
+throughout. Aliasing the cast (`id::text AS run_id`) leaves `id` bound to the
+integer.
+
+Two lessons, and the second is the uncomfortable one. A tool added to answer a
+question was wrong on its first real use, in a way only the data revealed — the
+run ids looked odd, and nothing else would have. And the `[earlier lineage]`
+feature added the same day made the wrong output look *more* credible, because it
+explained away exactly the anomaly the bug produced.
+
+### `inspect packet` counted omissions and never said why
+
+The whole-run form has printed an `omit` column per story since it was written;
+the reasons only ever printed under `--rank`. So the audit could see that AP's
+live page left story C4's packet — `arts=3, omit=3` — and could not say whether
+the live-blog rule had fired or the empty fetch cache had done it. The right
+refusal was made: no claim, and the gap named.
+
+It now prints omission reasons grouped and counted, with the numbers collapsed
+out so shapes group rather than splinter per article.
+
+### Measured, not fixed: scoring is not stable across runs
+
+The same 480 rows, the same model, temperature 0.1, scored twice:
+
+| | |
+|---|---|
+| median absolute difference | 5 points |
+| mean | 6.70 |
+| maximum | 32 |
+| **rows crossing the pile cutoff of 54** | **57 of 480** |
+
+Roughly **12% of pile membership is run-to-run noise**. Nothing here is broken —
+this is what an LLM judgment at temperature 0.1 costs — but it bounds what any
+single run can be used for. Tuning `similarity_threshold` or judging cluster
+quality on one run was already discouraged for other reasons; this says the
+scoring layer alone moves an eighth of the paper's composition between identical
+runs.
+
+Not acted on. The obvious lever is `temperature: 0` for this stage, and the
+config already notes that judgment stages want repeatability while the writers
+want prose. That is worth an experiment, not a same-day change.
+
+### Also observed
+
+Pass-1 took **463s** on the input that took **58s** in run #42 — an eightfold
+swing with no code path that explains it, and long enough that a 420-second
+command wrapper truncated the stdout. Provider variance is the likely answer.
+It matters for one reason: it puts a wide band on any answer to "how long does
+the paper take".
+
+---
+
+## 2026-08-27 — Reviewing the branch against a real Postgres
+
+No fresh corpus available, so the day went on hardening what is already written.
+Four defects, all mine, all from this branch.
+
+### `inspect timing` sorted run ids as text — reproduced, not reasoned about
+
+Postgres 16 is installed in the dev image, so this one was settled by running it
+rather than reading it. A scratch cluster, the project's own migrations, three
+collector rows with ids 9, 57 and 123:
+
+```
+SELECT id::text,           ... ORDER BY id DESC LIMIT 1   ->  9
+SELECT id::text AS run_id, ... ORDER BY id DESC LIMIT 1   ->  123
+```
+
+A cast keeps the underlying column's name, so `id::text` names its output column
+`id`, and SQL resolves `ORDER BY` against output columns first. Aliasing the cast
+leaves `id` bound to the integer.
+
+The same cluster then ran `inspect timing`, `inspect fetch`, the 22-parameter
+`grouping_runs` update and the `writer_pieces` repair update against the real
+schema and its CHECK constraints. **Reasoning about SQL is not testing SQL**, and
+this branch had already shipped one query that was wrong in a way no amount of
+re-reading had caught.
+
+### The never-empty fallback kept the first article, not the best
+
+`assembleWriterPacket` ends with:
+
+```ts
+const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
+```
+
+The comment above it has always said "if every article is a stub the best one
+stays". `slice(0, 1)` does not do that — it takes whatever `selectArticles`
+ordered first — and the gap was harmless while the filter removed only empties
+and headline echoes.
+
+Adding live blogs to that filter made it harmful. `selectArticles` orders live
+blogs **last**, on purpose. So a story whose sources are a 40-character stub and
+a 24,000-character live blog now filtered both out, fell back to `[0]`, and handed
+the writer the stub. Before the live-blog rule it would have kept the live blog.
+Longest-first fixes it, and is what the comment promised all along.
+
+A rule that removes more things makes every fallback beneath it more reachable.
+That is the shape to look for after widening a filter.
+
+### An attach cluster with no candidates left was counted as lost
+
+`evalCluster` returns early when a cluster has no candidate singletons, and that
+early return sat above `trackAttachLoss`. A cluster marked lost in Phase A whose
+singletons were then attached elsewhere by the cascade arrived at the straggler
+with nothing to offer, returned early, and kept its flag — reporting
+`attach_unrecovered` on a run where there was nothing left to ask. Over-reporting
+degradation is the safer direction to be wrong in, and it is still wrong.
+
+### A sitemap index would have collected nothing, quietly
+
+`format: news-sitemap` pointed at a sitemap *index* parses cleanly and yields
+zero articles: an index lists `<sitemap><loc>`, not `<url><loc>`. The run would
+report a successful zero-item source and say nothing about why. OregonLive serves
+exactly that shape at its declared news-sitemap URL, so this is a configuration
+mistake waiting to be made rather than a hypothetical. It now throws with a
+message naming the problem, which the collector records as a source failure.
+
+## 2026-08-27 — A skip never overwrites an attempt
+
+`fetch-text` recorded its skips with a per-reason flag deciding whether the
+skip row could replace an existing `article_texts` row. The flag was set for
+`host in cooldown` and left off the other two reasons, and the reason it was
+left off `already attempted within refetch_after_hours` is the reason it is
+fatal there: that skip fires *because* a recent attempt exists, so it clobbered
+the very row it had just read. Re-running the fetch against one editor run
+deleted that run's own article text — AP read 100% usable at a 4,269-character
+median in one report and 14% at 0 in the next, on the same day, with no fetch
+in between that could have failed.
+
+The rule is now derived from the row's status rather than passed in by the
+caller: a skip means "never asked", so it may only replace another skip, and no
+caller can get it wrong. The cooldown case the flag was written for is an
+instance of that rule, not an exception to it.
+
+## 2026-08-27 — Timing checks order, not proximity
+
+`inspect timing` takes the latest run of each stage, and marked a stage as
+`[earlier lineage]` when it started more than six hours before the newest. That
+catches a replay from a days-old preprocessor run and missed the case that
+reached a report: editor #123 and writers #45 ran at 21:51 and 21:52, while
+grouping-pass-1 #43 and thread #21 ran at 00:43 and 00:51 the next morning.
+Every row sat inside six hours of every other, so nothing was marked, and the
+command reported a 332m wall clock and a 308m "orchestration gap" that nobody
+waited — it was the distance between two sittings, and #123's paper was not
+written from #43's scores at all.
+
+Proximity in time was never the question; order is. The stage list is already
+in pipeline order, so a stage that started before one above it demonstrably did
+not consume it. When that happens the wall clock and the gap are suppressed
+rather than printed with a caveat: a fictional number is worse than no number.
+
+## 2026-08-27 — The probe parses with the parser that ships
+
+`probe-source --sitemap` read AP's XML with four regexes of its own. Every fact
+in `sources.yaml` about AP came from those regexes, and the collector does not
+run them — `parseNewsSitemap` and its linkedom DOMParser had never seen real AP
+markup, so a disagreement would have shown up as a source that collected
+nothing and reported success. The probe now calls the shipped parser and prints
+what the collector's own window would keep. Confirmed against the live file:
+599 entries, 310 inside 24 hours, 585 of 599 `/article/`.
+
+## 2026-08-28 — The editor tie-break gets the backoff
+
+`callTieBreakForGroup` ran on a raw `callLLM` from the day it was written, at
+`concurrency: 10` — level with grouping-pass-1, the highest in the pipeline.
+Run #125 lost 12 of its 25 tie groups to a single 429 each, one attempt, no
+retry, and ranked those items by ref order instead. Ref order is alphabetical,
+and at a tier boundary it decides whether a story runs as a feature or a
+standard.
+
+The run is its own control. Grouping's attach pass met the same 429 storm from
+the same provider minutes earlier, retried under `callWithBackoff`, and
+finished with `attach_failed_calls=0`. Nothing about the storm was unusual;
+only one of the two stages was wrapped.
+
+It is also the quiet failure the rule was written for: the catch returns an
+empty rank map, which is indistinguishable from a group the model declined to
+order, so the stage logged a warning and reported success. Migration 040 puts
+`tie_break_calls` and `tie_break_failed_calls` on `editor_runs` for the same
+reason as 030 and 039 — a report regenerated from the database has to be able
+to judge a run after the console log is gone.
+
+## 2026-08-28 — The gap rule names the outlet case
+
+Run #47 published one source-meta sentence in 150 pieces: S64820, "The article
+does not specify when the House might take up the legislation." The packet
+note's gap rule already excluded it — an article is not "someone in the story"
+— but only implicitly, and the memo draws the actor-versus-outlet line in the
+system prompt, at the far distance. Every previous instance of this failure was
+fixed by moving the winning instruction nearer to the material, so the clause
+now names the shape that keeps reaching the paper. It is the same rule, not a
+new layer and not a new prohibition.
+
+One piece in 150 is not a controlled measurement. The controlled form is a
+single-tier re-run against one editor run, and this has not had one.

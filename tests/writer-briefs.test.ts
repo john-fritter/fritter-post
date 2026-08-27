@@ -43,6 +43,7 @@ function packet(ref: string, rank: number): WriterPacket {
         origin: "feed",
         duplicateParagraphs: 0,
         boilerplateParagraphs: 0,
+    truncatedTail: false,
         translationFailed: false,
       },
     ],

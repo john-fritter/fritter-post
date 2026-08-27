@@ -57,6 +57,10 @@ const BatchStageConfigSchema = StageConfigSchema.extend({
 
 const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
+  // Items per call when re-asking for scores that came back missing. Small on
+  // purpose: the commonest fail-safe is the model dropping one line from a batch
+  // of forty, and a dropped line is far harder to hide in a short response.
+  straggler_batch_size: z.number().int().positive(),
   // Characters of cluster describe-summary shown when scoring a cluster.
   // Separate from body_cap: a cluster's summary is already distilled, a
   // singleton's body is raw article text, and they want different budgets.
@@ -74,6 +78,8 @@ const EditorTieBreakConfigSchema = z.object({
   timeout_ms: z.number().int().optional(),
   // Characters of body/summary shown per item in a tie-break group.
   body_cap: z.number().int().nonnegative(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 const EditorStageConfigSchema = z.object({
@@ -232,6 +238,10 @@ const WritersPacketConfigSchema = z.object({
   min_article_chars: z.number().int().nonnegative(),
   // Length ceiling for a piece with headline-only material, whatever its tier.
   headline_only_words: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  // Tiers, most prominent first, whose slot a headline-only story may not hold.
+  // Anything outside the list accepts headline material. Empty disables the
+  // rule and restores the editor's rank-only tiering. See resolveTiersByMaterial.
+  tiers_requiring_material: z.array(z.string()),
   tiers: z.object({
     feature: WritersTierPacketConfigSchema,
     standard: WritersTierPacketConfigSchema,

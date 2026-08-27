@@ -6,6 +6,7 @@ import {
   classifyResponse,
   isTransportError,
   type FetchStatus,
+  overwritesAttempts,
 } from "../src/pipeline/writers/fetch-text.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
 import { hostOf } from "../src/lib/http.js";
@@ -49,7 +50,10 @@ function article(
     originalUrl: url,
     publishedAt: null,
     alsoAppearedIn: [],
-    feedText: "x".repeat(feedChars),
+    // A finished sentence: `endsMidSentence` reads the last character, and a
+    // body of bare filler would look truncated to it — which is the whole point
+    // of the rule, but not what these fixtures are testing.
+    feedText: feedChars > 0 ? `${"x".repeat(Math.max(0, feedChars - 1))}.` : "",
     feedTextChars: feedChars,
   };
 }
@@ -166,25 +170,39 @@ function testRecentlyAttemptedArticlesAreNotRequestedAgain() {
   assert.match(plan.skips[0]!.detail, /already attempted/);
 }
 
-function testCooldownSkipsPreserveTheAttemptThatCausedThem() {
-  // The self-defeating case: if a cooldown skip overwrites the blocked rows that
-  // produced the cooldown, the next run sees no failures, lifts the cooldown,
-  // and re-requests every URL. Only cooldown skips carry the flag — a
-  // fat-feed skip has no attempt to protect.
+function testNoSkipReasonMayOverwriteAnAttempt() {
+  // This was a per-reason flag the planner set, and it was set for exactly one
+  // of the three reasons. The one it was left off is the one where it is fatal:
+  // `already attempted within refetch_after_hours` fires *because* a recent
+  // attempt exists, so it overwrote the row it had just read and deleted the
+  // text that run had paid for. AP went 100% usable at a 4,269-char median to
+  // 14% at 0 across two reports on one day, with no fetch in between that could
+  // have failed.
+  //
+  // So the question is asked of the row's status rather than of the reason, and
+  // every reason gets the same answer.
   const plan = planFetch(
     [
       storyOf("feature", [
         article(1, 100, "https://nytimes.com/a"),
         article(2, 4000, "https://opb.org/b"),
+        article(3, 100, "https://theguardian.com/c"),
       ]),
     ],
     CFG,
     new Set(["nytimes.com"]),
+    new Set([3]),
   );
-  const cooldownSkip = plan.skips.find((s) => s.host === "nytimes.com")!;
-  const fatSkip = plan.skips.find((s) => s.host === "opb.org")!;
-  assert.equal(cooldownSkip.preservesAttempt, true);
-  assert.notEqual(fatSkip.preservesAttempt, true);
+  // All three reasons are represented, and none of them may clobber a result.
+  assert.equal(plan.skips.length, 3);
+  for (const _skip of plan.skips) assert.equal(overwritesAttempts("skipped"), false);
+
+  // A real attempt still replaces whatever was there — including a stale skip,
+  // which is how a host recovers from cooldown.
+  assert.equal(overwritesAttempts("ok"), true);
+  assert.equal(overwritesAttempts("thin"), true);
+  assert.equal(overwritesAttempts("blocked"), true);
+  assert.equal(overwritesAttempts("error"), true);
 }
 
 function testTransportFailuresRetryButTimeoutsDoNot() {
@@ -331,13 +349,77 @@ function testHostOfStripsWww() {
   assert.equal(hostOf("not a url"), "(unparseable)");
 }
 
+/** Same article, but the publisher cut the body mid-clause. */
+function truncatedArticle(id: number, feedChars: number): StoryArticle {
+  const body = `${"x".repeat(Math.max(0, feedChars - 30))}. The minister said the plan would`;
+  return { ...article(id, feedChars), feedText: body, feedTextChars: body.length };
+}
+
+function testALongBodyThatStopsMidSentenceIsStillFetched() {
+  // **Long is not the same as complete.** La Nación's ~1,800-character teasers
+  // clear the 800-char floor and stop mid-clause, so run #43's rank 15 was never
+  // requested and its writer was handed a fragment. Length does not excuse a
+  // body from the fetch when it plainly is not the whole article.
+  const plan = planFetch(
+    [storyOf("feature", [truncatedArticle(1, 2000)])],
+    CFG,
+    new Set(),
+  );
+  assert.equal(plan.targets.length, 1);
+  assert.equal(plan.skips.length, 0);
+}
+
+function testALongCompleteBodyIsStillSkipped() {
+  // The near-miss: the rule must not turn the floor off for everyone. A body
+  // that ends on a finished sentence is taken at its word, as before.
+  const plan = planFetch([storyOf("feature", [article(1, 2000)])], CFG, new Set());
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+  assert.match(plan.skips[0]!.detail, /already 2000 chars/);
+}
+
+function testAFeedFooterDoesNotTriggerAFetch() {
+  // Ars Technica and the Guardian close their feed bodies with furniture, so a
+  // complete article has no terminal punctuation at the end of the raw text.
+  // The plan judges the stripped body; otherwise the source audit's 14-day
+  // window would have produced 611 requests from outlets already 100% usable.
+  const complete =
+    "The commission voted on Tuesday to open the proceeding. " +
+    "Regulators said the review would take up to a year. ".repeat(20) +
+    "\n\nRead full article";
+  const withFooter = {
+    ...article(1, complete.length),
+    feedText: complete,
+    feedTextChars: complete.length,
+  };
+  const plan = planFetch([storyOf("feature", [withFooter])], CFG, new Set());
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+}
+
+function testATruncatedBodyOnACoolingHostIsStillSkipped() {
+  // Being truncated earns a fetch attempt, not an exemption from the cooldown.
+  const plan = planFetch(
+    [storyOf("feature", [truncatedArticle(1, 2000)])],
+    CFG,
+    new Set(["example.com"]),
+  );
+  assert.equal(plan.targets.length, 0);
+  assert.equal(plan.skips.length, 1);
+  assert.match(plan.skips[0]!.detail, /cooldown/);
+}
+
 testOnlyThinArticlesAreFetched();
+testALongBodyThatStopsMidSentenceIsStillFetched();
+testALongCompleteBodyIsStillSkipped();
+testAFeedFooterDoesNotTriggerAFetch();
+testATruncatedBodyOnACoolingHostIsStillSkipped();
 testBriefTierIsOutOfScope();
 testCoolingHostsAreSkippedNotRequested();
 testOneRequestPerUrlEvenWhenItemsShareIt();
 testAnItemInTwoStoriesIsPlannedOnce();
 testRecentlyAttemptedArticlesAreNotRequestedAgain();
-testCooldownSkipsPreserveTheAttemptThatCausedThem();
+testNoSkipReasonMayOverwriteAnAttempt();
 testTransportFailuresRetryButTimeoutsDoNot();
 testHostGroupingIsBusiestFirst();
 testHostWithRepeatedFailuresAndNoSuccessCools();

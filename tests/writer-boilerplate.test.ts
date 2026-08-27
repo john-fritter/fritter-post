@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { stripBoilerplate, isHeadlineEcho } from "../src/pipeline/writers/boilerplate.js";
+import {
+  stripBoilerplate,
+  isHeadlineEcho,
+  endsMidSentence,
+} from "../src/pipeline/writers/boilerplate.js";
 
 // Every rule here came from reading the first assembled packets for editor run
 // #112. Each test pins both the cut and a near-miss that must survive, the same
@@ -106,7 +110,12 @@ function testProseIsNeverCutForMentioningTheseThings() {
 }
 
 function testEmptyInputIsSafe() {
-  assert.deepEqual(stripBoilerplate(""), { text: "", dropped: 0 });
+  assert.deepEqual(stripBoilerplate(""), {
+    text: "",
+    dropped: 0,
+    truncatedTail: false,
+    endedMidSentence: false,
+  });
 }
 
 // --- headline echo ---
@@ -158,6 +167,8 @@ testNprImageCreditIsRemoved();
 testProseIsNeverCutForMentioningTheseThings();
 testEmptyInputIsSafe();
 testGoogleNewsStubIsAnEcho();
+testAnAggregatorStubIsAnEchoWhenTheSuffixesDisagree();
+testASourceWithRealReportingIsNotAnEchoHoweverItIsAttributed();
 testAShortRealSummaryIsNotAnEcho();
 testHeadlineFollowedByRealTextIsNotAnEcho();
 testEmptyBodyIsAnEcho();
@@ -208,9 +219,255 @@ function testDistinctParagraphsAreAllKept() {
   assert.equal(out.dropped, 0);
 }
 
+// --- truncated feed teasers ---
+//
+// Run #43's rank 15 (S62865, La Nación) is the case: a ~1,800-character feed
+// body, well clear of the 800-char fetch floor, that stops mid-clause inside a
+// quotation. The fetch skipped it as "already long enough", and the writer
+// produced 180 words of real reporting and then narrated the break.
+
+const LANACION_TEASER =
+  "The Trump administration began deportation flights to Haiti on August 20, after " +
+  "Temporary Protected Status for more than 300,000 people expired. The first flight " +
+  "carried 161 people to Cap-Haïtien, on Haiti's north coast, according to Haiti's " +
+  "National Migration Office.\n\n" +
+  "Flights were routed to Cap-Haïtien because Port-au-Prince's airport is closed to " +
+  "U.S. commercial flights amid gang violence. Hours before the first flight departed, " +
+  "the DHS secretary posted on X.\n\n" +
+  "Cap-Haïtien itself is overwhelmed. Its population has grown from 350,000 in 2003 to " +
+  "roughly 800,000 as people displaced by the capital's crisis have flooded in. " +
+  "Residents say the city cannot absorb more arrivals.\n\n" +
+  "\u201cWe are not only receiving deportees from outside Haiti due to the political " +
+  "crisis; we also have people from";
+
+function testATeaserThatStopsMidClauseIsDetected() {
+  assert.equal(endsMidSentence(LANACION_TEASER), true);
+}
+
+function testTheDanglingClauseIsCutBackToTheLastFinishedSentence() {
+  const out = stripBoilerplate(LANACION_TEASER);
+  assert.equal(out.truncatedTail, true);
+  assert.ok(out.text.endsWith("cannot absorb more arrivals."));
+  // The reporting above it survives untouched.
+  assert.ok(out.text.includes("began deportation flights to Haiti on August 20,"));
+  assert.ok(!out.text.includes("we also have people from"));
+}
+
+function testAnEllipsisIsATruncationMarkerNotAnEnding() {
+  // Feed teasers trail off with an ellipsis; that is the publisher cutting the
+  // article, not a stylistic choice, and it must not read as a finished body.
+  assert.equal(endsMidSentence("The council met on Tuesday. It voted to\u2026"), true);
+  assert.equal(endsMidSentence("The council met on Tuesday. It voted to..."), true);
+  const out = stripBoilerplate("The council met on Tuesday. It voted to\u2026");
+  assert.equal(out.text, "The council met on Tuesday.");
+}
+
+function testACompleteBodyIsUntouched() {
+  const body =
+    "Prosecutors indicted nine people on Monday.\n\n" +
+    "The servers contained B300 units, which are banned from sale to China.";
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body);
+}
+
+function testASentenceClosedInsideAQuotationIsComplete() {
+  // The near-miss this rule must not fire on: the body ends properly, but the
+  // last character is a quotation mark rather than the full stop.
+  const body = "Barrack called it \u201can unnecessary escalation that does not help.\u201d";
+  assert.equal(endsMidSentence(body), false);
+  assert.equal(stripBoilerplate(body).text, body);
+  assert.equal(endsMidSentence("She said the plan was \u201cdead on arrival.\u201d"), false);
+}
+
+function testTerminalPunctuationOutsideEnglishCounts() {
+  // The paper carries Korean, Chinese and Japanese items; a full-width stop ends
+  // a sentence exactly as a period does.
+  assert.equal(endsMidSentence("\ud68c\uc758\uac00 \uc5f4\ub838\ub2e4\u3002"), false);
+  assert.equal(endsMidSentence("\u4f1a\u8b70\u304c\u958b\u304b\u308c\u305f\u3002"), false);
+}
+
+function testABodyWithNoFinishedSentenceIsLeftAlone() {
+  // Nothing to trim back to. Emptying it would destroy the only material there
+  // is; materialLevelOf and isHeadlineEcho judge it on its length instead.
+  const body = "Council weighs new rules on short-term rentals in the historic district";
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body);
+}
+
+function testFeedFooterFurnitureDoesNotMakeAnArticleLookTruncated() {
+  // The correction the source audit forced. Ars Technica closes every feed body
+  // with "Read full article" / "Comments" — 92 of its 92 long bodies over the
+  // 14-day window — and the Guardian with "Continue reading...". Judged raw,
+  // none of them ends on terminal punctuation and all of them read as
+  // truncated; judged after furniture removal, they are complete articles.
+  // Across twelve outlets that are already 100% usable that was 611 fetch
+  // requests we would have paid for and thrown away.
+  const article =
+    "The commission voted on Tuesday to open the proceeding.\n\n" +
+    "Regulators said the review would take up to a year.";
+  for (const footer of ["Read full article", "Comments", "Continue reading..."]) {
+    const out = stripBoilerplate(`${article}\n\n${footer}`);
+    assert.equal(out.endedMidSentence, false, footer);
+    assert.equal(out.truncatedTail, false, footer);
+    assert.equal(out.text, article, footer);
+  }
+  // And the raw body genuinely does look truncated, which is the whole point:
+  // the check has to run downstream of the strip.
+  assert.equal(endsMidSentence(`${article}\n\nRead full article`), true);
+}
+
+function testARealTruncationSurvivesFurnitureRemoval() {
+  const out = stripBoilerplate(`${LANACION_TEASER}\n\nContinue reading...`);
+  assert.equal(out.endedMidSentence, true);
+  assert.equal(out.truncatedTail, true);
+  assert.ok(!out.text.includes("we also have people from"));
+}
+
+function testAStructurelessBodyIsStillReportedIncomplete() {
+  // trimTruncatedTail declines to cut here — the last finished sentence is in
+  // the first half — but the body is incomplete all the same, and that is the
+  // strongest reason to go and fetch the real article. The two flags differ on
+  // purpose.
+  const body = "Overview. " + "Names and figures without punctuation ".repeat(12);
+  const out = stripBoilerplate(body);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.endedMidSentence, true);
+}
+
+function testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured() {
+  // A body whose last finished sentence sits near its start is not prose with a
+  // broken tail — it is a caption run or an extraction with no sentence
+  // structure. Cutting back to that first full stop throws away nearly
+  // everything to fix nothing, so the body is left whole. Same guard, and the
+  // same reason, as trimToBoundary's.
+  const body = "Overview. " + "Names and figures without punctuation ".repeat(12);
+  const out = stripBoilerplate(body);
+  assert.equal(endsMidSentence(body), true);
+  assert.equal(out.truncatedTail, false);
+  assert.equal(out.text, body.trimEnd());
+}
+
+function testFurnitureIsRemovedBeforeTheTailIsJudged() {
+  // The trim must see the body the writer would read. A tail marker can leave a
+  // different final sentence than the raw document had.
+  const body =
+    "The commission voted on Tuesday to open the proceeding.\n\n" +
+    "READ ALSO\n\n" +
+    "Some other headline that trails off";
+  const out = stripBoilerplate(body);
+  assert.equal(out.text, "The commission voted on Tuesday to open the proceeding.");
+  assert.equal(out.truncatedTail, false);
+}
+
+function testAnAggregatorStubIsAnEchoWhenTheSuffixesDisagree() {
+  // The gap the source audit found. title.ts strips a trailing bare *domain*
+  // and nothing else — run #112 needed "… Goes Rogue? - Willamette Week" to
+  // keep its suffix — so a Google News title reaches here ending "- AP News"
+  // while its body ends "- apnews.com". The two normalized to different
+  // strings, startsWith failed, and the stub was admitted to the packet as a
+  // source. 99 of 106 Google News members over the 14-day window did this.
+  assert.equal(
+    isHeadlineEcho(
+      "Wife of active-duty Army sergeant is deported to Honduras - AP News",
+      "Wife of active-duty Army sergeant is deported to Honduras - apnews.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isHeadlineEcho(
+      "DOGE tech employees resigned after refusing to comply with Musk - Mashable",
+      "DOGE tech employees resigned after refusing to comply with Musk - mashable.com",
+    ),
+    true,
+  );
+}
+
+function testASourceWithRealReportingIsNotAnEchoHoweverItIsAttributed() {
+  // The near-miss. A body that opens with its own headline and then reports is
+  // the ordinary shape of an article, and the length test is what separates it
+  // from a stub. Widening the suffix strip must not touch that.
+  assert.equal(
+    isHeadlineEcho(
+      "Wife of active-duty Army sergeant is deported to Honduras - AP News",
+      "Wife of active-duty Army sergeant is deported to Honduras. Her husband, who " +
+        "has served eleven years, said he learned of the removal from a neighbour.",
+    ),
+    false,
+  );
+  // A headline whose own last clause follows a dash still matches its article.
+  assert.equal(
+    isHeadlineEcho(
+      "The plan is dead - officials say",
+      "The plan is dead, officials say. The vote was postponed indefinitely after " +
+        "three members withdrew their support on Tuesday afternoon.",
+    ),
+    false,
+  );
+}
+
+function testApUnrenderedTimestampIsStrippedFromTheHeadOfTheLine() {
+  // AP renders its timestamp client-side and ships the placeholders in the HTML,
+  // so the dateline and the first sentence arrive behind seventy characters of
+  // broken template. Five of twelve pages sampled on 2026-08-27 carried it.
+  const ap =
+    "Updated [hour]:[minute] [AMPM] [timezone], [monthFull] [day], [year] " +
+    "BUÑOL, Spain (AP) — Thousands pelted one another with tomatoes on Wednesday.";
+  const out = stripBoilerplate(ap);
+  assert.equal(
+    out.text,
+    "BUÑOL, Spain (AP) — Thousands pelted one another with tomatoes on Wednesday.",
+  );
+
+  // The newsletter shape says "Published", and a byline may come first. Only
+  // the placeholder run goes: the byline is real attribution.
+  const wire =
+    "By THE ASSOCIATED PRESS Updated [hour]:[minute] [AMPM] [timezone], " +
+    "[monthFull] [day], [year] All Times EDT Thursday, Aug. 27.";
+  assert.equal(
+    stripBoilerplate(wire).text,
+    "By THE ASSOCIATED PRESS All Times EDT Thursday, Aug. 27.",
+  );
+
+  const newsletter =
+    "Published [hour]:[minute] [AMPM] [timezone], [monthFull] [day], [year] " +
+    "This is our flagship newsletter Morning Wire.";
+  assert.equal(
+    stripBoilerplate(newsletter).text,
+    "This is our flagship newsletter Morning Wire.",
+  );
+}
+
+function testBracketedProseIsNotMistakenForATemplate() {
+  // An editorial insertion in a quotation is bracketed too, and it is prose.
+  const quote =
+    'Updated guidance says the agency "will review [the] matter," a spokesperson said.';
+  assert.equal(stripBoilerplate(quote).text, quote);
+
+  // Two placeholders is not the pattern; the rule wants a run of three.
+  const partial = "Updated [hour]:[minute] on the record, the mayor said.";
+  assert.equal(stripBoilerplate(partial).text, partial);
+}
+
+
 testCascadePbsHousePromoIsRemoved();
 testAnArticleAboutWritersSurvives();
 testAParagraphRepeatedInsideOneDocumentIsDropped();
 testDistinctParagraphsAreAllKept();
+testATeaserThatStopsMidClauseIsDetected();
+testTheDanglingClauseIsCutBackToTheLastFinishedSentence();
+testAnEllipsisIsATruncationMarkerNotAnEnding();
+testACompleteBodyIsUntouched();
+testASentenceClosedInsideAQuotationIsComplete();
+testTerminalPunctuationOutsideEnglishCounts();
+testABodyWithNoFinishedSentenceIsLeftAlone();
+testFeedFooterFurnitureDoesNotMakeAnArticleLookTruncated();
+testARealTruncationSurvivesFurnitureRemoval();
+testAStructurelessBodyIsStillReportedIncomplete();
+testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured();
+testFurnitureIsRemovedBeforeTheTailIsJudged();
+testApUnrenderedTimestampIsStrippedFromTheHeadOfTheLine();
+testBracketedProseIsNotMistakenForATemplate();
 
 console.log("writer boilerplate tests passed");

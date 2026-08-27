@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import pLimit from "p-limit";
+import { scoreBatches } from "../src/pipeline/editor-pass-1/index.js";
+import type { EditorPass1BatchItem } from "../src/pipeline/editor-pass-1/prompt.js";
 import { parseBatchOutput } from "../src/pipeline/editor-pass-1/index.js";
 
 function testTwoAxisFormatParsesAndSums() {
@@ -27,16 +30,23 @@ function testTwoAxisFormatParsesAndSums() {
       consequence: 35,
       reason: "Reason keeps ;; internal delimiter intact",
     },
+    // **An unscored row scores 0, not 50.** 50 is a fabricated judgment in the
+    // middle of the range, so it competed with real ones: run #42's pile cutoff
+    // was 54 and four unscored clusters fell below it, while run #40's was 49
+    // and an unscored row reached the paper. Whether an unjudged item was
+    // published turned on where the day's cutoff happened to land. 0 says what
+    // is true — no judgment — and the pile takes it only if it is short of
+    // judged candidates.
     {
       id: 103,
-      score: 50,
+      score: 0,
       interest: null,
       consequence: null,
       reason: "fail-safe: missing/invalid line",
     },
     {
       id: 104,
-      score: 50,
+      score: 0,
       interest: null,
       consequence: null,
       reason: "fail-safe: missing/invalid line",
@@ -89,7 +99,7 @@ function testOldThreeFieldFormatFailsSafeRatherThanMisparsing() {
   if (parsed === null) throw new Error("expected line parse result");
   assert.equal(parsed.parsedLineCount, 0);
   assert.equal(parsed.failSafeCount, 1);
-  assert.equal(parsed.results[0]!.score, 50);
+  assert.equal(parsed.results[0]!.score, 0);
   assert.equal(parsed.results[0]!.interest, null);
 }
 
@@ -110,4 +120,172 @@ const tests = [
 ];
 
 for (const t of tests) t();
+function testAnUnscoredRowCannotOutrankAScoredOne() {
+  // The whole point of the change. Whatever the fail-safe value is, it must lose
+  // to every real judgment, so an unjudged row can never displace a judged one
+  // from the pile. The 0-50 axis floor means the lowest genuine score is 0 too,
+  // so this asserts "not greater", which is what the pile ordering needs.
+  const parsed = parseBatchOutput("101;;0;;0;;A genuinely dull item", [101, 102]);
+  assert.ok(parsed !== null);
+  const scored = parsed.results.find((r) => r.id === 101)!;
+  const unscored = parsed.results.find((r) => r.id === 102)!;
+  assert.equal(unscored.interest, null, "an unscored row has no axes");
+  assert.ok(
+    unscored.score <= scored.score,
+    `unscored ${unscored.score} must not outrank the lowest real score ${scored.score}`,
+  );
+}
+
+testAnUnscoredRowCannotOutrankAScoredOne();
+
+
+// --- the straggler re-ask ---
+//
+// Run #42: one 429 on the first and only attempt defaulted a batch of 40 items
+// to a fabricated score, because this stage — batched, concurrent, at the
+// highest concurrency in the pipeline — never imported callWithBackoff at all.
+// Batches that still fail after retries are now re-asked once, sequentially.
+
+const item = (id: number): EditorPass1BatchItem => ({
+  id,
+  source: "Src",
+  type: "journalism",
+  title: `Title ${id}`,
+  body_excerpt: "body",
+});
+const scored = (ids: number[]) =>
+  ids.map((id) => ({ id, score: 70, interest: 35, consequence: 35, reason: "ok" }));
+const failsafed = (ids: number[]) =>
+  ids.map((id) => ({ id, score: 0, interest: null, consequence: null, reason: "fail-safe" }));
+
+async function testEveryItemComesBackInBatchOrder() {
+  // Results are matched to items downstream, so a reordering here would attach
+  // scores to the wrong stories — silently, and with no way to notice.
+  const batches = [[item(1), item(2)], [item(3)], [item(4), item(5)]];
+  const out = await scoreBatches(
+    batches,
+    pLimit(3),
+    async (batch) => ({ results: scored(batch.map((i) => i.id)), failed: false }),
+    10,
+  );
+  assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3, 4, 5]);
+  assert.equal(out.unscored, 0);
+}
+
+async function testAFailedBatchIsReAskedAndItsRetryWins() {
+  const batches = [[item(1)], [item(2)], [item(3)]];
+  const seen: string[] = [];
+  const out = await scoreBatches(
+    batches,
+    pLimit(3),
+    async (batch, idx, _count, label) => {
+      seen.push(`${idx}${label}`);
+      // Batch 1 fails the first time and answers on the re-ask.
+      if (idx === 1 && label === "") return { results: failsafed([2]), failed: true };
+      return { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
+  );
+  assert.ok(seen.some((c) => c.endsWith(" [straggler]")), "the unscored item was re-asked");
+  assert.equal(seen.filter((c) => c === "0").length, 1, "clean batches are not re-asked");
+  assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
+  assert.equal(out.results.find((r) => r.id === 2)!.score, 70, "the retry result replaced the fail-safe");
+  assert.equal(out.unscored, 0);
+}
+
+async function testAnItemThatFailsTwiceIsCountedUnscored() {
+  // Items 1 and 2 are unscoreable however they are asked; item 3 is fine.
+  const batches = [[item(1), item(2)], [item(3)]];
+  const out = await scoreBatches(
+    batches,
+    pLimit(2),
+    async (batch) => {
+      const doomed = batch.some((i) => i.id === 1 || i.id === 2);
+      return doomed
+        ? { results: failsafed(batch.map((i) => i.id)), failed: true }
+        : { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
+  );
+  assert.equal(out.unscored, 2, "both unscoreable items are counted");
+  assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
+  // They are still present, carrying the fail-safe, rather than vanishing.
+  assert.equal(out.results.find((r) => r.id === 1)!.interest, null);
+  assert.equal(out.results.find((r) => r.id === 3)!.score, 70);
+}
+
+async function testASucceedingBatchWithOneMissingLineIsReAsked() {
+  // **The case a whole-batch straggler would miss**, and the commonest one. The
+  // call succeeds and parses 39 of 40; the batch reports success and one item is
+  // silently defaulted. Run #39's batch 7 of 8 did exactly this.
+  const batches = [[item(1), item(2), item(3)]];
+  let stragglerItems: number[] = [];
+  const out = await scoreBatches(
+    batches,
+    pLimit(1),
+    async (batch, _idx, _count, label) => {
+      if (label === "") {
+        // The model answers for 1 and 3 and simply omits 2. Batch: not failed.
+        return {
+          results: [...scored([1]), ...failsafed([2]), ...scored([3])],
+          failed: false,
+        };
+      }
+      stragglerItems = batch.map((i) => i.id);
+      return { results: scored(batch.map((i) => i.id)), failed: false };
+    },
+    10,
+  );
+  assert.deepEqual(stragglerItems, [2], "only the missing item was re-asked");
+  assert.equal(out.unscored, 0);
+  assert.equal(out.results.find((r) => r.id === 2)!.score, 70);
+  assert.deepEqual(out.results.map((r) => r.id), [1, 2, 3]);
+}
+
+async function testAFailedStragglerDoesNotOverwriteWithAnotherFailSafe() {
+  // A straggler that fails again must not replace one fail-safe reason with
+  // another and look like progress.
+  const batches = [[item(1)]];
+  const out = await scoreBatches(
+    batches,
+    pLimit(1),
+    async (batch, _idx, _count, label) => ({
+      results: batch.map((i) => ({
+        id: i.id,
+        score: 0,
+        interest: null,
+        consequence: null,
+        reason: label === "" ? "fail-safe: LLM error" : "fail-safe: second failure",
+      })),
+      failed: true,
+    }),
+    10,
+  );
+  assert.equal(out.unscored, 1);
+  assert.equal(out.results[0]!.reason, "fail-safe: LLM error");
+}
+
+async function testNoBatchesIsNotAnError() {
+  const out = await scoreBatches([], pLimit(1), async () => ({ results: [], failed: false }), 10);
+  assert.deepEqual(out.results, []);
+  assert.equal(out.unscored, 0);
+}
+
+async function runStragglerTests() {
+  await testEveryItemComesBackInBatchOrder();
+  await testAFailedBatchIsReAskedAndItsRetryWins();
+  await testAnItemThatFailsTwiceIsCountedUnscored();
+  await testASucceedingBatchWithOneMissingLineIsReAsked();
+  await testAFailedStragglerDoesNotOverwriteWithAnotherFailSafe();
+  await testNoBatchesIsNotAnError();
+}
+
 console.log("editor-pass-1 parser tests passed");
+
+// tsx runs tests under the CJS output format, which rejects top-level await.
+runStragglerTests()
+  .then(() => console.log("editor pass 1 straggler tests passed"))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

@@ -81,6 +81,28 @@ function buildAutoCluster(groupItems: PreprocessedItemRow[]): Cluster {
 // Cascade: one bounded re-pass of Phase A restricted to clusters that grew in Phase A
 //   or were newly formed in Phase B. No further cascade.
 
+/**
+ * Records whether a unit's attach judgment survived the pass.
+ *
+ * A unit is one cluster (Phase A) or one proto-group (Phase B), and its
+ * candidates are split across chunks. **If any chunk failed, the unit is lost**
+ * — the candidates in that chunk were never judged, and a sibling chunk
+ * answering says nothing about them. The first version of this cleared the flag
+ * on each chunk success, so a two-chunk cluster that lost its first call and
+ * answered its second looked clean while half its candidates had gone unseen.
+ *
+ * Clearing first is what makes the straggler re-ask work: it re-runs every chunk
+ * of the unit, so a clean second pass legitimately un-marks it.
+ */
+export function trackAttachLoss(
+  lost: Set<number>,
+  unitIdx: number,
+  chunkFailures: boolean[],
+): void {
+  lost.delete(unitIdx);
+  if (chunkFailures.some((failed) => failed)) lost.add(unitIdx);
+}
+
 const ATTACH_CHUNK_SIZE = 40;
 
 // Returns IDs of singletons within candidate_floor of any member of the cluster,
@@ -290,6 +312,8 @@ interface AttachPassResult {
   phaseBCalls: number;
   totalCalls: number;
   failedCalls: number;
+  /** Judgments still missing after the straggler re-ask. This is the degradation. */
+  unrecovered: number;
   attached: number;
   newClusters: number;
   inputTokens: number | null;
@@ -313,6 +337,7 @@ async function attachSingletons(
       phaseBCalls: 0,
       totalCalls: 0,
       failedCalls: 0,
+      unrecovered: 0,
       attached: 0,
       newClusters: 0,
       inputTokens: 0,
@@ -327,6 +352,15 @@ async function attachSingletons(
   let phaseACalls = 0;
   let phaseBCalls = 0;
   let failedCalls = 0;
+  // **Which judgments were lost, not just how many.**
+  //
+  // `failedCalls` has been counted since run #34 so the summary can say the run
+  // is degraded, and that is what let run #56 be caught — but a count cannot be
+  // acted on. These say *where*, so the straggler pass can go back for them.
+  // Removing an entry on a later success is deliberate: a cluster whose retried
+  // chunk answered is no longer lost.
+  const lostPhaseAClusters = new Set<number>();
+  const lostPhaseBGroups = new Set<number>();
   let totalAttached = 0;
   let totalNewClusters = 0;
   let totalInputTokens: number | null = 0;
@@ -370,7 +404,7 @@ async function attachSingletons(
     systemPrompt: string,
     userPrompt: string,
     chunkIds: number[],
-  ): Promise<Set<number>> {
+  ): Promise<{ confirmed: Set<number>; failed: boolean }> {
     if (phase === "A") phaseACalls++;
     else phaseBCalls++;
     try {
@@ -399,7 +433,7 @@ async function attachSingletons(
         const id = chunkIds[n - 1];
         if (id !== undefined) confirmedIds.add(id);
       }
-      return confirmedIds;
+      return { confirmed: confirmedIds, failed: false };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       failedCalls++;
@@ -407,7 +441,7 @@ async function attachSingletons(
         `[grouping] attach phase ${phase} ${label}: LLM call failed after retries ` +
           `— treating as "attach nothing", grouping is degraded: ${msg}`,
       );
-      return new Set();
+      return { confirmed: new Set(), failed: true };
     }
   }
 
@@ -423,12 +457,21 @@ async function attachSingletons(
       titleNormalizedVectors,
       config.candidate_floor,
     );
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) {
+      // **No candidates is not a lost judgment.** A cluster marked lost in Phase
+      // A can arrive here with nothing left to offer, because the cascade or
+      // Phase B attached those singletons elsewhere in the meantime. Returning
+      // early without clearing the flag left it counted as unrecovered forever,
+      // so a run reported degraded grouping when there was nothing left to ask.
+      trackAttachLoss(lostPhaseAClusters, clusterIdx, []);
+      return null;
+    }
 
     const chunks = chunkArray(candidates, ATTACH_CHUNK_SIZE);
     const confirmedIds = new Set<number>();
+    const outcomes: boolean[] = [];
     for (const chunk of chunks) {
-      const chunkConfirmed = await callAttachChunk(
+      const chunkResult = await callAttachChunk(
         "A",
         `cluster[${clusterIdx}]`,
         buildPhaseASystemPrompt(),
@@ -438,8 +481,10 @@ async function attachSingletons(
         ),
         chunk,
       );
-      for (const id of chunkConfirmed) confirmedIds.add(id);
+      outcomes.push(chunkResult.failed);
+      for (const id of chunkResult.confirmed) confirmedIds.add(id);
     }
+    trackAttachLoss(lostPhaseAClusters, clusterIdx, outcomes);
     return confirmedIds.size > 0 ? { clusterIdx, confirmedIds } : null;
   }
 
@@ -493,22 +538,35 @@ async function attachSingletons(
   );
 
   type PhaseBEntry = Set<number> | null;
+
+  // Extracted so the straggler pass can re-run one proto-group by index. It
+  // reads live state and returns a verdict without mutating anything, so
+  // running it twice is safe — the same property that lets the cascade re-run
+  // Phase A.
+  async function evalProtoGroup(groupIdx: number): Promise<PhaseBEntry> {
+    const group = protoGroups[groupIdx]!;
+    const chunks = chunkArray(group, ATTACH_CHUNK_SIZE);
+    const confirmedIds = new Set<number>();
+    const outcomes: boolean[] = [];
+    for (const chunk of chunks) {
+      const chunkResult = await callAttachChunk(
+        "B",
+        `proto-group[${group[0]}]`,
+        buildPhaseBSystemPrompt(),
+        buildPhaseBUserPrompt(formatNumberedCandidateBlocks(chunk, itemById)),
+        chunk,
+      );
+      outcomes.push(chunkResult.failed);
+      for (const id of chunkResult.confirmed) confirmedIds.add(id);
+    }
+    trackAttachLoss(lostPhaseBGroups, groupIdx, outcomes);
+    return confirmedIds.size >= 2 ? confirmedIds : null;
+  }
+
   const phaseBEntries = (await Promise.all(
-    protoGroups.map((group) =>
+    protoGroups.map((_group, groupIdx) =>
       limit(async (): Promise<PhaseBEntry> => {
-        const chunks = chunkArray(group, ATTACH_CHUNK_SIZE);
-        const confirmedIds = new Set<number>();
-        for (const chunk of chunks) {
-          const chunkConfirmed = await callAttachChunk(
-            "B",
-            `proto-group[${group[0]}]`,
-            buildPhaseBSystemPrompt(),
-            buildPhaseBUserPrompt(formatNumberedCandidateBlocks(chunk, itemById)),
-            chunk,
-          );
-          for (const id of chunkConfirmed) confirmedIds.add(id);
-        }
-        return confirmedIds.size >= 2 ? confirmedIds : null;
+        return evalProtoGroup(groupIdx);
       }),
     ),
   )) as Array<PhaseBEntry>;
@@ -549,17 +607,84 @@ async function attachSingletons(
     );
   }
 
+  // --- Stragglers: one sequential re-ask for the judgments the storm lost ---
+  //
+  // **A call lost to congestion is not the same as a call that is too slow.**
+  // `callWithBackoff` deliberately does not retry timeouts, on the reasoning
+  // that a call which ran to its ceiling will do it again — right for a
+  // genuinely slow call, wrong for one that spent its budget queued behind a
+  // rate-limit storm. Run #56 is the case: 158 provider attempts for 133
+  // successes, 24 of the failures recoverable 429s and one a 300,006 ms
+  // timeout, on a news lane that had just grown 42% (483 kept-news to 686).
+  // The corpus outgrew the concurrency budget and one judgment was lost for it.
+  //
+  // So the re-ask runs **after** the concurrent phases, one call at a time.
+  // That is a different regime, not a repeat of the same one: nothing else is
+  // in flight, so the pressure that caused the loss is gone. It is the writers'
+  // straggler pattern — a brief missing from a batch gets one follow-up call —
+  // applied to the stage where a lost call is silent rather than visible.
+  //
+  // Bounded at one pass. If a call fails here too, `failedCalls` still says so
+  // and the warning below still fires; this makes a lost judgment recoverable,
+  // it does not promise recovery.
+  const stragglerClusters = [...lostPhaseAClusters];
+  const stragglerGroups = [...lostPhaseBGroups];
+  if (stragglerClusters.length > 0 || stragglerGroups.length > 0) {
+    const before = failedCalls;
+    console.log(
+      `[grouping] attach stragglers: re-asking ${stragglerClusters.length} cluster(s) ` +
+        `and ${stragglerGroups.length} proto-group(s) sequentially`,
+    );
+
+    const recoveredMap = new Map<number, Set<number>>();
+    for (const clusterIdx of stragglerClusters) {
+      const entry = await evalCluster(clusterIdx);
+      if (entry) recoveredMap.set(entry.clusterIdx, entry.confirmedIds);
+    }
+    if (recoveredMap.size > 0) applyPhaseAResults(recoveredMap);
+
+    for (const groupIdx of stragglerGroups) {
+      const confirmedIds = await evalProtoGroup(groupIdx);
+      if (!confirmedIds) continue;
+      const members = [...confirmedIds].filter((id) => remainingSingletonIds.has(id));
+      if (members.length < 2) continue;
+      const groupItems = members
+        .map((id) => itemById.get(id))
+        .filter((i): i is PreprocessedItemRow => i !== undefined);
+      currentClusters.push(buildAutoCluster(groupItems));
+      for (const id of members) remainingSingletonIds.delete(id);
+      totalNewClusters++;
+    }
+
+    const stillLost = lostPhaseAClusters.size + lostPhaseBGroups.size;
+    console.log(
+      `[grouping] attach stragglers: ${failedCalls - before} call(s) failed again, ` +
+        `${stillLost} judgment(s) still lost, attached=${totalAttached}`,
+    );
+  }
+
   const totalCalls = phaseACalls + phaseBCalls;
   console.log(
     `[grouping] attach: phase_a_calls=${phaseACalls}, phase_b_calls=${phaseBCalls}, ` +
       `total_calls=${totalCalls}, failed_calls=${failedCalls}`,
   );
-  if (failedCalls > 0) {
+  // **The warning fires on judgments still lost, not on calls that failed.**
+  // A call that failed in the storm and answered in the straggler pass cost
+  // time and nothing else, and warning about it would train the reader to
+  // ignore the line that matters.
+  const unrecovered = lostPhaseAClusters.size + lostPhaseBGroups.size;
+  if (unrecovered > 0) {
     console.warn(
-      `[grouping] WARNING: ${failedCalls}/${totalCalls} attach call(s) failed after ` +
-        `retries. Those clusters were not offered their candidates, so the cluster/` +
-        `singleton split below understates real grouping. Re-run before tuning ` +
-        `similarity_threshold or judging cluster quality.`,
+      `[grouping] WARNING: ${unrecovered} attach judgment(s) lost — ` +
+        `${failedCalls}/${totalCalls} call(s) failed and the straggler re-ask did ` +
+        `not recover them. Those clusters were not offered their candidates, so ` +
+        `the cluster/singleton split below understates real grouping. Re-run ` +
+        `before tuning similarity_threshold or judging cluster quality.`,
+    );
+  } else if (failedCalls > 0) {
+    console.log(
+      `[grouping] ${failedCalls} attach call(s) failed in the concurrent phases ` +
+        `and were recovered by the straggler re-ask. Grouping is not degraded.`,
     );
   }
 
@@ -570,6 +695,7 @@ async function attachSingletons(
     phaseBCalls,
     totalCalls,
     failedCalls,
+    unrecovered,
     attached: totalAttached,
     newClusters: totalNewClusters,
     inputTokens: totalInputTokens,
@@ -1469,6 +1595,7 @@ export async function runGrouping(
     const runStats: {
       attachCalls: number | null;
       attachFailedCalls: number | null;
+      attachUnrecovered: number | null;
       splitExamined: number | null;
       splitSuspect: number | null;
       splitCalls: number | null;
@@ -1483,6 +1610,7 @@ export async function runGrouping(
     } = {
       attachCalls: null,
       attachFailedCalls: null,
+      attachUnrecovered: null,
       describeFlagged: null,
       resplitCalls: null,
       resplitFailedCalls: null,
@@ -1565,6 +1693,7 @@ export async function runGrouping(
       remainingSingletonIds = attachResult.remainingSingletonIds;
       runStats.attachCalls = attachResult.totalCalls;
       runStats.attachFailedCalls = attachResult.failedCalls;
+      runStats.attachUnrecovered = attachResult.unrecovered;
       accumulateTokens(
         attachResult.inputTokens,
         attachResult.outputTokens,
@@ -1664,6 +1793,7 @@ export async function runGrouping(
            singleton_count         = $7,
            attach_calls            = $8,
            attach_failed_calls     = $9,
+           attach_unrecovered      = $22,
            split_examined          = $10,
            split_suspect           = $11,
            split_calls             = $12,
@@ -1698,6 +1828,7 @@ export async function runGrouping(
         runStats.resplitClustersSplit,
         runStats.resplitFreedSingletons,
         runId,
+        runStats.attachUnrecovered,
       ],
     );
 
@@ -1705,6 +1836,7 @@ export async function runGrouping(
       `[grouping] run #${runId} complete: ${finalClusters.length} clusters, ` +
         `${remainingSingletonIds.size} singletons, duration=${totalDurationMs}ms, ` +
         `attach_failed_calls=${runStats.attachFailedCalls ?? "n/a"}, ` +
+        `attach_unrecovered=${runStats.attachUnrecovered ?? "n/a"}, ` +
         `split_failed_calls=${runStats.splitFailedCalls ?? "n/a"}`,
     );
 

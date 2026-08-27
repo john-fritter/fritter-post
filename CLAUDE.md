@@ -126,6 +126,20 @@ lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
 serve the same feed to any browser. 404/410/5xx are never retried: those mean
 the feed is actually gone or broken, and a second request buys nothing.
 
+**A sitemap is a feed when a publisher serves no feed.** `format: news-sitemap`
+on a source reads a Google News sitemap instead of RSS — same transport, same
+identity rule, different parse. It exists for AP, which serves no RSS
+(`Disallow: /*.rss`) and whose Google News proxy yields interstitials: 52 real
+links, three resolution strategies, **zero** publisher URLs recovered. AP's own
+robots.txt declares `news-sitemap-content.xml` — 529 entries, 518 of them
+`/article/`, and 15 of 15 sampled pages cleared 800 characters through the real
+path. A sitemap carries **no body**, so these items reach the prefilter, grouping
+and scoring on their titles alone and get their text from the fetch stage;
+that is not a regression from a headline echo, but it is the property to watch.
+`max_age_hours` windows the collection because a sitemap does not window itself
+(AP's spans ~28 hours against a daily collector), and `exclude_paths` carries the
+publisher's own robots.txt disallows so the rule is followed rather than noted.
+
 **Parse failures log their neighbourhood.** A malformed feed throws a sax error
 naming a line and column but not the markup, and by the time anyone reads the
 log the feed body is gone. `parseFeedText` prints the surrounding lines before
@@ -238,11 +252,32 @@ report regenerated from the database can judge a run without the console log:
 `split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
 `split_components_split` / `split_freed_singletons`, and (migration 038)
 `describe_flagged` / `resplit_calls` / `resplit_failed_calls` /
-`resplit_clusters_split` / `resplit_freed_singletons`.
+`resplit_clusters_split` / `resplit_freed_singletons`, and (migration 039)
+`attach_unrecovered`.
 
-**If `attach_failed_calls` is non-zero, the cluster/singleton split understates
-real grouping and the run must not be used to judge cluster quality or tune
-`similarity_threshold`.** If `split_failed_calls` is non-zero, those components
+**A lost attach judgment is now recoverable, and `attach_unrecovered` is the one
+to read.** The concurrent phases are followed by one **sequential straggler
+re-ask** for every cluster and proto-group that lost a call. A call lost to
+congestion is not the same as a call that is too slow: `callWithBackoff`
+deliberately does not retry timeouts, which is right for a genuinely slow call
+and wrong for one that spent its budget queued behind a rate-limit storm. Run #56
+was the second kind — 158 provider attempts for 133 successes, 24 recoverable
+429s and one 300,006 ms timeout, on a news lane that had just grown 42% (483
+kept-news to 686) when AP switched to its sitemap. The corpus outgrew the
+concurrency budget and one judgment went with it. The re-ask runs after
+everything else, one call at a time, so it is a different regime rather than a
+repeat of the same one — the writers' straggler pattern, applied where a lost
+call is silent instead of visible.
+
+So the two counts diverge, and only one of them is a defect:
+`attach_failed_calls` counts provider calls that failed, which costs time and
+tokens; **`attach_unrecovered` (migration 039) counts judgments still missing
+after the re-ask, and a non-zero value means the cluster/singleton split
+understates real grouping and the run must not be used to judge cluster quality
+or tune `similarity_threshold`.** NULL means a run before 039, where
+`attach_failed_calls` carried that meaning. A unit is lost if **any** of its
+chunks failed — chunks partition its candidates, so a sibling chunk answering
+says nothing about the ones that went unseen. If `split_failed_calls` is non-zero, those components
 were left intact and may still be over-merged. NULL means the pass didn't run,
 which is not the same as zero.
 
@@ -254,6 +289,32 @@ higher = fewer, tighter groups; lower = more, looser groups.
 Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
 (the directory keeps the historical name; the `editor_pass_1.*` config block
 supplies its model and prompt). Two functions:
+
+**A batch that fails is re-asked, and an unscored row scores 0.** This stage is
+batched and concurrent at `concurrency: 10`, the highest in the pipeline, and
+until 2026-08-26 it was the one place the "any new batched, concurrent stage
+needs `callWithBackoff`" rule was never applied — the wrapper was not even
+imported, so a single 429 on the first and only attempt defaulted a whole batch
+of 40 items. Failed batches now retry under backoff, and then **every item that came back
+unscored** — not every failed batch — is re-asked sequentially in chunks of
+`straggler_batch_size`.
+
+**The item, not the call, is the unit**, because the commonest fail-safe does not
+fail the call. Three paths leave an item unscored: `LLM error` and `batch parse
+error` fail the batch, and `missing/invalid line` does not — the call *succeeds*
+and the model simply omits a line. Run #39's batch 7 of 8 parsed 39 of 40, so one
+item entered the pile competition unjudged inside an otherwise clean run, and any
+of those 40 could have been the day's biggest story. Every fail-safe path leaves
+`interest` null, which is what makes that the reliable marker to re-ask on.
+**`FAIL_SAFE_SCORE` is 0, not 50**: 50 sits mid-range and therefore *competed*,
+so whether an unjudged item reached the reader turned on where the day's pile
+cutoff happened to land — run #42's was 54 and four unscored clusters fell below
+it, run #40's was 49 and one was published. 0 says what is true, and the pile
+takes an unscored row only if it is short of judged candidates. Not excluded
+outright, because that is right in normal operation and catastrophic during a
+provider outage; 0 gets the first without buying the second. Unscored rows carry
+a null `interest` axis, so `interest IS NULL` finds them, and the stage warns
+with a count.
 
 `runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
 clusters and singletons on the same scale. **The model emits two axes, not one**
@@ -369,6 +430,20 @@ bio-aware call per tie group, run concurrently under
 `editor.tie_break.concurrency`. Reads `docs/bio.md`. Ties that the LLM
 doesn't resolve fall back to ref ordering.
 
+**It is batched and concurrent, so it runs under `callWithBackoff` — and for its
+whole life it did not.** Run #125 lost 12 of 25 tie groups to a single 429 each,
+with no retry, and ranked 60-odd items by ref order instead: alphabetical, and
+at a tier boundary that decides whether a story is a feature or a standard. The
+same run is its own control — grouping's attach pass met the identical 429 storm
+from the identical provider minutes earlier, retried, and finished with
+`attach_failed_calls=0`. The failure was also the quiet kind the rule exists for:
+the catch returns an empty rank map, which is exactly what a group the model
+declined to order returns, so the stage warned and reported success. Counts are
+persisted as `editor_runs.tie_break_calls` / `tie_break_failed_calls`
+(migration 040) and shown by `inspect editor --id`; NULL means a run before 040,
+where the console was the only record. A model that answers but omits refs gave
+a worse answer, not a lost call, and is not counted as a failure.
+
 Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
 and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
 `tests/editor-tie-break.test.ts`).
@@ -467,6 +542,31 @@ cascadepbs.org sources each had a 574-character extraction beat a ~390-character
 feed body and then strip down to 286, worse than the teaser it replaced and worse
 in a way the raw comparison could not see.
 
+**A long feed body is not a complete one.** `feed_chars_floor` reads a character
+count and calls it a finished article. La Nación publishes ~1,800-character
+teasers that stop mid-clause, well clear of the 800 floor, so run #43's rank 15
+(S62865) was never requested and its writer was handed a fragment that broke off
+inside a quotation — then wrote 180 words of real reporting and ended by
+narrating the break: "…we also have people from" — the source cuts off there.
+Nothing upstream could see it; every stage between the feed and the writer
+measured that body by its length and found it generous. `endsMidSentence` now
+overrides the length skip in `planFetch` — a body that stops mid-sentence is by
+definition not the whole article — **judged on the stripped body, never the raw
+one**: a feed whose last line is furniture (the Guardian's "Continue reading…",
+Ars Technica's "Read full article") has no terminal punctuation at the end of
+the raw text and is a complete article all the same, and testing before the
+strip flagged 611 such bodies across twelve outlets that are already 100%
+usable — and `stripBoilerplate` cuts a dangling tail
+back to the last finished sentence, so a fetch that fails anyway still cannot
+hand the writer half a quote. **This is `trimToBoundary`'s own rule** ("a writer
+quoting a half-sentence is a defect the assembler can prevent for free"), which
+only ever fired when the *budget* truncated a body — and the budget is inert
+while `total_chars` is null. The truncation that reached the paper was the
+publisher's. An ellipsis counts as truncation, not as an ending. The trim is
+skipped when the last finished sentence sits in the first half of the body:
+that is a caption run or a structureless extraction rather than prose with a
+broken tail, and the same proportional guard is why `trimToBoundary` has one.
+
 **`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
 Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
 "appeared first on" footer, a `READ ALSO` list or Le Monde's live-blog comment box
@@ -474,7 +574,17 @@ are not sentences. Rules are whole-paragraph, high-precision, and each names the
 run and source it came from; `tests/writer-boilerplate.test.ts` pins both the cut
 and the near-miss prose that must survive. Sources whose body only repeats the
 headline (`isHeadlineEcho` — the Google News shape) lose their packet slot, but a
-packet is never emptied.
+packet is never emptied. **The two ends of that check have to normalize the same
+attribution the same way**, and for a long time they did not: `title.ts` strips a
+trailing bare *domain* and nothing else — run #112 needed "… Goes Rogue? -
+Willamette Week" to keep its suffix — so a Google News title arrived ending
+"- AP News" while its body ended "- apnews.com", `startsWith` failed, and a stub
+that was nothing but its own headline was admitted as a source. The 14-day source
+audit found 99 of 106 Google News members contributing 64–140 characters of
+exactly that to writer prompts. `normalizeForCompare` now strips the domain form
+and a separator-plus-short-tail alike; it is a comparison normalization that
+never reaches the reader, and a body with real reporting still fails the length
+test.
 
 A packet records what it could not supply: `materialLevel` is judged against the
 tier's own thresholds — the same 1,000 characters is thin for a feature and
@@ -561,7 +671,19 @@ cannot draw on the same source — but that guarantees nothing about *content*: 
 live blog assigned to one member carries every other member's events, which is
 why `isLiveBlog` exists and why it accepts any separator after "EN DIRECT" (run
 #20's T1 lead was Le Monde's `EN DIRECT, guerre en Ukraine`, 45,000 characters of
-the whole war). The guarantee is the sibling list: the lead is told every piece
+the whole war). **It reads the URL as well as the title, and it drops rather than
+reorders** — both learned from run #44's rank 2. AP titles its rolling coverage
+exactly like an article ("Canada launches retaliatory tariffs on US goods") and
+declares it in the path instead, so title detection never saw it; and the rule
+had been *inert for two months*, because it worked by ranking live blogs last and
+letting `max_articles` cut them off, and every cap went null when sources were
+unrationed on 2026-08-19. A live blog now leaves the packet the way a headline
+echo does — its body is not reporting on *this* story — and like that rule it
+never empties a packet: the only source a story has is still its source. **That
+fallback keeps the longest article rather than the first**, which the rule always
+claimed ("if every article is a stub the best one stays") and `slice(0, 1)` never
+did; harmless while the filter only removed empties, and not harmless once live
+blogs joined it, since `selectArticles` orders them last. The guarantee is the sibling list: the lead is told every piece
 below it and a sidebar or line is told the lead plus the others. It used to name
 sidebars only, which cost nothing at three members and cost two duplicated
 paragraphs at eleven. Static text, not a call — writers still never see each
@@ -570,6 +692,39 @@ other's work.
 Sections make the paper longer than the editor's story count, so
 `applyPaperBudget` drops standalone pieces from the bottom of the rank order to
 compensate. Section pieces are never dropped and one standalone always survives.
+
+**Tier slots are assigned by material too — the section rule, one level up.**
+The editor tiers by rank position alone and its formula knows nothing about
+whether any text exists behind a story, so run #42 published 37 of 150 pieces on
+headline-only material, three of them features. Rank 7 ran one sentence and then,
+under a horizontal rule, a note to the operator ("That's all the source
+carries"); rank 18 was 24 words ending "the New York Times reports". Neither is a
+writing failure — both are writers obeying a headline-only packet's own ceiling
+inside a slot that promised four hundred words. **The pipeline knew before it
+made the call:** those two are `oregonlive.com` and `nytimes.com`, which the
+fetch cooldown had already given up on, and rank 62 was a Google News item that
+`sources.yaml` records as structurally unfetchable. Note that `opb.org` and
+`oregonlive.com` are both permanently in cooldown and both are the Oregon local
+beat — the front page is starved on precisely the subject the bio weights
+hardest.
+
+`resolveTiersByMaterial` runs between assembly and rendering. A story whose
+packet is headline-only *at the tier it holds* trades tiers with the
+nearest-ranked story below it that can fill the slot. `materialLevelAtTier` reads
+the level at the tier being asked about rather than the one assigned, which is
+what makes a demotion meaningful — 1,500 characters is headline-only for a
+feature and partial for a standard, so the demoted piece gets a band it can
+actually fill. **It swaps rather than demotes**, so the paper keeps 15 features on
+a day the local outlets block us instead of shrinking to 12, and the well-sourced
+standards just under the line get the treatment they can carry (run #42's ranks
+16 and 17 were fully-sourced pieces sitting below three stubs). Ranks and scores
+are never touched, so a story can sit high in the ranking and run short — the
+honest outcome when a story matters and the text is not there. The pass is
+top-down, so a story demoted out of feature is reconsidered at standard; when
+nothing below has material either, the slot is left alone. Threads participate,
+judged on their section lead. Config is `packet.tiers_requiring_material`
+(`[feature, standard]`); `brief` is deliberately absent because a brief is a
+pointer, and an empty list disables the rule.
 
 **A sidebar is never batched, and a brief-tier sidebar is budgeted as a sidebar.**
 Only `buildWriterUserPrompt` renders `sectionInstruction`, so a batched sidebar is
@@ -899,7 +1054,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **039**.
+number is ambiguous. The next migration is **041**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -925,6 +1080,18 @@ number is ambiguous. The next migration is **039**.
 - `npm run inspect -- preprocessor [--id <n>]`
 - `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
 - `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
+- `npm run inspect -- timing` — per-stage durations for the latest run of each
+  stage, the sum, the wall clock across the lineage, and how much of that was
+  spent **between** stages rather than inside them. Stages whose run predates the
+  newest by more than six hours are marked `[earlier lineage]` and excluded from
+  the sum and the wall clock: a replay from an existing preprocessor run reuses
+  its upstream stages, and counting their age as a gap made run #45's report
+  discard the output entirely. Every run table has written
+  `started_at` and `completed_at` since migration 002 and nothing read them back,
+  so "how long does the paper take" had no answer but whoever ran it saying
+  "about an hour" — which conflates the pipeline with the deploy, the audit and
+  the report around it. A stage that doubled in cost would be invisible until
+  someone noticed the wait
 - `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
   much body text each story's underlying articles carry, per tier, per source and
   per host, plus the fetch scope. Reports **feed body and after-fetch side by
@@ -932,11 +1099,50 @@ number is ambiguous. The next migration is **039**.
   the same run's fetch had taken body text from 33,903 to 405,351, and reading
   the feed column alone says the features were written from teasers
 - `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
-  packets: sizes for every story, or the full prompt for one
+  packets: sizes for every story, or the full prompt for one. Prints
+  **headline-only counts per tier**, any tier swaps `resolveTiersByMaterial`
+  made, and **why sources were left out of packets**, grouped by reason — the
+  per-story `omit` count has always been there and the reasons only ever printed
+  under `--rank`, so run #46's audit could not say whether AP's live page left
+  the packet because the live-blog rule fired or because its cache was empty. Run #42's audit could not state that 37 of its 150 pieces were
+  headline-only because the materials audit counts thin *articles*, which is a
+  different quantity from a thin *piece*; a non-zero count in a prominent tier
+  now means the day ran out of material to trade with, not a mis-assigned slot
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 
 **Experiments**
+- `npm run probe-source -- --robots <host>` — fetch a publisher's robots.txt and
+  probe every `Sitemap:` it declares, reporting which are **news sitemaps**
+  (they carry titles and publication dates, which is a feed in all but name).
+  **Start here rather than guessing paths**: robots.txt names the feeds. This is
+  the discovery mechanism for a source's endpoints, the same way `--probe` is for
+  embedding models, and for the same reason — `sources.yaml` records AP as having
+  no working feed on the strength of five URLs tried once, and that note is now
+  load-bearing for the paper's single largest contributor of material.
+- `npm run probe-source -- --feeds <host>` — battery of candidate feed and
+  sitemap paths, one at a time, honest UA first.
+- `npm run probe-source -- --sitemap <url> [--limit <n>]` — parse a news
+  sitemap, report its URL-shape mix, then run a sample through the **real
+  extractor** (`extractArticle` + `stripBoilerplate`) and report the characters a
+  writer packet would carry. A sitemap answers only half the question: it hands
+  over URLs and titles, and the text still has to come out of the page. Anything
+  that measures less than the real path measures a different pipeline than the
+  one that writes the paper.
+- `npm run probe-source -- --resolve <url>` /
+  `--resolve-source <name> [--limit <n>]` — resolve aggregator interstitials to
+  the publisher's article, reporting which strategy worked. Verifies by fetching
+  the destination and matching its title against the feed item's, and reports
+  "resolved but wrong" separately: the first version of this reported 52 of 52
+  AP links resolved when the true answer was zero, because every interstitial
+  embeds the publisher's logo on `googleusercontent.com` and the exclusion list
+  did not cover it. A probe that launders a guess into a finding is worse than no
+  probe. `--resolve-source`
+  pulls real links for a configured source out of `preprocessed_items`, so the
+  answer is a success rate over live data rather than one example. Strategies run
+  cheapest first: `decodeGoogleNewsToken` is offline and free, and if the feeds
+  still serve the older encoding then nothing else is needed and the resolution
+  belongs in the preprocessor beside the other redirector unwrapping.
 - `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
   determine which embedding models a provider actually serves, by making a
   one-text embedding call per candidate and reporting the returned dimension.

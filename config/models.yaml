@@ -168,6 +168,13 @@ editor:
     # the tie-break should end up ranking a handful of items, not most of the
     # paper.
     body_cap: 300
+    # The tie-break is batched and concurrent, so it runs under callWithBackoff.
+    # Run #125 lost 12 of 25 groups to single 429s with no retry, and ranked
+    # 60-odd items by ref order — alphabetical, and at a tier boundary that
+    # decides feature versus standard. Grouping's attach pass met the same storm
+    # from the same provider minutes earlier and finished with zero failures.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
 
 # Writers stage. The writer call itself is not built yet — the model id below is
 # still a placeholder — but the fetch sub-stage that feeds it is.
@@ -289,6 +296,25 @@ writers:
     # telling it not to is competing with the length target. Removing the
     # pressure is more reliable than instructing against it.
     headline_only_words: [25, 60]
+    # Tiers whose slot a headline-only story may not hold, most prominent first.
+    #
+    # The editor tiers by rank position alone, and its formula —
+    # relevance + source_weight*ln(sources) — cannot see whether any text exists
+    # behind a story. Run #42 published 37 of 150 pieces on headline-only
+    # material, three of them features: rank 7 ran one sentence and then a note
+    # to the operator, rank 18 was 24 words ending "the New York Times reports".
+    # Both were on hosts the fetch cooldown had already given up on, which the
+    # pipeline knew before it made the call.
+    #
+    # A story that cannot fill its slot trades tiers with the nearest-ranked one
+    # below it that can, so the paper keeps 15 features on a day the local
+    # outlets block us rather than shrinking to 12 — and the well-sourced
+    # standards sitting just under the line get the treatment they can carry.
+    # Ranks and scores are never touched.
+    #
+    # `brief` is deliberately absent: a brief is a pointer and a headline is
+    # enough for one. An empty list disables the rule.
+    tiers_requiring_material: [feature, standard]
     # Floor for a body to be worth a packet slot at all, after furniture removal.
     # Deliberately low: run #112's Al Jazeera summary was 89 characters and
     # carried a real fact, while the Google News stub next to it was the headline
@@ -373,8 +399,25 @@ editor_pass_1:
   temperature: 0.1
   max_tokens: 24000
   batch_size: 40
+  # The highest concurrency in the pipeline, and until 2026-08-26 the only
+  # batched concurrent stage with no retry at all — callWithBackoff was not even
+  # imported. One 429 on the first and only attempt defaulted a whole batch of 40
+  # to a fabricated score. Run #42 lost clusters C80-C83 that way.
   concurrency: 10
+  retry_max_attempts: 5
+  retry_base_ms: 2000
   reasoning_effort: "medium"
+  # Items per call when re-asking for scores that came back missing.
+  #
+  # The commonest fail-safe is not a failed call — it is a call that SUCCEEDS and
+  # silently omits one line. Run #39's batch 7 of 8 parsed 39 of 40, so one item
+  # went into the pile competition unjudged inside an otherwise clean run. Any of
+  # those 40 could have been the day's biggest story.
+  #
+  # Small, because a dropped line is much harder to hide in a short response, and
+  # because the usual straggler count is one or two — so this is normally a
+  # single cheap call rather than forty individual ones.
+  straggler_batch_size: 10
   singleton_pile_target: 100
   # Characters of English body text shown per SINGLETON being scored.
   #

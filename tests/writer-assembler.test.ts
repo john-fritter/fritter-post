@@ -25,6 +25,7 @@ const CFG: WritersPacketConfig = {
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,
   headline_only_words: [25, 60],
+  tiers_requiring_material: ["feature", "standard"],
   tiers: {
     feature: {
       max_articles: null,
@@ -814,4 +815,102 @@ testThreadPromptTellsTheWriterToFindASpine();
 testASingleSourceStoryGetsNoFocusBlock();
 testAMultiSourceClusterIsToldItIsOneEvent();
 testSystemPromptCarriesTheVoiceDocument();
+
+// --- live blogs ---
+//
+// One page carrying a day of entries about many stories. Run #44's rank 2 was
+// AP's rolling tariffs coverage: 24,455 characters, 46% of a feature packet,
+// inside a thread whose other members are supposed to cover those developments.
+
+function testAPTitlesItsLiveBlogsLikeArticles() {
+  // The gap. Title detection was built on Le Monde's "EN DIRECT," convention;
+  // AP announces nothing in the title and declares it in the path instead.
+  const title = "Canada launches retaliatory tariffs on US goods";
+  assert.equal(isLiveBlog(title), false, "nothing in the title to see");
+  assert.equal(
+    isLiveBlog(title, "https://apnews.com/live/trump-canada-economy-tariffs-08-26-2026"),
+    true,
+  );
+}
+
+function testTheTitleConventionsStillWork() {
+  for (const t of [
+    "EN DIRECT, guerre en Ukraine : les frappes de la nuit",
+    "LIVE: Supreme Court hears arguments",
+    "Live blog: election night",
+    "Gaza war live updates",
+  ]) {
+    assert.equal(isLiveBlog(t), true, t);
+  }
+}
+
+function testThePathCheckIsSegmentExactNotASubstring() {
+  // /olive/ and /living/ are not live blogs, and neither is a slug that happens
+  // to contain the letters.
+  for (const u of [
+    "https://example.com/olive/oil-prices-rise",
+    "https://example.com/living/how-to-cook",
+    "https://example.com/article/live-music-venues-close",
+  ]) {
+    assert.equal(isLiveBlog("An ordinary headline", u), false, u);
+  }
+  assert.equal(isLiveBlog("An ordinary headline", "https://example.com/live/x"), true);
+  assert.equal(isLiveBlog("An ordinary headline", "not a url"), false);
+}
+
+function testALiveBlogIsDroppedWhenARealArticleExists() {
+  // The rule was always "the live blog falls out of the packet" — but it was
+  // implemented by ranking it last and letting max_articles cut it off, and
+  // every cap has been null since sources were unrationed. It has been inert
+  // for two months.
+  const live = article(1, { chars: 20000 });
+  live.canonicalUrl = "https://apnews.com/live/tariffs-08-26-2026";
+  live.title = "Canada launches retaliatory tariffs on US goods";
+  const real = article(2, { chars: 3000 });
+  const packet = assembleWriterPacket(story("feature", [live, real]), new Map(), CFG);
+  assert.deepEqual(
+    packet.articles.map((a) => a.preprocessedItemId),
+    [2],
+  );
+  assert.equal(packet.omitted.length, 1);
+  assert.match(packet.omitted[0]!.reason, /live blog/);
+}
+
+function testALiveBlogIsKeptWhenItIsTheOnlySource() {
+  // "On a story where it is the only source, it is still the source." A packet
+  // is never emptied, the same guarantee the headline-echo rule carries.
+  const live = article(1, { chars: 20000 });
+  live.canonicalUrl = "https://apnews.com/live/tariffs-08-26-2026";
+  live.title = "Canada launches retaliatory tariffs on US goods";
+  const packet = assembleWriterPacket(story("feature", [live]), new Map(), CFG);
+  assert.equal(packet.articles.length, 1);
+  assert.equal(packet.articles[0]!.preprocessedItemId, 1);
+}
+
+testAPTitlesItsLiveBlogsLikeArticles();
+testTheTitleConventionsStillWork();
+testThePathCheckIsSegmentExactNotASubstring();
+testALiveBlogIsDroppedWhenARealArticleExists();
+testALiveBlogIsKeptWhenItIsTheOnlySource();
+
+function testTheFallbackKeepsTheBestArticleNotTheFirst() {
+  // A regression the live-blog filter would otherwise have introduced.
+  // selectArticles orders live blogs last, so a story whose sources are a tiny
+  // stub and a long live blog fell back to the stub — handing the writer
+  // nothing at all where it previously had the live blog's text.
+  const stub = article(1, { chars: 40 });
+  const live = article(2, { chars: 24000 });
+  live.canonicalUrl = "https://apnews.com/live/tariffs-08-26-2026";
+  live.title = "Canada launches retaliatory tariffs on US goods";
+  const packet = assembleWriterPacket(story("feature", [stub, live]), new Map(), CFG);
+  assert.equal(packet.articles.length, 1, "a packet is never emptied");
+  assert.equal(
+    packet.articles[0]!.preprocessedItemId,
+    2,
+    "the live blog is the only source with anything in it, so it stays",
+  );
+}
+
+testTheFallbackKeepsTheBestArticleNotTheFirst();
+
 console.log("writer assembler tests passed");

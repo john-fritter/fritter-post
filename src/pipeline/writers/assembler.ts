@@ -77,6 +77,8 @@ export interface PacketArticle {
   duplicateParagraphs: number;
   /** Paragraphs removed as publisher furniture before anything else ran. */
   boilerplateParagraphs: number;
+  /** A trailing half-sentence was cut from this source. */
+  truncatedTail: boolean;
   translationFailed: boolean;
 }
 
@@ -206,19 +208,36 @@ export function dedupeParagraphs(
  * rank 3 spent 5,954 characters of feature budget on Le Monde's Ukraine live
  * blog, and the reviewer flagged it twice.
  *
- * Detected from the title, which live blogs announce plainly, and used only to
- * push them behind real articles in selection — never to delete them. On a
- * 27-candidate thread the live blog falls out of the packet; on a story where it
- * is the only source, it is still the source.
+ * **Not every publisher announces it in the title.** This read titles only, on
+ * the reasoning that live blogs say so plainly — true of Le Monde's "EN DIRECT,
+ * guerre en Ukraine" and false of AP, which titles its live coverage exactly
+ * like an article: run #44's rank 2 carried "Canada launches retaliatory tariffs
+ * on US goods", 24,455 characters of rolling coverage, 46% of a feature packet,
+ * and nothing here saw it. AP declares it in the URL instead — `/live/` — and a
+ * path segment the publisher chose is a stronger signal than a headline
+ * convention, so both are checked.
  */
-export function isLiveBlog(title: string): boolean {
+export function isLiveBlog(title: string, url?: string): boolean {
   // The separator is whatever the outlet felt like using. Run #20's T1 lead was
   // Le Monde's "EN DIRECT, guerre en Ukraine : …" — a comma, which the original
   // colon-or-dash pattern missed, so 45,000 characters of live blog became a
   // section lead's entire material and it wrote up two other members' stories.
-  return /^\s*(?:live|en direct|direct)\b\s*[::,\-–—]|^\s*live blog\b|\blive updates?\b/i.test(
-    title,
-  );
+  if (
+    /^\s*(?:live|en direct|direct)\b\s*[::,\-–—]|^\s*live blog\b|\blive updates?\b/i.test(
+      title,
+    )
+  ) {
+    return true;
+  }
+  if (url === undefined) return false;
+  try {
+    // Segment-exact, never a substring: /olive/ and /living/ are not live blogs.
+    return new URL(url).pathname
+      .split("/")
+      .some((seg) => /^(?:live|liveblog|live-blog|live-updates?|live-news)$/i.test(seg));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -242,8 +261,8 @@ export function selectArticles(
   // Stable: real articles keep their editorial order, live blogs keep theirs,
   // and the second group only ever fills slots the first did not want.
   const ordered = [
-    ...articles.filter((a) => !isLiveBlog(a.title)),
-    ...articles.filter((a) => isLiveBlog(a.title)),
+    ...articles.filter((a) => !isLiveBlog(a.title, a.canonicalUrl)),
+    ...articles.filter((a) => isLiveBlog(a.title, a.canonicalUrl)),
   ];
 
   // First pass: one article per parent outlet, in order.
@@ -269,7 +288,7 @@ export function selectArticles(
       preprocessedItemId: a.preprocessedItemId,
       sourceName: a.sourceName,
       title: a.title,
-      reason: isLiveBlog(a.title)
+      reason: isLiveBlog(a.title, a.canonicalUrl)
         ? `live blog, ranked behind articles (cap ${maxArticles})`
         : `beyond the ${maxArticles}-article cap for this tier`,
       kind: "length" as const,
@@ -411,7 +430,13 @@ export function assembleWriterPacket(
     const useFetched = fetchedText !== null && fetchedText.text.length > feed.text.length;
     const stripped = useFetched ? fetchedText : feed;
     const origin = useFetched ? fetched!.origin : ("feed" as const);
-    return { article, text: stripped.text, origin, boilerplate: stripped.dropped };
+    return {
+      article,
+      text: stripped.text,
+      origin,
+      boilerplate: stripped.dropped,
+      truncatedTail: stripped.truncatedTail,
+    };
   });
 
   // A source whose body says nothing the headline did not adds a slot and no
@@ -424,18 +449,56 @@ export function assembleWriterPacket(
   // The story's source count is the editor's and is unaffected — this is about
   // what the writer reads. And the packet is never emptied: if every article is
   // a stub the best one stays, and the material level says what it is.
+  // **A live blog is dropped when the packet has a real article, and kept when
+  // it does not.** That was always the rule — "on a 27-candidate thread the live
+  // blog falls out of the packet; on a story where it is the only source, it is
+  // still the source" — but it was implemented by ranking live blogs last and
+  // letting `max_articles` cut them off. Unrationing the sources on 2026-08-19
+  // set every cap to null, so `full()` never returns true, both selection passes
+  // take everything, and the reordering has had no effect since. **The defence
+  // has been inert for two months and run #44 is where that showed:** AP's
+  // rolling tariffs coverage was 24,455 of a 53,088-character packet at rank 2,
+  // inside a thread whose other members are supposed to cover those very
+  // developments.
+  //
+  // This is not rationing and does not reopen that decision. Nothing is dropped
+  // here for being the 13th source or the 48,001st character; a live blog is
+  // dropped for the same reason a headline echo is — its body is not reporting
+  // on *this* story. It is one page carrying a day of entries about many, which
+  // is exactly what breaks the section's partition guarantee. And like the echo
+  // rule, it never empties a packet.
   const usable = resolvedAll.filter(
-    (r) => r.text.length >= cfg.min_article_chars && !isHeadlineEcho(r.article.title, r.text),
+    (r) =>
+      r.text.length >= cfg.min_article_chars &&
+      !isHeadlineEcho(r.article.title, r.text) &&
+      !isLiveBlog(r.article.title, r.article.canonicalUrl),
   );
-  const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
+  // **The fallback keeps the best article, not the first.** The rule has always
+  // been "if every article is a stub the best one stays", and `slice(0, 1)` never
+  // implemented it — it took whatever `selectArticles` had ordered first. That
+  // was harmless while the filter only removed empties and headline echoes, and
+  // stopped being harmless when live blogs joined it: `selectArticles` orders
+  // live blogs **last**, so a story whose sources are a 40-character stub and a
+  // 24,000-character live blog would fall back to the stub and hand the writer
+  // nothing. Longest wins, which is the same "best available" the comment
+  // promised and the packet is still never emptied.
+  const bestAvailable = [...resolvedAll].sort((a, b) => b.text.length - a.text.length);
+  const resolved = usable.length > 0 ? usable : bestAvailable.slice(0, 1);
   for (const r of resolvedAll) {
     if (resolved.includes(r)) continue;
     omitted.push({
       preprocessedItemId: r.article.preprocessedItemId,
       sourceName: r.article.sourceName,
       title: r.article.title,
-      reason:
-        r.text.length < cfg.min_article_chars
+      // **The structural reason first, then the incidental one.** A live blog
+      // that also happens to have no cached text was reported as "no usable body
+      // text", which is true and useless: the length is an artifact of whether
+      // the fetch ran, while being a live blog is a property of the source that
+      // holds across every run. Run #45's audit could not tell whether the
+      // path-based rule had done the work or the empty cache had.
+      reason: isLiveBlog(r.article.title, r.article.canonicalUrl)
+        ? "live blog: rolling coverage of many stories, not this one"
+        : r.text.length < cfg.min_article_chars
           ? `no usable body text (${r.text.length} chars after cleanup)`
           : "body text only repeats the headline",
       kind: "no-text" as const,
@@ -470,6 +533,7 @@ export function assembleWriterPacket(
       origin: r.origin,
       duplicateParagraphs: dropped[i]!,
       boilerplateParagraphs: r.boilerplate,
+      truncatedTail: r.truncatedTail,
       translationFailed: r.article.translationFailed,
     };
   });
@@ -522,11 +586,22 @@ export function assembleWriterPacket(
   // back, but as the actionable rule rather than the bare prohibition: the memo's
   // actor-versus-outlet distinction, restated at the near distance where this
   // session has repeatedly found the winning instruction lives.
+  //
+  // **And it names the outlet case, because stating only the positive condition
+  // was not enough.** Run #47 published one source-meta sentence in 150 pieces —
+  // S64820, "The article does not specify when the House might take up the
+  // legislation." The rule already excluded it: an article is not "someone in
+  // the story". But the exclusion was implicit, and the memo draws the
+  // actor-versus-outlet line in the *system* prompt, at the far distance. This
+  // is not a new prohibition and not a new layer; it is the same clause with the
+  // one shape that keeps reaching the paper written into it.
   const notes: string[] = [];
   const gapRule =
     "If a source stops short, the sentence stops with it — write what you have and " +
     "go no further. A gap is worth a sentence only when someone in the story " +
-    "withheld something.";
+    "withheld something — a person, an agency, a company. What an outlet did not " +
+    "print is not a gap in the story: \"the article does not specify\" is a fact " +
+    "about a newsroom, not about the world.";
   if (materialLevel === "headline-only") {
     notes.push(
       "Write only what the sources below actually state. If that is two sentences, " +
@@ -718,4 +793,144 @@ export function assembleSectionPackets(
       },
     };
   });
+}
+
+/**
+ * The material level a story would have if it were written at `tier`.
+ *
+ * Material level is tier-relative by design — `materialLevelOf` reads the
+ * tier's own thresholds, so 1,000 characters is headline-only for a feature and
+ * partial for a standard piece. That is exactly the property the slot resolver
+ * needs: asking "could this story fill a feature slot?" is asking for its level
+ * at the feature tier, not at the one the editor happened to assign it.
+ *
+ * For a thread the answer is its **section lead's** level, because the lead is
+ * what occupies the slot. `assembleSectionPackets` has already reordered members
+ * so the best-sourced one leads, so the first packet is the right one to read.
+ */
+export function materialLevelAtTier(
+  story: StoryMaterials,
+  textsById: Map<number, ResolvedText>,
+  cfg: WritersPacketConfig,
+  tier: string,
+): MaterialLevel {
+  const at =
+    tier === story.tier ? story : { ...story, tier: tier as StoryMaterials["tier"] };
+  return story.itemType === "thread"
+    ? assembleSectionPackets(at, textsById, cfg)[0]!.materialLevel
+    : assembleWriterPacket(at, textsById, cfg).materialLevel;
+}
+
+/** One story as the slot resolver sees it: where it sits, and what it could fill. */
+export interface TierCandidate {
+  ref: string;
+  rank: number;
+  tier: string;
+  /** Material level this story would have at each tier the resolver considers. */
+  levels: Map<string, MaterialLevel>;
+}
+
+/** A slot that changed hands, kept so the run can say what it did and why. */
+export interface TierSwap {
+  tier: string;
+  /** The story that could not fill the slot, and where it went instead. */
+  ref: string;
+  rank: number;
+  demotedTo: string;
+  /** The story that took the slot, and what it gave up to take it. */
+  takerRef: string;
+  takerRank: number;
+  takerFrom: string;
+}
+
+/**
+ * Reassigns tier slots a story's material cannot fill.
+ *
+ * **A slot the material cannot fill is worse than no slot.** The editor assigns
+ * tiers by rank position alone — feature 15, standard 60, brief 75 — and its
+ * formula is `relevance + source_weight·ln(sources)`, which knows nothing about
+ * whether any text exists behind the story. Nothing downstream corrected that,
+ * so run #42 published 37 of 150 pieces on headline-only material, including
+ * three of its fifteen features. Rank 7 (S61342, OregonLive) ran one sentence
+ * and then, below a horizontal rule, a note to whoever was reading: "That's all
+ * the source carries." Rank 18 (S61618) was twenty-four words ending "the New
+ * York Times reports". Rank 62 (S61332, a Google News item, which `sources.yaml`
+ * already records as structurally unfetchable) wrote "No further details on the
+ * outbreak's scale, location, or the vaccination campaign were available from
+ * the source."
+ *
+ * Those are not writing failures. Every one of them is a writer obeying a
+ * headline-only packet's own instruction — write what you have and stop — inside
+ * a slot that promised four hundred words. The pipeline knew the material was
+ * absent before the call was made: the fetch cooldown had already given up on
+ * oregonlive.com and nytimes.com, and a Google News link has never had an
+ * article behind it.
+ *
+ * **This is the section rule, applied to the paper.** `assembleSectionPackets`
+ * has picked a thread's lead by material rather than by score since run #13, for
+ * the same reason at a smaller scale. Here the unit is the paper's tiers.
+ *
+ * **It swaps rather than demotes**, so the paper keeps its shape: fifteen
+ * features every day, not twelve on a day the local outlets blocked us. A
+ * headline-only story trades tiers with the nearest-ranked story below it that
+ * *can* fill the slot, which is also the fix for the other half of the problem —
+ * run #42's ranks 16 and 17 were fully-sourced 208- and 213-word standards that
+ * would have made real features. Score and rank are never touched; only the
+ * treatment moves. A story can therefore sit high in the ranking and run short,
+ * which is the honest outcome when a story matters and the text is not there.
+ *
+ * `ladder` is the tiers, most prominent first, whose slots require real
+ * material; anything outside it (brief) is below all of them and accepts
+ * headline material, because a brief is a pointer and a headline is enough for
+ * one. An empty ladder disables the rule.
+ */
+export function resolveTiersByMaterial(
+  candidates: TierCandidate[],
+  ladder: string[],
+): { tiers: Map<string, string>; swaps: TierSwap[] } {
+  const tiers = new Map(candidates.map((c) => [c.ref, c.tier]));
+  const swaps: TierSwap[] = [];
+  if (ladder.length === 0) return { tiers, swaps };
+
+  const byRank = [...candidates].sort((a, b) => a.rank - b.rank);
+  // Anything off the ladder sits below every tier on it.
+  const depth = (tier: string) => {
+    const i = ladder.indexOf(tier);
+    return i === -1 ? ladder.length : i;
+  };
+  const canFill = (c: TierCandidate, tier: string) =>
+    (c.levels.get(tier) ?? "headline-only") !== "headline-only";
+
+  // Top-down, so a story demoted out of feature is reconsidered for the standard
+  // slot it lands in and demoted again if it cannot fill that either. Each swap
+  // moves the failing story strictly downwards, so this terminates.
+  for (const tier of ladder) {
+    for (const hole of byRank) {
+      if (tiers.get(hole.ref) !== tier || canFill(hole, tier)) continue;
+
+      // The nearest story below this tier that can fill it. Nearest, so the
+      // promotion reaches as short a distance down the ranking as it can.
+      const taker = byRank.find(
+        (c) => depth(tiers.get(c.ref)!) > depth(tier) && canFill(c, tier),
+      );
+      // A day on which nothing below has material either. Leave the slot alone:
+      // the packet's own ceiling still keeps the piece short and honest.
+      if (taker === undefined) break;
+
+      const takerFrom = tiers.get(taker.ref)!;
+      tiers.set(hole.ref, takerFrom);
+      tiers.set(taker.ref, tier);
+      swaps.push({
+        tier,
+        ref: hole.ref,
+        rank: hole.rank,
+        demotedTo: takerFrom,
+        takerRef: taker.ref,
+        takerRank: taker.rank,
+        takerFrom,
+      });
+    }
+  }
+
+  return { tiers, swaps };
 }
