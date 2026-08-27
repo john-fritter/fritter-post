@@ -665,7 +665,11 @@ had been *inert for two months*, because it worked by ranking live blogs last an
 letting `max_articles` cut them off, and every cap went null when sources were
 unrationed on 2026-08-19. A live blog now leaves the packet the way a headline
 echo does — its body is not reporting on *this* story — and like that rule it
-never empties a packet: the only source a story has is still its source. The guarantee is the sibling list: the lead is told every piece
+never empties a packet: the only source a story has is still its source. **That
+fallback keeps the longest article rather than the first**, which the rule always
+claimed ("if every article is a stub the best one stays") and `slice(0, 1)` never
+did; harmless while the filter only removed empties, and not harmless once live
+blogs joined it, since `selectArticles` orders them last. The guarantee is the sibling list: the lead is told every piece
 below it and a sidebar or line is told the lead plus the others. It used to name
 sidebars only, which cost nothing at three members and cost two duplicated
 paragraphs at eleven. Static text, not a call — writers still never see each

@@ -457,7 +457,15 @@ async function attachSingletons(
       titleNormalizedVectors,
       config.candidate_floor,
     );
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) {
+      // **No candidates is not a lost judgment.** A cluster marked lost in Phase
+      // A can arrive here with nothing left to offer, because the cascade or
+      // Phase B attached those singletons elsewhere in the meantime. Returning
+      // early without clearing the flag left it counted as unrecovered forever,
+      // so a run reported degraded grouping when there was nothing left to ask.
+      trackAttachLoss(lostPhaseAClusters, clusterIdx, []);
+      return null;
+    }
 
     const chunks = chunkArray(candidates, ATTACH_CHUNK_SIZE);
     const confirmedIds = new Set<number>();

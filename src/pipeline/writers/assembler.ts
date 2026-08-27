@@ -473,7 +473,17 @@ export function assembleWriterPacket(
       !isHeadlineEcho(r.article.title, r.text) &&
       !isLiveBlog(r.article.title, r.article.canonicalUrl),
   );
-  const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
+  // **The fallback keeps the best article, not the first.** The rule has always
+  // been "if every article is a stub the best one stays", and `slice(0, 1)` never
+  // implemented it — it took whatever `selectArticles` had ordered first. That
+  // was harmless while the filter only removed empties and headline echoes, and
+  // stopped being harmless when live blogs joined it: `selectArticles` orders
+  // live blogs **last**, so a story whose sources are a 40-character stub and a
+  // 24,000-character live blog would fall back to the stub and hand the writer
+  // nothing. Longest wins, which is the same "best available" the comment
+  // promised and the packet is still never emptied.
+  const bestAvailable = [...resolvedAll].sort((a, b) => b.text.length - a.text.length);
+  const resolved = usable.length > 0 ? usable : bestAvailable.slice(0, 1);
   for (const r of resolvedAll) {
     if (resolved.includes(r)) continue;
     omitted.push({

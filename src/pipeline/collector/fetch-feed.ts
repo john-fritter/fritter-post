@@ -1,7 +1,12 @@
 import Parser from "rss-parser";
 import { synthesizeGuid } from "./guid.js";
 import { decodeFeedBytes } from "./charset.js";
-import { parseNewsSitemap, withinWindow, withoutExcludedPaths } from "./sitemap.js";
+import {
+  parseNewsSitemap,
+  withinWindow,
+  withoutExcludedPaths,
+  looksLikeSitemapIndex,
+} from "./sitemap.js";
 import {
   HONEST_USER_AGENT,
   BROWSER_USER_AGENT,
@@ -173,9 +178,22 @@ async function parseFeedText(sourceName: string, text: string) {
  * as everything else.
  */
 async function fetchNewsSitemap(source: Source): Promise<FetchedItem[]> {
+  const xml = await fetchFeedText(source.url);
+
+  // Fail loudly rather than collecting nothing. A sitemap index parses fine and
+  // contains no articles, so the run would otherwise report this as a
+  // successful zero-item source and say nothing about why.
+  if (looksLikeSitemapIndex(xml)) {
+    throw new Error(
+      `${source.url} is a sitemap index, not a news sitemap — it lists other ` +
+        `sitemaps rather than articles. Point the source at one of the sitemaps ` +
+        `it declares.`,
+    );
+  }
+
   const entries = withoutExcludedPaths(
     withinWindow(
-      parseNewsSitemap(await fetchFeedText(source.url)),
+      parseNewsSitemap(xml),
       source.max_age_hours ?? DEFAULT_SITEMAP_MAX_AGE_HOURS,
     ),
     source.exclude_paths,

@@ -26,6 +26,18 @@
 
 import { DOMParser } from "linkedom";
 
+/**
+ * A sitemap *index* lists other sitemaps, not articles: `<sitemap><loc>` rather
+ * than `<url><loc>`. Pointing a `news-sitemap` source at one parses cleanly and
+ * yields nothing, which is the quiet failure this project keeps paying for —
+ * the run would report a successful zero-item source and say nothing about why.
+ * OregonLive serves exactly this shape at its declared news-sitemap URL, so it
+ * is a configuration mistake waiting to be made rather than a hypothetical.
+ */
+export function looksLikeSitemapIndex(xml: string): boolean {
+  return /<sitemapindex[\s>]/i.test(xml) || (/<sitemap[\s>]/i.test(xml) && !/<url[\s>]/i.test(xml));
+}
+
 export interface SitemapEntry {
   url: string;
   title: string;

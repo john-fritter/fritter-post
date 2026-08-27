@@ -3,6 +3,7 @@ import {
   parseNewsSitemap,
   withinWindow,
   withoutExcludedPaths,
+  looksLikeSitemapIndex,
 } from "../src/pipeline/collector/sitemap.js";
 
 // AP is the paper's largest contributor of material and was 0% usable: it serves
@@ -173,5 +174,27 @@ testADisallowedPathIsDropped();
 testExclusionIsExactNotAPrefix();
 testNoExclusionListIsANoOp();
 testAnUnparseableDateDoesNotBecomeAnInvalidDate();
+
+function testASitemapIndexIsRecognised() {
+  // An index lists other sitemaps, not articles. It parses cleanly and yields
+  // nothing, so without this the run reports a successful zero-item source and
+  // says nothing about why. OregonLive serves this shape at its declared
+  // news-sitemap URL, so it is a mistake waiting to be made.
+  const index = `<?xml version="1.0" encoding="UTF-8"?>
+    <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <sitemap><loc>https://www.oregonlive.com/news-sitemap-1.xml</loc></sitemap>
+      <sitemap><loc>https://www.oregonlive.com/news-sitemap-2.xml</loc></sitemap>
+    </sitemapindex>`;
+  assert.equal(looksLikeSitemapIndex(index), true);
+  assert.equal(parseNewsSitemap(index).length, 0, "an index yields no articles");
+}
+
+function testARealNewsSitemapIsNotAnIndex() {
+  assert.equal(looksLikeSitemapIndex(AP), false);
+  assert.ok(parseNewsSitemap(AP).length > 0);
+}
+
+testASitemapIndexIsRecognised();
+testARealNewsSitemapIsNotAnIndex();
 
 console.log("collector sitemap tests passed");

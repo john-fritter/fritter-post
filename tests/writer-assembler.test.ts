@@ -893,4 +893,24 @@ testThePathCheckIsSegmentExactNotASubstring();
 testALiveBlogIsDroppedWhenARealArticleExists();
 testALiveBlogIsKeptWhenItIsTheOnlySource();
 
+function testTheFallbackKeepsTheBestArticleNotTheFirst() {
+  // A regression the live-blog filter would otherwise have introduced.
+  // selectArticles orders live blogs last, so a story whose sources are a tiny
+  // stub and a long live blog fell back to the stub — handing the writer
+  // nothing at all where it previously had the live blog's text.
+  const stub = article(1, { chars: 40 });
+  const live = article(2, { chars: 24000 });
+  live.canonicalUrl = "https://apnews.com/live/tariffs-08-26-2026";
+  live.title = "Canada launches retaliatory tariffs on US goods";
+  const packet = assembleWriterPacket(story("feature", [stub, live]), new Map(), CFG);
+  assert.equal(packet.articles.length, 1, "a packet is never emptied");
+  assert.equal(
+    packet.articles[0]!.preprocessedItemId,
+    2,
+    "the live blog is the only source with anything in it, so it stays",
+  );
+}
+
+testTheFallbackKeepsTheBestArticleNotTheFirst();
+
 console.log("writer assembler tests passed");

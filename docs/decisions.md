@@ -4841,3 +4841,71 @@ swing with no code path that explains it, and long enough that a 420-second
 command wrapper truncated the stdout. Provider variance is the likely answer.
 It matters for one reason: it puts a wide band on any answer to "how long does
 the paper take".
+
+---
+
+## 2026-08-27 — Reviewing the branch against a real Postgres
+
+No fresh corpus available, so the day went on hardening what is already written.
+Four defects, all mine, all from this branch.
+
+### `inspect timing` sorted run ids as text — reproduced, not reasoned about
+
+Postgres 16 is installed in the dev image, so this one was settled by running it
+rather than reading it. A scratch cluster, the project's own migrations, three
+collector rows with ids 9, 57 and 123:
+
+```
+SELECT id::text,           ... ORDER BY id DESC LIMIT 1   ->  9
+SELECT id::text AS run_id, ... ORDER BY id DESC LIMIT 1   ->  123
+```
+
+A cast keeps the underlying column's name, so `id::text` names its output column
+`id`, and SQL resolves `ORDER BY` against output columns first. Aliasing the cast
+leaves `id` bound to the integer.
+
+The same cluster then ran `inspect timing`, `inspect fetch`, the 22-parameter
+`grouping_runs` update and the `writer_pieces` repair update against the real
+schema and its CHECK constraints. **Reasoning about SQL is not testing SQL**, and
+this branch had already shipped one query that was wrong in a way no amount of
+re-reading had caught.
+
+### The never-empty fallback kept the first article, not the best
+
+`assembleWriterPacket` ends with:
+
+```ts
+const resolved = usable.length > 0 ? usable : resolvedAll.slice(0, 1);
+```
+
+The comment above it has always said "if every article is a stub the best one
+stays". `slice(0, 1)` does not do that — it takes whatever `selectArticles`
+ordered first — and the gap was harmless while the filter removed only empties
+and headline echoes.
+
+Adding live blogs to that filter made it harmful. `selectArticles` orders live
+blogs **last**, on purpose. So a story whose sources are a 40-character stub and
+a 24,000-character live blog now filtered both out, fell back to `[0]`, and handed
+the writer the stub. Before the live-blog rule it would have kept the live blog.
+Longest-first fixes it, and is what the comment promised all along.
+
+A rule that removes more things makes every fallback beneath it more reachable.
+That is the shape to look for after widening a filter.
+
+### An attach cluster with no candidates left was counted as lost
+
+`evalCluster` returns early when a cluster has no candidate singletons, and that
+early return sat above `trackAttachLoss`. A cluster marked lost in Phase A whose
+singletons were then attached elsewhere by the cascade arrived at the straggler
+with nothing to offer, returned early, and kept its flag — reporting
+`attach_unrecovered` on a run where there was nothing left to ask. Over-reporting
+degradation is the safer direction to be wrong in, and it is still wrong.
+
+### A sitemap index would have collected nothing, quietly
+
+`format: news-sitemap` pointed at a sitemap *index* parses cleanly and yields
+zero articles: an index lists `<sitemap><loc>`, not `<url><loc>`. The run would
+report a successful zero-item source and say nothing about why. OregonLive serves
+exactly that shape at its declared news-sitemap URL, so this is a configuration
+mistake waiting to be made rather than a hypothetical. It now throws with a
+message naming the problem, which the collector records as a source failure.
