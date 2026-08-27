@@ -29,6 +29,11 @@ import {
   isGoogleNewsLink,
   looksLikeArticleUrl,
 } from "../src/pipeline/collector/google-news.js";
+import {
+  parseNewsSitemap,
+  looksLikeSitemapIndex,
+  withinWindow,
+} from "../src/pipeline/collector/sitemap.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
 import { stripBoilerplate } from "../src/pipeline/writers/boilerplate.js";
 
@@ -347,6 +352,15 @@ async function resolveFromDb(sourceName: string, limit: number): Promise<void> {
  * So this runs the real path: fetch the page, `extractArticle`, then
  * `stripBoilerplate`, and report the characters a packet would actually carry.
  * Anything less measures a different pipeline than the one that writes the paper.
+ *
+ * **And the parse is the production parse.** This function used to read the XML
+ * with four regexes of its own, which is the same defect one level up: the
+ * finding that put AP into `sources.yaml` — 529 entries, 518 of them
+ * `/article/` — was produced by code the collector does not run, so
+ * `parseNewsSitemap` and its linkedom DOMParser had never once seen real AP
+ * markup. It now calls the shipped parser, and reports what the collector's own
+ * window and exclude rules would then leave, so a probe run is a genuine
+ * rehearsal of a collection rather than a second opinion about one.
  */
 async function probeSitemapExtraction(sitemapUrl: string, limit: number): Promise<void> {
   console.log(`\n=== extraction from ${sitemapUrl} ===\n`);
@@ -354,14 +368,52 @@ async function probeSitemapExtraction(sitemapUrl: string, limit: number): Promis
   console.log(`  sitemap: ${describe(sm)}`);
   if (!sm.body) return;
 
-  const entries = [...sm.body.matchAll(/<url>([\s\S]*?)<\/url>/g)].map((m) => {
-    const block = m[1]!;
-    const loc = block.match(/<loc>([^<]+)<\/loc>/)?.[1]?.trim() ?? "";
-    const title = block.match(/<news:title>([^<]*)<\/news:title>/)?.[1]?.trim() ?? "";
-    const date = block.match(/<news:publication_date>([^<]*)</)?.[1]?.trim() ?? "";
-    return { loc, title, date };
-  });
-  console.log(`  ${entries.length} entries parsed`);
+  if (looksLikeSitemapIndex(sm.body)) {
+    console.log(
+      `\n  This is a sitemap INDEX — it lists other sitemaps, not articles.\n` +
+        `  A news-sitemap source pointed here collects nothing. Probe one of the\n` +
+        `  sitemaps it declares instead.\n`,
+    );
+    return;
+  }
+
+  const parsed = parseNewsSitemap(sm.body);
+  const entries = parsed.map((e) => ({
+    loc: e.url,
+    title: e.title,
+    date: e.publishedAt?.toISOString() ?? "",
+  }));
+  console.log(`  ${entries.length} entries parsed (production parseNewsSitemap)`);
+  if (entries.length === 0) {
+    console.log(
+      `  Zero entries from a ${sm.bytes}-byte body is a parser result, not a\n` +
+        `  publisher result — the collector would report this source as a clean\n` +
+        `  empty. Report it as a failure.\n`,
+    );
+    return;
+  }
+
+  // What the collector would actually keep. A sitemap does not window itself,
+  // so the gap between these two numbers is the daily re-collection the
+  // preprocessor's cross-run dedup would otherwise absorb every day.
+  for (const hours of [24, 48]) {
+    console.log(`  within ${hours}h: ${withinWindow(parsed, hours).length}`);
+  }
+  const dated = parsed.filter((e) => e.publishedAt !== null);
+  if (dated.length > 0) {
+    const newest = dated[0]!.publishedAt!;
+    const oldest = dated[dated.length - 1]!.publishedAt!;
+    const span = (newest.getTime() - oldest.getTime()) / 3600_000;
+    console.log(
+      `  dated: ${dated.length}/${parsed.length}, spanning ${span.toFixed(1)}h ` +
+        `(${oldest.toISOString()} → ${newest.toISOString()})`,
+    );
+  } else {
+    console.log(
+      `  dated: 0/${parsed.length} — every entry would survive any window, ` +
+        `so max_age_hours buys nothing here.`,
+    );
+  }
 
   // The shape question, before the extraction question. A live blog is one URL
   // carrying every event of a running story — run #20's T1 lead was 45,000
