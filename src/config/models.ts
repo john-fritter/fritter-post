@@ -78,6 +78,8 @@ const EditorTieBreakConfigSchema = z.object({
   timeout_ms: z.number().int().optional(),
   // Characters of body/summary shown per item in a tie-break group.
   body_cap: z.number().int().nonnegative(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
 });
 
 const EditorStageConfigSchema = z.object({

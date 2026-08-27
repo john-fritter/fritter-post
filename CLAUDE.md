@@ -430,6 +430,20 @@ bio-aware call per tie group, run concurrently under
 `editor.tie_break.concurrency`. Reads `docs/bio.md`. Ties that the LLM
 doesn't resolve fall back to ref ordering.
 
+**It is batched and concurrent, so it runs under `callWithBackoff` — and for its
+whole life it did not.** Run #125 lost 12 of 25 tie groups to a single 429 each,
+with no retry, and ranked 60-odd items by ref order instead: alphabetical, and
+at a tier boundary that decides whether a story is a feature or a standard. The
+same run is its own control — grouping's attach pass met the identical 429 storm
+from the identical provider minutes earlier, retried, and finished with
+`attach_failed_calls=0`. The failure was also the quiet kind the rule exists for:
+the catch returns an empty rank map, which is exactly what a group the model
+declined to order returns, so the stage warned and reported success. Counts are
+persisted as `editor_runs.tie_break_calls` / `tie_break_failed_calls`
+(migration 040) and shown by `inspect editor --id`; NULL means a run before 040,
+where the console was the only record. A model that answers but omits refs gave
+a worse answer, not a lost call, and is not counted as a failure.
+
 Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
 and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
 `tests/editor-tie-break.test.ts`).
@@ -1040,7 +1054,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **040**.
+number is ambiguous. The next migration is **041**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

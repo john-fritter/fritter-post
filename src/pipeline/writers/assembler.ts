@@ -586,11 +586,22 @@ export function assembleWriterPacket(
   // back, but as the actionable rule rather than the bare prohibition: the memo's
   // actor-versus-outlet distinction, restated at the near distance where this
   // session has repeatedly found the winning instruction lives.
+  //
+  // **And it names the outlet case, because stating only the positive condition
+  // was not enough.** Run #47 published one source-meta sentence in 150 pieces —
+  // S64820, "The article does not specify when the House might take up the
+  // legislation." The rule already excluded it: an article is not "someone in
+  // the story". But the exclusion was implicit, and the memo draws the
+  // actor-versus-outlet line in the *system* prompt, at the far distance. This
+  // is not a new prohibition and not a new layer; it is the same clause with the
+  // one shape that keeps reaching the paper written into it.
   const notes: string[] = [];
   const gapRule =
     "If a source stops short, the sentence stops with it — write what you have and " +
     "go no further. A gap is worth a sentence only when someone in the story " +
-    "withheld something.";
+    "withheld something — a person, an agency, a company. What an outlet did not " +
+    "print is not a gap in the story: \"the article does not specify\" is a fact " +
+    "about a newsroom, not about the world.";
   if (materialLevel === "headline-only") {
     notes.push(
       "Write only what the sources below actually state. If that is two sentences, " +

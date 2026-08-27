@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
@@ -124,22 +125,39 @@ async function callTieBreakForGroup(
   bio: string,
   runId: number,
   tieCfg: EditorTieBreakConfig,
-): Promise<Map<string, number>> {
+): Promise<{ ranks: Map<string, number>; failed: boolean }> {
   const groupRefs = group.map((item) => item.ref);
   try {
-    const result = await callLLM({
-      stage: "editor-tie-break",
-      stageRunId: runId,
-      model: tieCfg.model,
-      systemPrompt: buildTieBreakSystemPrompt(),
-      userPrompt: buildTieBreakUserPrompt(bio, group),
-      temperature: tieCfg.temperature,
-      maxTokens: tieCfg.max_tokens,
-      reasoningEffort: tieCfg.reasoning_effort,
-      provider: tieCfg.provider,
-      timeoutMs: tieCfg.timeout_ms,
-      stream: tieCfg.stream,
-    });
+    // **The tie-break is batched and concurrent, so it needs the backoff.**
+    // It ran on a raw `callLLM` for its whole life, at `concurrency: 10` —
+    // level with grouping-pass-1, the highest in the pipeline — and run #125
+    // paid for it: 12 of 25 tie groups lost their call to a single 429 and
+    // fell back to ref order, one attempt each, no retry. The same run is its
+    // own control. Grouping's attach pass met the identical 429 storm from the
+    // identical provider minutes earlier, retried under this wrapper, and
+    // finished with `attach_failed_calls=0`.
+    //
+    // The failure is also the quiet kind this rule exists for: the catch
+    // returns an empty map, which is exactly what a group the model declined
+    // to order returns, and the stage logs a warning and reports success.
+    const result = await callWithBackoff(
+      () =>
+        callLLM({
+          stage: "editor-tie-break",
+          stageRunId: runId,
+          model: tieCfg.model,
+          systemPrompt: buildTieBreakSystemPrompt(),
+          userPrompt: buildTieBreakUserPrompt(bio, group),
+          temperature: tieCfg.temperature,
+          maxTokens: tieCfg.max_tokens,
+          reasoningEffort: tieCfg.reasoning_effort,
+          provider: tieCfg.provider,
+          timeoutMs: tieCfg.timeout_ms,
+          stream: tieCfg.stream,
+        }),
+      tieCfg,
+      `editor tie-break ${groupIndex}`,
+    );
 
     const tieRanks = parseTieBreakOutput(result.text, groupRefs);
     const missing = groupRefs.filter((r) => !tieRanks.has(r));
@@ -150,13 +168,16 @@ async function callTieBreakForGroup(
     } else {
       console.log(`[editor] tie-break group ${groupIndex}: ranked ${groupRefs.length} items`);
     }
-    return tieRanks;
+    // A model that answered but omitted refs gave a partial ordering, which is
+    // a worse answer, not a lost call. Only a thrown call counts as failed.
+    return { ranks: tieRanks, failed: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
       `[editor] tie-break group ${groupIndex}: call failed (${msg}) — falling back to ref order for all ${group.length} items`,
     );
-    return new Map(); // empty → all items get Infinity → fall back to ref order
+    // empty → all items get Infinity → fall back to ref order
+    return { ranks: new Map(), failed: true };
   }
 }
 
@@ -386,6 +407,8 @@ export async function runEditor(
     // 9. Run bio-aware tie-break calls for each tied group, concurrently.
     const tieRanksByRef = new Map<string, number>();
     let tieBreakCallsMade = false;
+    let tieBreakCalls = 0;
+    let tieBreakFailedCalls = 0;
 
     if (tiedGroups.length > 0) {
       const tieCfg = cfg.tie_break;
@@ -398,12 +421,28 @@ export async function runEditor(
         ),
       );
 
-      for (const groupRanks of groupResults) {
-        for (const [ref, rank] of groupRanks) {
+      for (const groupResult of groupResults) {
+        for (const [ref, rank] of groupResult.ranks) {
           tieRanksByRef.set(ref, rank);
         }
       }
+      tieBreakCalls = groupResults.length;
+      tieBreakFailedCalls = groupResults.filter((r) => r.failed).length;
       tieBreakCallsMade = true;
+
+      // Said out loud, because a fallback to ref order is alphabetical and
+      // therefore arbitrary, and at a tier boundary it decides whether a story
+      // is a feature or a standard.
+      if (tieBreakFailedCalls > 0) {
+        const lost = groupResults
+          .map((r, i) => (r.failed ? tiedGroups[i]!.length : 0))
+          .reduce((a, b) => a + b, 0);
+        console.warn(
+          `[editor] tie-break: ${tieBreakFailedCalls}/${tieBreakCalls} call(s) failed ` +
+            `after backoff — ${lost} item(s) ranked by ref order rather than by ` +
+            `reader relevance`,
+        );
+      }
     }
 
     // 10. Update model_used if tie-break calls were made.
@@ -457,13 +496,23 @@ export async function runEditor(
     // 13. Finalize run with per-tier counts.
     await pool.query(
       `UPDATE editor_runs
-       SET completed_at   = NOW(),
-           items_feature  = $1,
-           items_standard = $2,
-           items_brief    = $3,
-           items_cut      = $4
-       WHERE id = $5`,
-      [tierCounts.feature, tierCounts.standard, tierCounts.brief, tierCounts.cut, runId],
+       SET completed_at           = NOW(),
+           items_feature          = $1,
+           items_standard         = $2,
+           items_brief            = $3,
+           items_cut              = $4,
+           tie_break_calls        = $5,
+           tie_break_failed_calls = $6
+       WHERE id = $7`,
+      [
+        tierCounts.feature,
+        tierCounts.standard,
+        tierCounts.brief,
+        tierCounts.cut,
+        tieBreakCalls,
+        tieBreakFailedCalls,
+        runId,
+      ],
     );
 
     console.log(

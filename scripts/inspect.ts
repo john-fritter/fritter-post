@@ -103,6 +103,8 @@ interface EditorRunRow {
   items_standard: number;
   items_brief: number;
   items_cut: number;
+  tie_break_calls: number | null;
+  tie_break_failed_calls: number | null;
 }
 
 interface EditorStoryRow {
@@ -558,6 +560,23 @@ async function main() {
           console.log(`  standard  ${run.items_standard}`);
           console.log(`  brief     ${run.items_brief}`);
           console.log(`  cut       ${run.items_cut}`);
+
+          // NULL is a run before migration 040, where the console was the only
+          // record. Zero is a run that lost nothing; they are not the same, so
+          // they do not print the same.
+          if (run.tie_break_calls === null) {
+            console.log("\n── TIE-BREAK  (not recorded — run predates migration 040)");
+          } else {
+            console.log("\n── TIE-BREAK");
+            console.log(`  calls     ${run.tie_break_calls}`);
+            console.log(`  failed    ${run.tie_break_failed_calls}`);
+            if ((run.tie_break_failed_calls ?? 0) > 0) {
+              console.log(
+                `  Every item in a failed group is ordered by ref instead, which is\n` +
+                  `  alphabetical. At a tier boundary that decides feature vs standard.`,
+              );
+            }
+          }
 
           // Resolve cluster titles from the grouping digest so the ranked list
           // can show readable titles.

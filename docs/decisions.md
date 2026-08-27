@@ -4953,3 +4953,38 @@ markup, so a disagreement would have shown up as a source that collected
 nothing and reported success. The probe now calls the shipped parser and prints
 what the collector's own window would keep. Confirmed against the live file:
 599 entries, 310 inside 24 hours, 585 of 599 `/article/`.
+
+## 2026-08-28 — The editor tie-break gets the backoff
+
+`callTieBreakForGroup` ran on a raw `callLLM` from the day it was written, at
+`concurrency: 10` — level with grouping-pass-1, the highest in the pipeline.
+Run #125 lost 12 of its 25 tie groups to a single 429 each, one attempt, no
+retry, and ranked those items by ref order instead. Ref order is alphabetical,
+and at a tier boundary it decides whether a story runs as a feature or a
+standard.
+
+The run is its own control. Grouping's attach pass met the same 429 storm from
+the same provider minutes earlier, retried under `callWithBackoff`, and
+finished with `attach_failed_calls=0`. Nothing about the storm was unusual;
+only one of the two stages was wrapped.
+
+It is also the quiet failure the rule was written for: the catch returns an
+empty rank map, which is indistinguishable from a group the model declined to
+order, so the stage logged a warning and reported success. Migration 040 puts
+`tie_break_calls` and `tie_break_failed_calls` on `editor_runs` for the same
+reason as 030 and 039 — a report regenerated from the database has to be able
+to judge a run after the console log is gone.
+
+## 2026-08-28 — The gap rule names the outlet case
+
+Run #47 published one source-meta sentence in 150 pieces: S64820, "The article
+does not specify when the House might take up the legislation." The packet
+note's gap rule already excluded it — an article is not "someone in the story"
+— but only implicitly, and the memo draws the actor-versus-outlet line in the
+system prompt, at the far distance. Every previous instance of this failure was
+fixed by moving the winning instruction nearer to the material, so the clause
+now names the shape that keeps reaching the paper. It is the same rule, not a
+new layer and not a new prohibition.
+
+One piece in 150 is not a controlled measurement. The controlled form is a
+single-tier re-run against one editor run, and this has not had one.

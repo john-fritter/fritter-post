@@ -168,6 +168,13 @@ editor:
     # the tie-break should end up ranking a handful of items, not most of the
     # paper.
     body_cap: 300
+    # The tie-break is batched and concurrent, so it runs under callWithBackoff.
+    # Run #125 lost 12 of 25 groups to single 429s with no retry, and ranked
+    # 60-odd items by ref order — alphabetical, and at a tier boundary that
+    # decides feature versus standard. Grouping's attach pass met the same storm
+    # from the same provider minutes earlier and finished with zero failures.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
 
 # Writers stage. The writer call itself is not built yet — the model id below is
 # still a placeholder — but the fetch sub-stage that feeds it is.
