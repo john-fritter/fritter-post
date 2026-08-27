@@ -407,6 +407,50 @@ function testASourceWithRealReportingIsNotAnEchoHoweverItIsAttributed() {
   );
 }
 
+function testApUnrenderedTimestampIsStrippedFromTheHeadOfTheLine() {
+  // AP renders its timestamp client-side and ships the placeholders in the HTML,
+  // so the dateline and the first sentence arrive behind seventy characters of
+  // broken template. Five of twelve pages sampled on 2026-08-27 carried it.
+  const ap =
+    "Updated [hour]:[minute] [AMPM] [timezone], [monthFull] [day], [year] " +
+    "BUÑOL, Spain (AP) — Thousands pelted one another with tomatoes on Wednesday.";
+  const out = stripBoilerplate(ap);
+  assert.equal(
+    out.text,
+    "BUÑOL, Spain (AP) — Thousands pelted one another with tomatoes on Wednesday.",
+  );
+
+  // The newsletter shape says "Published", and a byline may come first. Only
+  // the placeholder run goes: the byline is real attribution.
+  const wire =
+    "By THE ASSOCIATED PRESS Updated [hour]:[minute] [AMPM] [timezone], " +
+    "[monthFull] [day], [year] All Times EDT Thursday, Aug. 27.";
+  assert.equal(
+    stripBoilerplate(wire).text,
+    "By THE ASSOCIATED PRESS All Times EDT Thursday, Aug. 27.",
+  );
+
+  const newsletter =
+    "Published [hour]:[minute] [AMPM] [timezone], [monthFull] [day], [year] " +
+    "This is our flagship newsletter Morning Wire.";
+  assert.equal(
+    stripBoilerplate(newsletter).text,
+    "This is our flagship newsletter Morning Wire.",
+  );
+}
+
+function testBracketedProseIsNotMistakenForATemplate() {
+  // An editorial insertion in a quotation is bracketed too, and it is prose.
+  const quote =
+    'Updated guidance says the agency "will review [the] matter," a spokesperson said.';
+  assert.equal(stripBoilerplate(quote).text, quote);
+
+  // Two placeholders is not the pattern; the rule wants a run of three.
+  const partial = "Updated [hour]:[minute] on the record, the mayor said.";
+  assert.equal(stripBoilerplate(partial).text, partial);
+}
+
+
 testCascadePbsHousePromoIsRemoved();
 testAnArticleAboutWritersSurvives();
 testAParagraphRepeatedInsideOneDocumentIsDropped();
@@ -423,5 +467,7 @@ testARealTruncationSurvivesFurnitureRemoval();
 testAStructurelessBodyIsStillReportedIncomplete();
 testABoundaryThatWouldCostMostOfTheBodyIsNotHonoured();
 testFurnitureIsRemovedBeforeTheTailIsJudged();
+testApUnrenderedTimestampIsStrippedFromTheHeadOfTheLine();
+testBracketedProseIsNotMistakenForATemplate();
 
 console.log("writer boilerplate tests passed");

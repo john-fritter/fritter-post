@@ -29,6 +29,35 @@ const TAIL_MARKERS: RegExp[] = [
   /^sign up (?:for|to) .{0,60}newsletter/i,
 ];
 
+/**
+ * Furniture that sits inside a line rather than owning one, stripped in place.
+ *
+ * A line rule drops a whole line, which is right for a promo module and wrong
+ * here: AP renders its timestamp from a client-side template and serves the
+ * placeholder tokens in the HTML, so `extractArticle` hands back
+ * `Updated [hour]:[minute] [AMPM] [timezone], [monthFull] [day], [year] BUÑOL,
+ * Spain (AP) — Thousands pelted one another…`. The dateline and the first
+ * sentence are in that same line. Five of twelve AP pages sampled on 2026-08-27
+ * carried it, and AP is about to be the paper's largest single contributor of
+ * material, so this is roughly seventy characters of broken template at the head
+ * of most AP articles a writer reads.
+ *
+ * **Not anchored**, because three of the twelve put a byline in front of it
+ * ("By THE ASSOCIATED PRESS Updated [hour]:…"), and a rule that only fires at
+ * the start of a line would have left the worst-looking ones alone. It needs no
+ * anchor to be safe: it consumes only bracketed tokens and the punctuation
+ * between them, stops at the first real word, and demands three placeholders in
+ * a row after `Updated` — which prose does not produce. A bracketed editorial
+ * insertion inside a quotation is one token, not three.
+ */
+const INLINE_RULES: Array<{ pattern: RegExp; note: string }> = [
+  {
+    // apnews.com, every /article/, /photo-gallery/ and /newsletter/ page.
+    pattern: /(?:Updated|Published)\s+(?:\[[A-Za-z]+\][\s:,.\-–—]*){3,}/g,
+    note: "AP unrendered timestamp template",
+  },
+];
+
 /** Paragraphs dropped wherever they appear. */
 const LINE_RULES: Array<{ pattern: RegExp; note: string }> = [
   // KTVZ carrying CNN wire copy, rank 3 source 6.
@@ -282,7 +311,18 @@ export function stripBoilerplate(text: string): StripResult {
         continue;
       }
 
-      keptLines.push(line);
+      // In-place, before the line is kept: what is left is real prose, and a
+      // line that was *only* furniture has nothing left and is dropped. The
+      // space collapse is the cut's own seam, not a reflow of the prose.
+      let cleaned = line;
+      for (const rule of INLINE_RULES) cleaned = cleaned.replace(rule.pattern, " ");
+      cleaned = cleaned.replace(/ {2,}/g, " ").trim();
+      if (cleaned.length === 0) {
+        dropped++;
+        continue;
+      }
+
+      keptLines.push(cleaned);
     }
 
     if (keptLines.length === 0) continue;

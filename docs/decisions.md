@@ -4909,3 +4909,47 @@ report a successful zero-item source and say nothing about why. OregonLive serve
 exactly that shape at its declared news-sitemap URL, so this is a configuration
 mistake waiting to be made rather than a hypothetical. It now throws with a
 message naming the problem, which the collector records as a source failure.
+
+## 2026-08-27 — A skip never overwrites an attempt
+
+`fetch-text` recorded its skips with a per-reason flag deciding whether the
+skip row could replace an existing `article_texts` row. The flag was set for
+`host in cooldown` and left off the other two reasons, and the reason it was
+left off `already attempted within refetch_after_hours` is the reason it is
+fatal there: that skip fires *because* a recent attempt exists, so it clobbered
+the very row it had just read. Re-running the fetch against one editor run
+deleted that run's own article text — AP read 100% usable at a 4,269-character
+median in one report and 14% at 0 in the next, on the same day, with no fetch
+in between that could have failed.
+
+The rule is now derived from the row's status rather than passed in by the
+caller: a skip means "never asked", so it may only replace another skip, and no
+caller can get it wrong. The cooldown case the flag was written for is an
+instance of that rule, not an exception to it.
+
+## 2026-08-27 — Timing checks order, not proximity
+
+`inspect timing` takes the latest run of each stage, and marked a stage as
+`[earlier lineage]` when it started more than six hours before the newest. That
+catches a replay from a days-old preprocessor run and missed the case that
+reached a report: editor #123 and writers #45 ran at 21:51 and 21:52, while
+grouping-pass-1 #43 and thread #21 ran at 00:43 and 00:51 the next morning.
+Every row sat inside six hours of every other, so nothing was marked, and the
+command reported a 332m wall clock and a 308m "orchestration gap" that nobody
+waited — it was the distance between two sittings, and #123's paper was not
+written from #43's scores at all.
+
+Proximity in time was never the question; order is. The stage list is already
+in pipeline order, so a stage that started before one above it demonstrably did
+not consume it. When that happens the wall clock and the gap are suppressed
+rather than printed with a caveat: a fictional number is worse than no number.
+
+## 2026-08-27 — The probe parses with the parser that ships
+
+`probe-source --sitemap` read AP's XML with four regexes of its own. Every fact
+in `sources.yaml` about AP came from those regexes, and the collector does not
+run them — `parseNewsSitemap` and its linkedom DOMParser had never seen real AP
+markup, so a disagreement would have shown up as a source that collected
+nothing and reported success. The probe now calls the shipped parser and prints
+what the collector's own window would keep. Confirmed against the live file:
+599 entries, 310 inside 24 hours, 585 of 599 `/article/`.

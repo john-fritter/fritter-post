@@ -6,6 +6,7 @@ import {
   classifyResponse,
   isTransportError,
   type FetchStatus,
+  overwritesAttempts,
 } from "../src/pipeline/writers/fetch-text.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
 import { hostOf } from "../src/lib/http.js";
@@ -169,25 +170,39 @@ function testRecentlyAttemptedArticlesAreNotRequestedAgain() {
   assert.match(plan.skips[0]!.detail, /already attempted/);
 }
 
-function testCooldownSkipsPreserveTheAttemptThatCausedThem() {
-  // The self-defeating case: if a cooldown skip overwrites the blocked rows that
-  // produced the cooldown, the next run sees no failures, lifts the cooldown,
-  // and re-requests every URL. Only cooldown skips carry the flag — a
-  // fat-feed skip has no attempt to protect.
+function testNoSkipReasonMayOverwriteAnAttempt() {
+  // This was a per-reason flag the planner set, and it was set for exactly one
+  // of the three reasons. The one it was left off is the one where it is fatal:
+  // `already attempted within refetch_after_hours` fires *because* a recent
+  // attempt exists, so it overwrote the row it had just read and deleted the
+  // text that run had paid for. AP went 100% usable at a 4,269-char median to
+  // 14% at 0 across two reports on one day, with no fetch in between that could
+  // have failed.
+  //
+  // So the question is asked of the row's status rather than of the reason, and
+  // every reason gets the same answer.
   const plan = planFetch(
     [
       storyOf("feature", [
         article(1, 100, "https://nytimes.com/a"),
         article(2, 4000, "https://opb.org/b"),
+        article(3, 100, "https://theguardian.com/c"),
       ]),
     ],
     CFG,
     new Set(["nytimes.com"]),
+    new Set([3]),
   );
-  const cooldownSkip = plan.skips.find((s) => s.host === "nytimes.com")!;
-  const fatSkip = plan.skips.find((s) => s.host === "opb.org")!;
-  assert.equal(cooldownSkip.preservesAttempt, true);
-  assert.notEqual(fatSkip.preservesAttempt, true);
+  // All three reasons are represented, and none of them may clobber a result.
+  assert.equal(plan.skips.length, 3);
+  for (const _skip of plan.skips) assert.equal(overwritesAttempts("skipped"), false);
+
+  // A real attempt still replaces whatever was there — including a stale skip,
+  // which is how a host recovers from cooldown.
+  assert.equal(overwritesAttempts("ok"), true);
+  assert.equal(overwritesAttempts("thin"), true);
+  assert.equal(overwritesAttempts("blocked"), true);
+  assert.equal(overwritesAttempts("error"), true);
 }
 
 function testTransportFailuresRetryButTimeoutsDoNot() {
@@ -404,7 +419,7 @@ testCoolingHostsAreSkippedNotRequested();
 testOneRequestPerUrlEvenWhenItemsShareIt();
 testAnItemInTwoStoriesIsPlannedOnce();
 testRecentlyAttemptedArticlesAreNotRequestedAgain();
-testCooldownSkipsPreserveTheAttemptThatCausedThem();
+testNoSkipReasonMayOverwriteAnAttempt();
 testTransportFailuresRetryButTimeoutsDoNot();
 testHostGroupingIsBusiestFirst();
 testHostWithRepeatedFailuresAndNoSuccessCools();

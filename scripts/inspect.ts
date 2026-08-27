@@ -818,6 +818,33 @@ async function main() {
           r.started !== null && newestStart - r.started.getTime() <= LINEAGE_WINDOW_MS;
         const stale = rows.filter((r) => r.id !== null && !inLineage(r));
 
+        // **A downstream stage cannot start before the upstream one it reads.**
+        // The six-hour window catches a replay from a *days*-old preprocessor
+        // run and misses the case that actually reached a report: editor #123
+        // and writers #45 ran at 21:51 and 21:52, and grouping-pass-1 #43 and
+        // thread #21 ran at 00:43 and 00:51 the next morning. Every row was
+        // inside six hours of every other, so nothing was marked, and the
+        // command reported a 332m wall clock and a 308m "orchestration gap"
+        // that no one ever waited — it was the distance between two separate
+        // sittings, and #123's paper was not written from #43's scores at all.
+        //
+        // Time-of-day proximity was never the question. Order is, and the
+        // stage list is already in pipeline order, so a stage that starts
+        // before one above it demonstrably did not consume it.
+        const outOfOrder: string[] = [];
+        let highWater = -Infinity;
+        let highWaterLabel = "";
+        for (const r of rows) {
+          if (r.started === null || !inLineage(r)) continue;
+          const t = r.started.getTime();
+          if (t < highWater) outOfOrder.push(`${r.label} < ${highWaterLabel}`);
+          else {
+            highWater = t;
+            highWaterLabel = r.label;
+          }
+        }
+        const oneLineage = outOfOrder.length === 0;
+
         console.log("Stage durations — latest run of each stage\n");
         console.log("  stage             run        started              duration");
         let stageTotal = 0;
@@ -853,7 +880,16 @@ async function main() {
         const fresh = rows.filter(inLineage);
         const started = fresh.map((r) => r.started).filter((d): d is Date => d !== null);
         const ended = fresh.map((r) => r.completed).filter((d): d is Date => d !== null);
-        if (started.length > 0 && ended.length > 0) {
+        if (!oneLineage) {
+          console.log(
+            `\n  NOT ONE LINEAGE — ${outOfOrder.join(", ")}. A stage cannot have ` +
+              `consumed\n  one that started after it. These are the latest runs of ` +
+              `each stage, but they\n  are not one run of the pipeline, so no wall ` +
+              `clock is reported: the span\n  between them is the distance between two ` +
+              `sittings, not a wait anybody sat\n  through. The per-stage durations ` +
+              `above are still each stage's own.`,
+          );
+        } else if (started.length > 0 && ended.length > 0) {
           const first = Math.min(...started.map((d) => d.getTime()));
           const last = Math.max(...ended.map((d) => d.getTime()));
           const wall = (last - first) / 1000;
