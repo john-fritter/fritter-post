@@ -1311,6 +1311,105 @@ async function main() {
         break;
       }
 
+      // The published paper, as the reader will get it. The publisher adds
+      // exactly one thing the pipeline did not already have — resolved source
+      // links — so this view leads on how many of them there are, and on the two
+      // ways a paper can be holed: pieces the writers never delivered, and
+      // pieces with nothing behind them to link to.
+      case "publisher": {
+        const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
+
+        if (id === undefined) {
+          const { rows } = await pool.query(
+            `SELECT id, to_char(published_on, 'YYYY-MM-DD') AS day, writer_run_id,
+                    story_count, piece_count, source_count, word_count,
+                    pieces_skipped, pieces_unsourced
+               FROM papers ORDER BY published_on DESC, id DESC LIMIT 20`,
+          );
+          if (rows.length === 0) {
+            console.log("No papers published yet.");
+            break;
+          }
+          console.log("  id  date         wrun  stories  pieces  sources   words  skipped  unsourced");
+          for (const r of rows) {
+            console.log(
+              `  ${String(r.id).padStart(2)}  ${r.day}  ${String(r.writer_run_id).padStart(4)}  ` +
+                `${String(r.story_count).padStart(7)}  ${String(r.piece_count).padStart(6)}  ` +
+                `${String(r.source_count).padStart(7)}  ${String(r.word_count).padStart(6)}  ` +
+                `${String(r.pieces_skipped).padStart(7)}  ${String(r.pieces_unsourced).padStart(9)}`,
+            );
+          }
+          break;
+        }
+
+        const { rows: paperRows } = await pool.query(
+          `SELECT id, to_char(published_on, 'YYYY-MM-DD') AS day, writer_run_id, editor_run_id,
+                  story_count, piece_count, source_count, word_count,
+                  pieces_skipped, pieces_unsourced
+             FROM papers WHERE id = $1`,
+          [id],
+        );
+        const paper = paperRows[0];
+        if (!paper) {
+          console.log(`Paper #${id} not found`);
+          break;
+        }
+
+        console.log(`Paper #${paper.id} — ${paper.day}`);
+        console.log(`  writer run #${paper.writer_run_id}, editor run #${paper.editor_run_id}`);
+        console.log(
+          `  ${paper.story_count} stories, ${paper.piece_count} pieces, ` +
+            `${paper.source_count} source links, ${paper.word_count} words`,
+        );
+        if (paper.pieces_skipped > 0) {
+          console.log(
+            `  ${paper.pieces_skipped} piece(s) missing — the writers failed them. ` +
+              `Recover: npm run write -- --repair ${paper.writer_run_id}`,
+          );
+        }
+        if (paper.pieces_unsourced > 0) {
+          console.log(
+            `  ${paper.pieces_unsourced} piece(s) with NO source link — the reader ` +
+              `cannot follow those anywhere`,
+          );
+        }
+        console.log("");
+
+        const { rows: pieces } = await pool.query(
+          `SELECT p.rank, p.section_rank, p.tier, p.ref, p.section_ref, p.section_role,
+                  p.headline, p.body, p.word_count, p.source_count,
+                  (SELECT COUNT(*) FROM paper_sources s WHERE s.paper_piece_id = p.id)
+                    AS resolved
+             FROM paper_pieces p WHERE p.paper_id = $1
+            ORDER BY p.rank, p.section_rank`,
+          [id],
+        );
+
+        let lastSection: string | null = null;
+        for (const p of pieces) {
+          if (p.section_ref && p.section_ref !== lastSection) {
+            console.log(`  == SECTION ${p.section_ref}`);
+          }
+          lastSection = p.section_ref;
+          const role = p.section_role ? p.section_role.padEnd(8) : "        ";
+          // resolved < source_count is the gap between what the editor ranked
+          // the story on and what the reader can actually reach.
+          const gap = Number(p.resolved) < p.source_count ? "*" : " ";
+          console.log(
+            `  ${String(p.rank).padStart(4)}. [${p.tier.padEnd(8)}] ${role}${p.ref.padEnd(8)} ` +
+              `${String(p.word_count).padStart(4)}w  ${String(p.resolved).padStart(2)}/${String(p.source_count).padEnd(2)}${gap} ` +
+              `${p.headline ?? "(line: " + p.body.slice(0, 50) + ")"}`,
+          );
+        }
+        console.log("");
+        console.log(
+          "  n/m = source links the reader gets / sources the editor ranked on.\n" +
+            "  * marks a difference, which is not always a fault: two feeds carrying one\n" +
+            "  syndicated story are one link. A 0/n is the real defect.",
+        );
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -1332,6 +1431,8 @@ Commands:
                            plus wall clock across the lineage and how much of it
                            was spent between stages rather than inside them
   fetch [--days <n>]       Per-source article fetch outcomes from article_texts
+  publisher                List published papers
+  publisher --id <n>       Show one paper's pieces and how many sources resolved
                            (default 14 days): what a writer ends up with per
                            outlet, why we did not ask, and which sources have
                            never produced a usable article

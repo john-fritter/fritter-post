@@ -1,0 +1,183 @@
+/* ============================================================
+   The Fritter Post — reading view.
+
+   The index is the paper: 120-odd headline rows in rank order,
+   which is how the reader gets through it in five minutes and
+   goes deeper only where he wants to.
+
+   Two rules carry the design.
+
+   1. Containers expand, pieces open. A thread is the only
+      container, so it is the only thing that expands in place;
+      every piece has a page.
+
+   2. Colour means one thing: a link that leaves for someone
+      else's reporting. So the index has no accent in it at all,
+      and the blue appears only on an article's sources. It is
+      "curate, don't reproduce" made visible — the only coloured
+      thing on the page is the way out of it.
+
+   Tier is carried by type scale alone. No badges: a feature
+   should look like a feature.
+   ============================================================ */
+
+:root {
+  --paper:#F5F6F8; --band:#EAECF1; --band-deep:#E3E6EC;
+  --ink:#15171C; --ink-soft:#4A505B; --ink-faint:#7B828F;
+  --rule:#D8DBE2; --rule-soft:#E4E7EC;
+  --accent:#1B4AA0; --sel:#DCE4F6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:#131519; --band:#1B1E24; --band-deep:#212530;
+    --ink:#E6E8EC; --ink-soft:#A9AFBA; --ink-faint:#757C88;
+    --rule:#292D35; --rule-soft:#22262D;
+    --accent:#92B2F4; --sel:#24304A;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--paper); color: var(--ink); margin: 0;
+  font-family: "Newsreader", Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto; font-size: 1.0625rem; line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: var(--sel); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+.app { max-width: 36rem; margin: 0 auto; padding: 1.75rem 1.15rem 3.5rem; }
+.sep { color: var(--ink-faint); padding: 0 0.45em; }
+.eyebrow, .kicker, .folio, .rank, .go, .thirty, .art-meta, .art-srcs h2, .back, .empty h2 {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+}
+
+/* ---------- masthead ---------------------------------------------------- */
+.masthead { margin-bottom: 1.35rem; }
+.kicker {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-faint); margin: 0 0 0.45rem;
+}
+.flag {
+  font-size: 2.3rem; font-weight: 700; letter-spacing: -0.022em; line-height: 1;
+  margin: 0; padding-bottom: 0.45rem; border-bottom: 2px solid var(--ink);
+}
+.folio {
+  font-size: 0.75rem; font-weight: 500; color: var(--ink-soft); margin: 0;
+  padding-top: 0.5rem; font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the list ---------------------------------------------------- */
+.list { display: block; border-top: 1px solid var(--rule); }
+.row {
+  display: grid; grid-template-columns: 2.15rem 1fr 1.3rem;
+  align-items: baseline; column-gap: 0.35rem;
+  padding: 0.72rem 0; border-bottom: 1px solid var(--rule-soft);
+  text-decoration: none; color: inherit;
+}
+.rank {
+  font-size: 0.6875rem; font-weight: 600; color: var(--ink-faint);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.04em;
+}
+.row-main { display: flex; flex-direction: column; gap: 0.16rem; min-width: 0; }
+.eyebrow {
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0.11em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.hl { text-wrap: pretty; }
+.go { font-size: 0.8rem; color: var(--ink-faint); justify-self: end; line-height: 1.6; }
+
+.k-thread   > .row-main > .hl { font-size: 1.11rem; font-weight: 600; line-height: 1.28; }
+.k-feature  > .row-main > .hl { font-size: 1.19rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.012em; }
+.k-standard > .row-main > .hl { font-size: 1.01rem; font-weight: 500; line-height: 1.34; }
+.k-brief    > .row-main > .hl { font-size: 0.94rem; font-weight: 400; line-height: 1.4; color: var(--ink-soft); }
+
+/* ---------- a thread: a container, so it is tinted ---------------------- */
+.thread { border-bottom: 1px solid var(--rule-soft); }
+.thread > summary {
+  background: var(--band); list-style: none; cursor: pointer;
+  padding-left: 0.6rem; padding-right: 0.6rem; margin: 0 -0.6rem;
+  border-bottom: none;
+}
+.thread > summary::-webkit-details-marker { display: none; }
+.chev { transition: transform 140ms ease; transform-origin: 45% 55%; }
+.thread[open] > summary { background: var(--band-deep); }
+.thread[open] .chev { transform: rotate(90deg); }
+.members {
+  background: var(--band); margin: 0 -0.6rem; padding: 0 0.6rem 0.15rem;
+  border-top: 1px solid var(--rule);
+}
+.members .row { grid-template-columns: 0.9rem 1fr 1.3rem; border-bottom: 1px dotted var(--rule); }
+.members .row:last-child { border-bottom: none; }
+.members .row::before {
+  content: ""; border-top: 1px solid var(--ink-faint);
+  width: 0.5rem; margin-top: 0.62rem; opacity: 0.45;
+}
+.members .k-feature > .row-main > .hl,
+.members .k-standard > .row-main > .hl { font-size: 1.01rem; font-weight: 500; }
+.members .k-brief > .row-main > .hl { font-size: 0.92rem; }
+
+/* ---------- an article -------------------------------------------------- */
+.article { display: flex; flex-direction: column; gap: 0.85rem; }
+.back {
+  font-size: 0.78rem; font-weight: 500; color: var(--accent);
+  text-decoration: none; align-self: flex-start; padding: 0.2rem 0; margin-bottom: 0.2rem;
+}
+.back:hover { text-decoration: underline; }
+.part-of {
+  margin: 0; font-size: 0.92rem; color: var(--ink-soft); font-style: italic;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule);
+}
+.part-of a { color: var(--ink-soft); }
+.art-hl {
+  font-size: 1.72rem; font-weight: 600; line-height: 1.14; letter-spacing: -0.018em;
+  margin: 0; text-wrap: balance;
+}
+/* A section line has no headline, so its page leads on its sentence — set as
+   prose, so it never pretends to be a headline it does not have. */
+.art-hl-line {
+  font-size: 1.28rem; font-weight: 500; line-height: 1.35; letter-spacing: -0.008em;
+  color: var(--ink-soft); font-style: italic;
+}
+.art-meta {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--ink-faint); margin: -0.35rem 0 0; font-variant-numeric: tabular-nums;
+}
+.art-body { display: flex; flex-direction: column; gap: 0.85rem; }
+.art-body p { margin: 0; font-size: 1.07rem; line-height: 1.66; text-wrap: pretty; }
+
+/* Reserved for images. Not built; sized here so adding them is not a re-layout. */
+.art-figure { margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.art-figure img { width: 100%; height: auto; display: block; background: var(--band); }
+
+.art-srcs { border-top: 1px solid var(--rule); padding-top: 0.9rem; margin-top: 0.4rem; }
+.art-srcs h2 {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.4rem;
+}
+.art-srcs p { margin: 0; font-family: "Archivo", system-ui, sans-serif; font-size: 0.8rem; line-height: 1.7; }
+.art-srcs a {
+  color: var(--accent); text-decoration: underline;
+  text-underline-offset: 0.22em; text-decoration-thickness: 0.06em;
+}
+.art-srcs .none { color: var(--ink-faint); font-style: italic; }
+
+/* ---------- the end ----------------------------------------------------- */
+.endmark { border-top: 2px solid var(--ink); padding-top: 1.2rem; margin-top: 1.6rem; text-align: center; }
+.thirty { font-size: 0.8125rem; font-weight: 600; letter-spacing: 0.24em; color: var(--ink-faint); margin: 0 0 0.3rem; }
+.end-note { font-style: italic; color: var(--ink-soft); margin: 0; font-size: 0.98rem; }
+
+.empty { padding: 3rem 0; text-align: center; }
+.empty h2 {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.5rem;
+}
+.empty p { margin: 0; color: var(--ink-soft); font-style: italic; }
+
+@media (hover: hover) {
+  .row:hover .hl { text-decoration: underline; text-underline-offset: 0.18em;
+                   text-decoration-thickness: 0.05em; text-decoration-color: var(--ink-faint); }
+}
+@media (min-width: 56rem) { .app { padding-top: 2.75rem; } .art-hl { font-size: 2rem; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

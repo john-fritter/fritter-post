@@ -21,6 +21,7 @@
     "grouping-pass1": "tsx scripts/grouping-pass1.ts",
     "fetch-text": "tsx scripts/fetch-article-text.ts",
     "write": "tsx scripts/write.ts",
+    "publish": "tsx scripts/publish.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts",
     "probe-source": "tsx scripts/probe-source.ts"
   },

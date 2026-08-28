@@ -4988,3 +4988,73 @@ new layer and not a new prohibition.
 
 One piece in 150 is not a controlled measurement. The controlled form is a
 single-tier re-run against one editor run, and this has not had one.
+
+## 2026-08-28 — The publisher is a stage, not a query
+
+Everything the reading view needs was already in the database, so the pages
+could have joined their way to it. Two things made that wrong.
+
+`writer_pieces` cannot produce a source link. It stores `source_count` and no
+URLs; the attribution is three joins away through `thread_members`,
+`grouping_runs.digest` and `preprocessed_items` — precisely the walk
+`writers/materials.ts` was written to do. Rendering a page would have put the
+writers' resolver on the reader's critical path.
+
+The real argument is the second one: a paper is a daily artifact. A view is a
+window onto whatever the pipeline currently believes, so re-running grouping
+tomorrow would silently change what yesterday's paper said. `papers`,
+`paper_pieces` and `paper_sources` (migration 041) are what was published,
+frozen at publication — which is also why the source rows copy the outlet name,
+title and URL rather than only holding a foreign key. `raw_items` has a
+retention window, and a published paper has to keep pointing at its sources
+after its inputs are swept.
+
+One paper per day, unique on `published_on`, and re-publishing deletes and
+re-inserts inside one transaction, so a re-run corrects the morning's paper
+rather than sitting beside it. The date is the reader's local day, not UTC: a
+run starting at 7pm Pacific must not publish tomorrow's edition.
+
+## 2026-08-28 — The index is the paper
+
+The first reading view was the obvious one: every piece, in rank order, one
+column, full text. Run #47 is 150 pieces and 21,857 words — about ninety
+minutes, roughly ninety phone screens. That is a reading surface, not a
+newspaper, and it is worse than it sounds on a phone, where there is no way to
+skip and no way to see what a section contains without scrolling through it.
+
+The index-first layout is the newspaper affordance the scroll had thrown away: a
+list of headlines you get through in a few minutes, and a page you turn to when
+one of them is worth it. 123 rows, about ten screens.
+
+One navigation rule, because two would need explaining: **containers expand,
+pieces open**. A thread is the only container. Every piece has a page.
+
+Briefs were briefly an exception — tapping one went straight to its source,
+which reads consistently until you notice two things. The paper's own 30-word
+brief bodies would be written every day and never displayed, 61 calls' worth;
+and the seven briefs a day with more than one source have no defensible
+destination, since "the source" is then arbitrary. Giving briefs pages fixed
+both and removed the exception.
+
+A consequence worth recording: with every row opening a page, nothing leaves the
+paper from the index, so the index carries no accent colour at all. Blue now
+appears only on an article's source list, which is a tidier statement of the
+rule than the version that produced it — the only coloured thing on a page is
+the way out of it.
+
+## 2026-08-28 — displayHeadline does not trim to a sentence
+
+A section line is written as a bare sentence with no headline, which the line
+contract makes explicit. In a continuous-reading layout that was right; in an
+index it leaves a row with nothing to show, so the sentence stands in — whole.
+
+Trimming it to its first sentence would keep the row one line tall, and the
+first implementation did. It was wrong twice in the first test run: the regex
+cut `He called it "beyond critical.` before the closing quote, and fixing that
+still left the failure that matters, because a period followed by a space ends
+"U.S." and "Adm." as readily as it ends a clause. `U.S. and NATO officials told
+AP…` becomes the headline `U.S.`.
+
+A tall row is a blemish. A headline that reads "U.S." is a defect. The heuristic
+is gone and the fallback returns the sentence whole; the real fix is upstream,
+where a line should carry its own headline.

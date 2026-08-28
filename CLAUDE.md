@@ -80,10 +80,10 @@ fritter-post/
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
 │   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
-│   ├── app/                     # Next.js routes (the reading view)
+│   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–038)
+├── migrations/                  # numbered SQL migrations (001–041)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -91,8 +91,7 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The pipeline is nine stages (see `docs/concept.md`). The eight below are built.
-Only the publisher is not built; its directory is empty.
+The pipeline is nine stages (see `docs/concept.md`). All nine are built.
 
 The researcher stage was dropped; the editor's tiered output feeds the writers
 directly (see `docs/decisions.md`).
@@ -103,7 +102,7 @@ grouping proved out; see `docs/decisions.md`.)
 
 ```
 collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-           →  thread  →  editor  →  writers
+           →  thread  →  editor  →  writers  →  publisher
 ```
 
 ### collector
@@ -913,6 +912,81 @@ reproduce" — and is swept on `writers.fetch.retention_days` by the fetch scrip
 Failures and skips are stored too, so a report can say what fraction of the paper
 is running on feed excerpts.
 
+### publisher
+
+**Freezes a writer run into a paper, and adds the one thing the pipeline never
+had: source links.** `npm run publish -- --writer-run <n>`. Writes `papers` /
+`paper_pieces` / `paper_sources` (migration 041).
+
+**It is a stage, not a query, and that is the whole design argument.**
+`writer_pieces` stores a source *count* and no URLs — the attribution is three
+joins away through `thread_members`, `grouping_runs.digest` and
+`preprocessed_items`, which is exactly the walk `writers/materials.ts` exists to
+do. The publisher reuses that resolver rather than reimplementing it. Doing the
+walk per page load would put it on the reader's critical path and, the real
+objection, would make yesterday's paper a view of today's database: re-running
+grouping tomorrow must not change what was published this morning.
+
+**Source rows carry their own copies** of outlet name, title and URL rather than
+only a foreign key, because `raw_items` has a retention window and a published
+paper must keep pointing at its sources after its inputs are swept.
+
+**No third-party article text is ever copied.** `article_texts` stays the only
+table holding that; it writes the paper and never publishes it.
+
+**One paper per day, and re-publishing replaces it.** `papers.published_on` is
+unique and the stage deletes-then-inserts in one transaction, so a re-run
+corrects the morning's paper rather than sitting beside it. The date is the
+*reader's* local day (`PAPER_TIMEZONE`, default `America/Los_Angeles`): a run
+starting at 7pm Pacific must not publish tomorrow's edition.
+
+**Two ways a paper is holed, counted separately.** `pieces_skipped` is writer
+pieces that failed and so are not in the paper; `pieces_unsourced` is published
+pieces whose lineage would not resolve, which the reader cannot follow to
+anyone's reporting. Both are on `papers` for migration 030's reason — a report
+must be able to judge a paper after the console log is gone. `inspect publisher
+--id <n>` shows them per piece as `resolved/ranked`.
+
+Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
+`displayHeadline`, `sourceLabel`, `paragraphs`, `formatEditionDate`,
+`readingMinutes`) are unit-tested in `tests/publisher-assemble.test.ts`.
+
+### the reading view
+
+`src/app/` — the index at `/`, one page per piece at `/story/<ref>`. Server
+components reading only the `paper_*` tables: a published paper is
+self-contained, so rendering never touches the pipeline's working tables.
+
+**Containers expand, pieces open.** A thread is the only container, so it is the
+only thing that expands in place; every piece — brief included — has a page.
+That rule replaced an earlier design where briefs linked straight out to their
+source, which read consistently but meant the 30-word brief bodies were written
+and never displayed, and left the 7 briefs a day with more than one source with
+no defensible destination.
+
+**The index is the paper.** 120-odd headline rows in rank order, because run
+#47's 150 pieces are 21,857 words — about 90 minutes — and a continuous scroll
+of all of it is a reading surface, not a newspaper. Tier is carried by type
+scale alone, no badges.
+
+**Colour means exactly one thing: a link that leaves for someone else's
+reporting.** So the index has no accent in it at all, and blue appears only on
+an article's source list. It is "curate, don't reproduce" made visible.
+
+**A section line has no headline**, so its row and its page lead on its
+sentence, set as prose rather than as a headline it does not have.
+`displayHeadline` deliberately does **not** trim that to a first sentence: every
+cheap way to find one is wrong on news prose, because a period-plus-space ends
+"U.S." and "Adm." as readily as a clause, and `U.S. and NATO officials told AP…`
+becomes the headline `U.S.`. A tall row is a blemish; a headline reading "U.S."
+is a defect. The real fix is upstream — a line should carry its own headline.
+
+**`next.config.ts` aliases `.js` → `.ts` for webpack.** The pipeline is written
+for tsx and node's ESM resolver, so every internal import carries a `.js`
+specifier pointing at a `.ts` file. Webpack does not do that rewrite, and the
+reading view imports publisher modules. The alias keeps one import convention
+across the repo instead of making `src/app` an exception.
+
 ---
 
 ## Conventions
@@ -1054,7 +1128,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **041**.
+number is ambiguous. The next migration is **042**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1072,6 +1146,9 @@ number is ambiguous. The next migration is **041**.
   paper's pieces
 - `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
   pieces, in place
+- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD]` — freeze a writer run
+  into the day's paper with resolved source links. Re-publishing a date replaces
+  that paper, so this is safe to re-run
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -1108,6 +1185,9 @@ number is ambiguous. The next migration is **041**.
   headline-only because the materials audit counts thin *articles*, which is a
   different quantity from a thin *piece*; a non-zero count in a prominent tier
   now means the day ran out of material to trade with, not a mis-assigned slot
+- `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
+  piece with `resolved/ranked` source counts, so a paper the reader cannot follow
+  anywhere is visible without opening it
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 
