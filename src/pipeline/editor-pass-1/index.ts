@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
+import { outletCountsByCluster } from "../../db/outlets.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMProvider } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
@@ -543,6 +544,15 @@ export async function runGroupingPass1(
     // 9. Persist results.
     const INSERT_CHUNK = 500;
 
+    // `sources` is how many newsrooms reported this, not how many rows we
+    // stored. Two feeds of one publisher — AP Politics and AP Top News, or one
+    // station's English and Spanish copies of the same wire story — are one
+    // outlet, and counting them twice inflates the lift the editor reads. See
+    // src/db/outlets.ts.
+    const outletCounts = await outletCountsByCluster(
+      new Map(clusterResults.map((r) => [r.id, clusters[r.id]?.memberIds ?? []])),
+    );
+
     // Cluster rows: 7 params each (run_id, cluster_index, source_count, score,
     // interest, consequence, reason). The axes are nullable — a fail-safed row
     // has a score but no breakdown.
@@ -557,7 +567,7 @@ export async function runGroupingPass1(
         .join(", ");
       const params: Array<number | string | null> = [];
       for (const r of chunk) {
-        const sourceCount = clusters[r.id]!.memberIds.length;
+        const sourceCount = outletCounts.get(r.id) ?? clusters[r.id]!.memberIds.length;
         params.push(runId, r.id, sourceCount, r.score, r.interest, r.consequence, r.reason);
       }
       await pool.query(

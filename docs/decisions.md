@@ -5126,3 +5126,42 @@ have lifted routine local items too, which is the thing to avoid.
 **This has not been measured.** The controlled form is a re-score of grouping run
 #58 against the new prompt, diffed with pass-1 run #44 — same corpus, one
 variable. Until that runs, the claim is a hypothesis with an argument behind it.
+
+## 2026-08-28 — `sources` counts newsrooms, not rows
+
+The editor's prominence lift is `source_weight * ln(sources)`, and `sources` was
+the cluster's member count: one per preprocessed item. That counts pickup, which
+is the point, and it also counts one outlet twice whenever a publisher's feed
+carries a story more than once. Run #47's KTVZ feed did exactly that seven
+times, English and Spanish copies of one CNN story, each pair adding a source to
+the lift.
+
+Prominence is now distinct parent outlets. `sources.yaml` has declared a
+`parent` on sibling feeds since the beginning — AP News under AP, three Reuters
+feeds, three Guardian feeds, two each for BBC, the NYT and OPB — precisely
+because they are one newsroom, and no ranking code read it.
+
+**The practical effect today is smaller than it first looks, and the earlier
+claim in this session overstated it.** The preprocessor's within-parent dedup
+already collapses sibling-feed duplicates, keyed on `parent::canonical_url` and
+`parent::normalized_title`, so a story all three Reuters feeds carried was
+already one row before it reached grouping. What that key cannot catch is the
+same outlet publishing one story at two URLs under two different titles — a
+translation, or a re-headlined update — which is the KTVZ case, and which the
+feed swap in this same branch has already removed from the corpus.
+
+So this is a backstop and a correction of meaning rather than a fix for an
+active defect. It is worth having on both counts: `sources` should mean how many
+newsrooms reported the story, and the next multi-feed source added will not
+re-introduce the inflation. It should be measured expecting a *small* effect —
+and a null result is the change working, not failing.
+
+Guarded at 1, never 0. The count is fed to `ln()`, and `ln(0)` is -Infinity,
+which does not throw: it would sort a story to the bottom of the paper and read
+as an editorial judgment. An empty set means the caller could not resolve its
+items.
+
+The count is derived twice — in grouping-pass-1, which stores it, and in the
+editor, which re-derives it from the digest rather than reading the stored
+value. Both call the same helper. Collapsing them to one derivation is the
+better shape and a larger change than this one.

@@ -426,8 +426,9 @@ combined = relevance + source_weight * ln(sources)
 ```
 
 `relevance` is the grouping-pass-1 score (0–100), or `max(member score)` for a
-thread; `sources` is the cluster member count (1 for singletons, and
-`ln(1) = 0`, so singletons get no lift), or `sum(member sources)` for a thread;
+thread; `sources` is **how many newsrooms reported it — distinct parent outlets
+in the cluster**, not member rows (1 for singletons, and `ln(1) = 0`, so
+singletons get no lift), or `sum(member sources)` for a thread;
 `source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
 Rows sort by combined descending, then relevance, then ref.
 
@@ -454,6 +455,17 @@ persisted as `editor_runs.tie_break_calls` / `tie_break_failed_calls`
 (migration 040) and shown by `inspect editor --id`; NULL means a run before 040,
 where the console was the only record. A model that answers but omits refs gave
 a worse answer, not a lost call, and is not counted as a failure.
+
+**Prominence is outlets, not rows** (`src/db/outlets.ts`). Run #47's KTVZ feed
+carried the same CNN story in English and Spanish seven times, and each pair
+added a source to the lift. `sources.yaml` has declared a `parent` on sibling
+feeds all along — AP, three Reuters feeds, three Guardian, two each for BBC, the
+NYT and OPB — and no ranking code read it. Counted at 1 minimum, never 0: the
+value is fed to `ln()` and `ln(0)` is -Infinity, which does not throw, it sorts
+the story to the bottom of the paper and looks deliberate. The preprocessor's
+within-parent dedup already collapses sibling duplicates that share a URL or a
+normalized title, so this is a backstop for what that key cannot see — one
+outlet publishing one story under two headlines — and expects a small effect.
 
 Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
 and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
