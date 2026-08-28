@@ -25,6 +25,7 @@
  */
 
 import { DOMParser } from "linkedom";
+import { withinAgeWindow, withoutExcludedUrlPaths } from "./window.js";
 
 /**
  * A sitemap *index* lists other sitemaps, not articles: `<sitemap><loc>` rather
@@ -115,35 +116,12 @@ export function withinWindow(
   maxAgeHours: number,
   now: Date = new Date(),
 ): SitemapEntry[] {
-  if (maxAgeHours <= 0) return entries;
-  const cutoff = now.getTime() - maxAgeHours * 3600_000;
-  return entries.filter((e) => e.publishedAt === null || e.publishedAt.getTime() >= cutoff);
+  return withinAgeWindow(entries, (e) => e.publishedAt, maxAgeHours, now);
 }
 
-/**
- * Drops entries whose path a publisher's robots.txt disallows.
- *
- * AP's generic block permits `/article/` and `/live/` and sets no Crawl-delay,
- * with exactly one specific article excluded. That one is honoured here rather
- * than noted somewhere and forgotten: the case for collecting AP at all rests on
- * reading its robots.txt, and a rule you read but do not follow is worse than
- * one you never read.
- *
- * Exact paths, not patterns. A prefix rule would quietly grow to cover articles
- * the publisher never excluded, and the whole value of this list is that it can
- * be diffed against the robots.txt it came from.
- */
 export function withoutExcludedPaths(
   entries: SitemapEntry[],
   excludePaths: string[] | undefined,
 ): SitemapEntry[] {
-  if (excludePaths === undefined || excludePaths.length === 0) return entries;
-  const excluded = new Set(excludePaths.map((p) => p.replace(/\/+$/, "")));
-  return entries.filter((e) => {
-    try {
-      return !excluded.has(new URL(e.url).pathname.replace(/\/+$/, ""));
-    } catch {
-      return true;
-    }
-  });
+  return withoutExcludedUrlPaths(entries, (e) => e.url, excludePaths);
 }

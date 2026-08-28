@@ -16,15 +16,18 @@ const RawSourceSchema = z.object({
   // all but name and the only route to outlets that serve no RSS at all. See
   // src/pipeline/collector/sitemap.ts.
   format: z.enum(["rss", "news-sitemap"]).optional(),
-  // Only meaningful for `news-sitemap`: a sitemap does not window itself the way
-  // a feed does. AP's spans ~28 hours against a daily collector, so without a
-  // window the tail is re-collected every day for the cross-run dedup to discard
-  // again. 0 disables the window.
+  // Drop items published longer ago than this. A sitemap carries a publisher's
+  // whole recent index and is windowed by default (24h) because it has to be;
+  // an RSS feed windows itself by construction, so here it is opt-in and unset
+  // means no window. Set it on a source whose feed holds more than a day of
+  // publishing — a weekly, or any source on its first collection, where the
+  // whole backlog arrives at once and competes with the day's news. 0 disables.
   max_age_hours: z.number().int().nonnegative().optional(),
-  // Exact URL paths this publisher's robots.txt disallows, which the collector
-  // drops. Kept per source and written out in full rather than pattern-matched,
-  // so the list is auditable against the robots.txt it came from and stale
-  // entries are visible. Re-check when re-probing a source.
+  // Exact URL paths the collector drops — a publisher's robots.txt disallows,
+  // or a section of a feed that is not what the source was added for. Written
+  // out in full rather than pattern-matched, so the list stays auditable
+  // against the robots.txt it came from and stale entries are visible.
+  // Re-check when re-probing a source. Applies to both formats.
   exclude_paths: z.array(z.string()).optional(),
 });
 

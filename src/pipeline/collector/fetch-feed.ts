@@ -27,6 +27,8 @@ const TIMEOUT_MS = 20_000;
  * comparable to the one before it. AP's sitemap spans about 28 hours, of which
  * 281 of 529 entries fall inside 24.
  */
+import { withinAgeWindow, withoutExcludedUrlPaths } from "./window.js";
+
 const DEFAULT_SITEMAP_MAX_AGE_HOURS = 24;
 
 const ACCEPT_HEADER =
@@ -275,5 +277,26 @@ export async function fetchFeed(source: Source): Promise<FetchedItem[]> {
     });
   }
 
-  return results;
+  // Both of these were sitemap-only until 2026-08-29, and silently inert on the
+  // format almost every source uses. See ./window.ts.
+  //
+  // max_age_hours is opt-in here, with no default: a sitemap carries a
+  // publisher's whole recent index and has to be windowed to be usable at all,
+  // while a feed already windows itself by construction. Applying a default to
+  // 109 existing RSS sources would change what every one of them collects, to
+  // fix a problem only a newly-added or slow-publishing source has.
+  const windowed =
+    source.max_age_hours === undefined
+      ? results
+      : withinAgeWindow(results, (i) => i.published_at, source.max_age_hours);
+
+  const kept = withoutExcludedUrlPaths(windowed, (i) => i.original_url, source.exclude_paths);
+
+  if (kept.length < results.length) {
+    console.log(
+      `[collector] ${source.name}: ${results.length - kept.length} of ${results.length} ` +
+        `item(s) dropped by source window/exclusions`,
+    );
+  }
+  return kept;
 }

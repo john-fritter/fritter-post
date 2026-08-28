@@ -474,6 +474,12 @@
   url: https://www.nuggetnews.com/rss
   type: journalism
   group: local
+  # A weekly's feed holds several issues at once. On its first collection all 44
+  # items arrived at once, every one inside the preprocessor's 14-day backstop,
+  # and three of paper #3's top eleven came from that backlog - some of it a week
+  # old, ranked against the day's news. 8 days admits the current issue and
+  # rejects the rest. RSS sources are unwindowed unless this is set.
+  max_age_hours: 192
   notes: >-
     Sisters and Central Oregon. Added 2026-08-28 because the local beat was
     starved: run 47 published two Central Oregon stories in 150 pieces, and the

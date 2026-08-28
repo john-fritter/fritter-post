@@ -5165,3 +5165,43 @@ The count is derived twice — in grouping-pass-1, which stores it, and in the
 editor, which re-derives it from the digest rather than reading the stored
 value. Both call the same helper. Collapsing them to one derivation is the
 better shape and a larger change than this one.
+
+## 2026-08-29 — A source's first collection is an archive dump
+
+The Nugget was added on 2026-08-28 and its first collection returned 44 items,
+every one of them new. It is a weekly, so its feed holds several issues at once,
+and a first collection takes all of them. Three of paper #3's top eleven came
+out of that backlog — the Rowe Creek fire at rank 1, the drought at 6, the
+roadless rule at 11 — some of it a week old, ranked against the day's news.
+
+Nothing upstream could see it. The preprocessor's recency rule is a 24-hour
+window on `fetched_at`, and everything in a first collection is fetched now; its
+`max_age_days: 14` backstop exists for exactly this shape but is set for
+genuine archive dumps, and a weekly's backlog sits comfortably inside it.
+
+The fix was already in the config schema and had never worked here.
+`max_age_hours` and `exclude_paths` are both declared per source and both were
+applied inside `fetchNewsSitemap` only — silently inert on RSS, the format 109
+of 111 sources use. Two options that look like configuration and do nothing.
+Both now apply to feeds as well as sitemaps, through generic helpers in
+`collector/window.ts`; `sitemap.ts` keeps its own function names as
+delegations so its tests still pin the behaviour they always did.
+
+`max_age_hours` stays **opt-in for RSS with no default**, where a sitemap keeps
+its 24-hour one. A sitemap carries a publisher's whole recent index and has to
+be windowed to be usable; a feed windows itself by construction. Defaulting
+would change what all 109 existing sources collect in order to fix a problem
+only a newly-added or slow-publishing source has. The Nugget gets 192 hours —
+eight days, one publication cycle, admitting the current issue and rejecting
+the rest.
+
+An item with no date is kept. A feed that publishes no `pubDate` cannot be
+judged on age, and dropping what cannot be dated would silently empty those
+feeds — a worse failure than admitting something stale.
+
+Worth stating plainly: this does not make paper #3 wrong. Its front page is a
+good one, mixing the Iran war, the Nepal glacier collapse and a Russian ICBM
+test with three substantive Central Oregon stories on wildfire, drought and
+public lands — all of which the bio weights heavily. The defect is that the
+local three were *older* than the paper implied, and that every future source
+added would have done the same thing once.

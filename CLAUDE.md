@@ -125,6 +125,22 @@ lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
 serve the same feed to any browser. 404/410/5xx are never retried: those mean
 the feed is actually gone or broken, and a second request buys nothing.
 
+**A source's first collection is an archive dump, and per-source windowing now
+applies to feeds too.** `max_age_hours` and `exclude_paths` are declared per
+source and were applied inside `fetchNewsSitemap` only — inert on RSS, the
+format 109 of 111 sources use. The Nugget, a weekly, was added on 2026-08-28
+and its first collection returned 44 items, every one new; three of paper #3's
+top eleven came from that backlog, some a week old. The preprocessor could not
+see it — its recency window is 24h on `fetched_at`, and everything in a first
+collection is fetched now, while the `max_age_days: 14` backstop is set for
+genuine archive dumps. Both options now apply to both formats via
+`collector/window.ts`. **`max_age_hours` is opt-in for RSS with no default**
+(sitemaps keep 24h): a sitemap carries a publisher's whole index and must be
+windowed, a feed windows itself, and a default would change what all 109
+existing sources collect to fix a problem only a new or weekly source has. An
+item with no date is kept — dropping what cannot be dated would silently empty
+feeds that publish no `pubDate`.
+
 **A sitemap is a feed when a publisher serves no feed.** `format: news-sitemap`
 on a source reads a Google News sitemap instead of RSS — same transport, same
 identity rule, different parse. It exists for AP, which serves no RSS
