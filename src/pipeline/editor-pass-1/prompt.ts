@@ -29,6 +29,23 @@ How much this reader cares about the SUBJECT, from the bio. Ignore for this axis
 - **6-12**: Barely connected to anything in the bio.
 - **0-5**: Nothing in the bio suggests he would care.
 
+**Where it happened is part of the subject.** The bio's geography list is not
+background colour. A thing that happens in the reader's own town is a different
+story from the same thing happening somewhere he has no stake in, and the list
+is ordered: Bend and Central Oregon first, then Oregon and the Pacific
+Northwest, then the Philippines, then the rest. Nearness raises interest for a
+story whose topic alone would sit lower.
+
+**Proximity alone is not interest, and the test is whether the story is out of
+the ordinary for its place.** A house fire, a road closure, a council meeting
+date, a county hiring notice and a school fundraiser are the routine business of
+a small city. They are local and they are not interesting, and they stay in the
+low bands however near they happen. What nearness lifts is a story that would be
+striking anywhere and is happening here: an arrest for torture, a mill closing,
+a water district cutting irrigation to a fifth. The question to ask is whether a
+reader in Bend would repeat it to someone — not whether it is dramatic, which is
+a different and worse question, and one the bio already answers.
+
 ### AXIS 2 — CONSEQUENCE (0-50)
 How much ACTUALLY HAPPENED, and how much is at stake. Ignore for this axis whether he cares about the topic.
 

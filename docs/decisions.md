@@ -5058,3 +5058,71 @@ AP…` becomes the headline `U.S.`.
 A tall row is a blemish. A headline that reads "U.S." is a defect. The heuristic
 is gone and the fallback returns the sentence whole; the real fix is upstream,
 where a line should carry its own headline.
+
+## 2026-08-28 — KTVZ was a wire feed wearing a local badge
+
+`https://ktvz.com/feed/` contributed 38 kept-news items to run #47. **Two** of
+them mentioned Central Oregon. Every KTVZ item that reached the paper sat on a
+`/cnn-spanish/`, `/cnn-world/`, `/cnn-us-politics/`, `/cnn-national/` or
+`/cnn-business-consumer/` path — a Bend television station republishing the CNN
+wire, collected as though it were the local beat.
+
+It was worse than dead weight. Seven clusters held the same CNN story twice,
+once in English and once in Spanish, both from this one feed: the Iran response
+piece, the Mladić obituary, the Nepal floods, the CIA-in-Moscow story and three
+others. A cluster's source count is its member count, so each pair added one to
+the count feeding the editor's `9 * ln(sources)` lift. Wire stories were being
+promoted over local singletons partly by being counted twice, and the source
+this happened through was the one added to supply local news.
+
+`exclude_paths` looked like the fix and is not: the collector applies it inside
+`fetchNewsSitemap` only, so on an RSS source it is silently inert. Worth knowing
+independently — it is a config option that appears to work and does nothing.
+
+The fix is the category feed `https://ktvz.com/news/local-news/feed/`: 50 items,
+27 carrying Central Oregon place terms, zero `/cnn-*` paths, and extraction
+verified at 1723/3941/2590 characters. County feeds were verified as narrower
+alternatives and deliberately not added — five overlapping KTVZ feeds under
+different source names would re-create the duplicate-count problem this change
+fixes, unless they share a `parent`.
+
+The old `notes` field said "Prefilter should weight down unless it's a genuine
+Bend story." That is this project's recurring mistake in miniature: a hint to a
+prompt, doing the job of a rule. The prefilter cannot weight down what it should
+never have been sent.
+
+## 2026-08-28 — Nearness belongs on the interest axis
+
+Run #47 ranked "La Pine woman arrested in kidnapping and torture of Redmond man"
+at 103 of 123, below Argentina's central bank reform at 100. The reader lives in
+Deschutes County.
+
+Its scores were `interest=28, consequence=34`, reason: *"Local violent crime
+near Bend/Redmond; real arrests and charges."* The consequence axis was right —
+an arrest and indictment is a real, ordinary development, and the story does not
+affect many people. The scorer also plainly **saw** that it was local. It had
+nowhere to put that.
+
+The interest rubric read "how much this reader cares about the SUBJECT", and a
+subject is a topic. Geography sat in the bio as a list of places with no
+instruction attached, while the weighing rules pushed the other way — "weigh a
+story on its consequence, not on how much American attention it drew" reads as
+an argument against parochial weighting. So a violent crime in his own county
+landed in the 23-33 band, "adjacent to his interests".
+
+Nearness is now part of the interest axis, with the discriminator that makes it
+safe: **is the story out of the ordinary for its place?** A house fire, a road
+closure and a county hiring notice are local and routine and stay low; an arrest
+for torture, a mill closing and a water district cutting irrigation to a fifth
+are striking anywhere and happening here. This matters more after the KTVZ
+change, which brings roughly 27 local items a day where there were two — without
+the routine-business carve-out, the fix for a starved local beat would be a
+front page of Bend blotter.
+
+It is one lever, deliberately. A local lift in the editor's formula was the
+obvious alternative and would have double-counted against this one, and it would
+have lifted routine local items too, which is the thing to avoid.
+
+**This has not been measured.** The controlled form is a re-score of grouping run
+#58 against the new prompt, diffed with pass-1 run #44 — same corpus, one
+variable. Until that runs, the claim is a hypothesis with an argument behind it.

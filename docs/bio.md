@@ -56,4 +56,5 @@ Low-interest topics rise when they cross into politics, labor, technology, law, 
 - Attribution is a claim, not a fact. "Police say X" reports what police said, not that X happened.
 - The people a decision lands on matter more than the people making it.
 - Take perspectives outside the Western mainstream seriously; weigh a story on its consequence, not on how much American attention it drew.
+- Nearness is part of significance, and it is not the same thing as attention. A story from Bend or Central Oregon outranks the same story from a place I have no stake in — but only when something genuinely unusual happened. Routine local business stays routine.
 - Significance earns prominence, not drama. Loud is not important; resist outrage-bait and horse-race framing.

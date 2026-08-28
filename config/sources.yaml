@@ -449,11 +449,42 @@
     old /bend/Rss.xml returned 404.
 
 - name: KTVZ NewsChannel 21
-  url: https://ktvz.com/feed/
+  url: https://ktvz.com/news/local-news/feed/
   type: journalism
   group: local
-  notes: Bend local TV. Lower editorial quality but catches local incidents.
-    Prefilter should weight down unless it's a genuine Bend story.
+  notes: >-
+    Bend local TV. Was https://ktvz.com/feed/ until 2026-08-28, which was a
+    national wire feed wearing a local badge: of 38 kept-news items in run 47,
+    TWO mentioned Central Oregon, and every KTVZ item that reached the paper sat
+    on a /cnn-spanish/, /cnn-world/, /cnn-us-politics/, /cnn-national/ or
+    /cnn-business-consumer/ path. Seven clusters held the same CNN story twice,
+    English and Spanish, both from here, inflating the source counts the
+    editor's ln(sources) lift reads. exclude_paths would have been the obvious
+    fix and does not work: the collector applies it to news-sitemap sources
+    only. This category feed is the fix instead - 50 items, 27 carrying Central
+    Oregon place terms, ZERO /cnn-* paths, extraction 1723/3941/2590 chars.
+    Narrower county feeds also verified if volume ever runs short, all 50 items
+    and 0 CNN paths: /news/bend/feed/ (37 local titles),
+    /news/crook-county/feed/ (39), /news/deschutes-county/feed/ (38),
+    /news/jefferson-county/feed/ (34). Add those with parent KTVZ or they will
+    re-create the duplicate-source-count problem this change fixes.
+    /news/central-oregon/feed/ returns 200 with zero items - do not use it.
+
+- name: The Nugget Newspaper (Sisters)
+  url: https://www.nuggetnews.com/rss
+  type: journalism
+  group: local
+  notes: >-
+    Sisters and Central Oregon. Added 2026-08-28 because the local beat was
+    starved: run 47 published two Central Oregon stories in 150 pieces, and the
+    genuinely-local supply across every source was about ten items in a 469-row
+    corpus. 44 items, unambiguously local (water district flow cuts, a LUBA
+    remand, the roadless rule), and the text is reachable - extraction sampled
+    5114/3515/5886 chars, the best of any local source probed. Probed
+    2026-08-28 with the newest item dated about 08-25, which reads as stale
+    against a daily collector and is what a weekly looks like. Watch
+    per_source_results for a run of zero-new-item collections, which is what an
+    actually-dead feed would look like.
 
 # DROPPED — three runs returning not recognized as RSS.
 # - name: High Desert Advocate

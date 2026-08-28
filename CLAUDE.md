@@ -333,6 +333,18 @@ singletons on their English title + body excerpt (capped at
 they are far apart the scorer has real material for clusters and a bare
 headline for singletons, and singleton scores collapse onto a handful of
 values — see `docs/decisions.md`, 2026-08-11.
+**Nearness is part of the interest axis, and routine local business is the
+carve-out that makes it safe.** Run #47 scored a torture arrest in the reader's
+own county `interest=28, consequence=34` and ranked it 103 of 123, below
+Argentina's central bank reform. Consequence was right; the scorer saw the story
+was local (its reason said so) and the interest rubric, which asks about the
+SUBJECT, had nowhere to put it. Geography sat in the bio as a list of places
+with no instruction attached. The axis now says nearness raises interest, with
+the discriminator that stops it becoming a police blotter: **is this out of the
+ordinary for its place?** A house fire and a county hiring notice stay low
+however near they happen. Not measured yet — the controlled form is a re-score
+of one grouping run against the new prompt, diffed with the old.
+
 Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
