@@ -1307,6 +1307,65 @@ assuming `docker compose exec` sees the new values.
 
 ---
 
+## Working with Gizmo (the production agent)
+
+**You do not have access to the production box.** post.fritter.lol, its compose
+stack and its database live on fritter.lol, and this session cannot reach them —
+the egress proxy blocks the host, and there is no DATABASE_URL here. Anything
+that has to touch production is done by **Gizmo**, the agent that runs there.
+
+The reader relays between us. So:
+
+- **Deliver every Gizmo task as a file**, via SendUserFile, not as a code block
+  in chat. The reader asked for this explicitly on 2026-08-28: a prompt gets
+  copied into another agent, and picking it out of terminal scrollback is worse
+  than opening a file. Markdown is fine.
+- **Write it for an agent with no context.** Gizmo has not read this
+  conversation. State the branch and commit, what changed, what you are trying
+  to learn, and what to report back.
+- **Give exact commands.** CLI runs inside the container as
+  `docker compose exec -T app npm run <script> -- <args>`.
+- **Always include the network reconnect.** The app service declares only
+  `internal`, and `seedbox_default` is attached by hand, so every
+  `docker compose up -d --build` drops Caddy's route and the site 502s until
+  `docker network connect seedbox_default fritter-post-app-1` runs. This is the
+  single most common way a deploy goes wrong.
+- **Say what must not happen.** Read-only investigations should say so: no
+  `collect`/`preprocess`/`write`/`publish`, no config edits. Findings come back
+  here and the repo change is made on the branch, so the repo and the box do not
+  drift.
+- **Ask for raw evidence and a workspace path.** Gizmo preserves command output
+  and checksums it; take the raw files over the summary when a number matters.
+  It will send individual files if asked.
+
+**Verify its claims, and expect it to verify yours.** Gizmo has caught a real
+error here (a thread story carries `item_type='thread'`, which a fixture got
+wrong) and has also reported a query of ours as defective when it was correct —
+check before accepting either. Its aggregate statistics can be the wrong test
+for a targeted change: a mean over 469 rows cannot see an effect confined to the
+100 local ones, and reading that as "not proven" is a mistake this project has
+already made once.
+
+**Measuring a change on the box.** Two shapes, and they are not
+interchangeable:
+
+- An **LLM-judgment change** (a prompt, the bio) needs a noise control, because
+  the scorer at temperature 0.1 differs run to run. Score the same input three
+  times: the existing run, a re-run on the *old* code, and a run on the new one.
+  Noise is old-vs-old; signal is new-vs-old. Check the stored `system_prompt`
+  hash in `generation_logs` to prove the prompts actually differed — a stale
+  container otherwise produces a confident, meaningless result.
+- A **deterministic change** (a formula, a count) needs no control. Re-run the
+  one stage over the same input at both commits and diff. The editor tie-break
+  is the only LLM in that path, so some rank churn is still expected and is not
+  the change.
+
+**A fresh paper is:** collect → preprocess → prefilter → grouping →
+grouping-pass1 (which runs the thread pass and assembles the pile) → editor →
+fetch-text → write → publish, threading each stage's run id into the next.
+
+---
+
 ## Out of scope for V1
 
 These are documented so they don't get built by accident:
@@ -1330,6 +1389,7 @@ discussion first.
 
 - `docs/concept.md` — vision, principles, pipeline architecture
 - `docs/decisions.md` — why specific choices were made (append-only)
+- `docs/open-items.md` — known defects and deferred work, with the evidence
 - `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, editor, writers
 - `docs/voice.md` — the standing memo; read verbatim into every writer prompt
 - `config/sources.yaml` — current feed list
