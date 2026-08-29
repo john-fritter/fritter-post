@@ -4988,3 +4988,220 @@ new layer and not a new prohibition.
 
 One piece in 150 is not a controlled measurement. The controlled form is a
 single-tier re-run against one editor run, and this has not had one.
+
+## 2026-08-28 — The publisher is a stage, not a query
+
+Everything the reading view needs was already in the database, so the pages
+could have joined their way to it. Two things made that wrong.
+
+`writer_pieces` cannot produce a source link. It stores `source_count` and no
+URLs; the attribution is three joins away through `thread_members`,
+`grouping_runs.digest` and `preprocessed_items` — precisely the walk
+`writers/materials.ts` was written to do. Rendering a page would have put the
+writers' resolver on the reader's critical path.
+
+The real argument is the second one: a paper is a daily artifact. A view is a
+window onto whatever the pipeline currently believes, so re-running grouping
+tomorrow would silently change what yesterday's paper said. `papers`,
+`paper_pieces` and `paper_sources` (migration 041) are what was published,
+frozen at publication — which is also why the source rows copy the outlet name,
+title and URL rather than only holding a foreign key. `raw_items` has a
+retention window, and a published paper has to keep pointing at its sources
+after its inputs are swept.
+
+One paper per day, unique on `published_on`, and re-publishing deletes and
+re-inserts inside one transaction, so a re-run corrects the morning's paper
+rather than sitting beside it. The date is the reader's local day, not UTC: a
+run starting at 7pm Pacific must not publish tomorrow's edition.
+
+## 2026-08-28 — The index is the paper
+
+The first reading view was the obvious one: every piece, in rank order, one
+column, full text. Run #47 is 150 pieces and 21,857 words — about ninety
+minutes, roughly ninety phone screens. That is a reading surface, not a
+newspaper, and it is worse than it sounds on a phone, where there is no way to
+skip and no way to see what a section contains without scrolling through it.
+
+The index-first layout is the newspaper affordance the scroll had thrown away: a
+list of headlines you get through in a few minutes, and a page you turn to when
+one of them is worth it. 123 rows, about ten screens.
+
+One navigation rule, because two would need explaining: **containers expand,
+pieces open**. A thread is the only container. Every piece has a page.
+
+Briefs were briefly an exception — tapping one went straight to its source,
+which reads consistently until you notice two things. The paper's own 30-word
+brief bodies would be written every day and never displayed, 61 calls' worth;
+and the seven briefs a day with more than one source have no defensible
+destination, since "the source" is then arbitrary. Giving briefs pages fixed
+both and removed the exception.
+
+A consequence worth recording: with every row opening a page, nothing leaves the
+paper from the index, so the index carries no accent colour at all. Blue now
+appears only on an article's source list, which is a tidier statement of the
+rule than the version that produced it — the only coloured thing on a page is
+the way out of it.
+
+## 2026-08-28 — displayHeadline does not trim to a sentence
+
+A section line is written as a bare sentence with no headline, which the line
+contract makes explicit. In a continuous-reading layout that was right; in an
+index it leaves a row with nothing to show, so the sentence stands in — whole.
+
+Trimming it to its first sentence would keep the row one line tall, and the
+first implementation did. It was wrong twice in the first test run: the regex
+cut `He called it "beyond critical.` before the closing quote, and fixing that
+still left the failure that matters, because a period followed by a space ends
+"U.S." and "Adm." as readily as it ends a clause. `U.S. and NATO officials told
+AP…` becomes the headline `U.S.`.
+
+A tall row is a blemish. A headline that reads "U.S." is a defect. The heuristic
+is gone and the fallback returns the sentence whole; the real fix is upstream,
+where a line should carry its own headline.
+
+## 2026-08-28 — KTVZ was a wire feed wearing a local badge
+
+`https://ktvz.com/feed/` contributed 38 kept-news items to run #47. **Two** of
+them mentioned Central Oregon. Every KTVZ item that reached the paper sat on a
+`/cnn-spanish/`, `/cnn-world/`, `/cnn-us-politics/`, `/cnn-national/` or
+`/cnn-business-consumer/` path — a Bend television station republishing the CNN
+wire, collected as though it were the local beat.
+
+It was worse than dead weight. Seven clusters held the same CNN story twice,
+once in English and once in Spanish, both from this one feed: the Iran response
+piece, the Mladić obituary, the Nepal floods, the CIA-in-Moscow story and three
+others. A cluster's source count is its member count, so each pair added one to
+the count feeding the editor's `9 * ln(sources)` lift. Wire stories were being
+promoted over local singletons partly by being counted twice, and the source
+this happened through was the one added to supply local news.
+
+`exclude_paths` looked like the fix and is not: the collector applies it inside
+`fetchNewsSitemap` only, so on an RSS source it is silently inert. Worth knowing
+independently — it is a config option that appears to work and does nothing.
+
+The fix is the category feed `https://ktvz.com/news/local-news/feed/`: 50 items,
+27 carrying Central Oregon place terms, zero `/cnn-*` paths, and extraction
+verified at 1723/3941/2590 characters. County feeds were verified as narrower
+alternatives and deliberately not added — five overlapping KTVZ feeds under
+different source names would re-create the duplicate-count problem this change
+fixes, unless they share a `parent`.
+
+The old `notes` field said "Prefilter should weight down unless it's a genuine
+Bend story." That is this project's recurring mistake in miniature: a hint to a
+prompt, doing the job of a rule. The prefilter cannot weight down what it should
+never have been sent.
+
+## 2026-08-28 — Nearness belongs on the interest axis
+
+Run #47 ranked "La Pine woman arrested in kidnapping and torture of Redmond man"
+at 103 of 123, below Argentina's central bank reform at 100. The reader lives in
+Deschutes County.
+
+Its scores were `interest=28, consequence=34`, reason: *"Local violent crime
+near Bend/Redmond; real arrests and charges."* The consequence axis was right —
+an arrest and indictment is a real, ordinary development, and the story does not
+affect many people. The scorer also plainly **saw** that it was local. It had
+nowhere to put that.
+
+The interest rubric read "how much this reader cares about the SUBJECT", and a
+subject is a topic. Geography sat in the bio as a list of places with no
+instruction attached, while the weighing rules pushed the other way — "weigh a
+story on its consequence, not on how much American attention it drew" reads as
+an argument against parochial weighting. So a violent crime in his own county
+landed in the 23-33 band, "adjacent to his interests".
+
+Nearness is now part of the interest axis, with the discriminator that makes it
+safe: **is the story out of the ordinary for its place?** A house fire, a road
+closure and a county hiring notice are local and routine and stay low; an arrest
+for torture, a mill closing and a water district cutting irrigation to a fifth
+are striking anywhere and happening here. This matters more after the KTVZ
+change, which brings roughly 27 local items a day where there were two — without
+the routine-business carve-out, the fix for a starved local beat would be a
+front page of Bend blotter.
+
+It is one lever, deliberately. A local lift in the editor's formula was the
+obvious alternative and would have double-counted against this one, and it would
+have lifted routine local items too, which is the thing to avoid.
+
+**This has not been measured.** The controlled form is a re-score of grouping run
+#58 against the new prompt, diffed with pass-1 run #44 — same corpus, one
+variable. Until that runs, the claim is a hypothesis with an argument behind it.
+
+## 2026-08-28 — `sources` counts newsrooms, not rows
+
+The editor's prominence lift is `source_weight * ln(sources)`, and `sources` was
+the cluster's member count: one per preprocessed item. That counts pickup, which
+is the point, and it also counts one outlet twice whenever a publisher's feed
+carries a story more than once. Run #47's KTVZ feed did exactly that seven
+times, English and Spanish copies of one CNN story, each pair adding a source to
+the lift.
+
+Prominence is now distinct parent outlets. `sources.yaml` has declared a
+`parent` on sibling feeds since the beginning — AP News under AP, three Reuters
+feeds, three Guardian feeds, two each for BBC, the NYT and OPB — precisely
+because they are one newsroom, and no ranking code read it.
+
+**The practical effect today is smaller than it first looks, and the earlier
+claim in this session overstated it.** The preprocessor's within-parent dedup
+already collapses sibling-feed duplicates, keyed on `parent::canonical_url` and
+`parent::normalized_title`, so a story all three Reuters feeds carried was
+already one row before it reached grouping. What that key cannot catch is the
+same outlet publishing one story at two URLs under two different titles — a
+translation, or a re-headlined update — which is the KTVZ case, and which the
+feed swap in this same branch has already removed from the corpus.
+
+So this is a backstop and a correction of meaning rather than a fix for an
+active defect. It is worth having on both counts: `sources` should mean how many
+newsrooms reported the story, and the next multi-feed source added will not
+re-introduce the inflation. It should be measured expecting a *small* effect —
+and a null result is the change working, not failing.
+
+Guarded at 1, never 0. The count is fed to `ln()`, and `ln(0)` is -Infinity,
+which does not throw: it would sort a story to the bottom of the paper and read
+as an editorial judgment. An empty set means the caller could not resolve its
+items.
+
+The count is derived twice — in grouping-pass-1, which stores it, and in the
+editor, which re-derives it from the digest rather than reading the stored
+value. Both call the same helper. Collapsing them to one derivation is the
+better shape and a larger change than this one.
+
+## 2026-08-29 — A source's first collection is an archive dump
+
+The Nugget was added on 2026-08-28 and its first collection returned 44 items,
+every one of them new. It is a weekly, so its feed holds several issues at once,
+and a first collection takes all of them. Three of paper #3's top eleven came
+out of that backlog — the Rowe Creek fire at rank 1, the drought at 6, the
+roadless rule at 11 — some of it a week old, ranked against the day's news.
+
+Nothing upstream could see it. The preprocessor's recency rule is a 24-hour
+window on `fetched_at`, and everything in a first collection is fetched now; its
+`max_age_days: 14` backstop exists for exactly this shape but is set for
+genuine archive dumps, and a weekly's backlog sits comfortably inside it.
+
+The fix was already in the config schema and had never worked here.
+`max_age_hours` and `exclude_paths` are both declared per source and both were
+applied inside `fetchNewsSitemap` only — silently inert on RSS, the format 109
+of 111 sources use. Two options that look like configuration and do nothing.
+Both now apply to feeds as well as sitemaps, through generic helpers in
+`collector/window.ts`; `sitemap.ts` keeps its own function names as
+delegations so its tests still pin the behaviour they always did.
+
+`max_age_hours` stays **opt-in for RSS with no default**, where a sitemap keeps
+its 24-hour one. A sitemap carries a publisher's whole recent index and has to
+be windowed to be usable; a feed windows itself by construction. Defaulting
+would change what all 109 existing sources collect in order to fix a problem
+only a newly-added or slow-publishing source has. The Nugget gets 192 hours —
+eight days, one publication cycle, admitting the current issue and rejecting
+the rest.
+
+An item with no date is kept. A feed that publishes no `pubDate` cannot be
+judged on age, and dropping what cannot be dated would silently empty those
+feeds — a worse failure than admitting something stale.
+
+Worth stating plainly: this does not make paper #3 wrong. Its front page is a
+good one, mixing the Iran war, the Nepal glacier collapse and a Russian ICBM
+test with three substantive Central Oregon stories on wildfire, drought and
+public lands — all of which the bio weights heavily. The defect is that the
+local three were *older* than the paper implied, and that every future source
+added would have done the same thing once.

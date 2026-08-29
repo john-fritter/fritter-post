@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
+import { outletCountsByCluster } from "../../db/outlets.js";
 import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
@@ -30,6 +31,9 @@ interface DigestCluster {
   title: string;
   summary: string;
   itemCount: number;
+  /** The preprocessed items behind it, kept so prominence can be counted by
+   *  outlet rather than by row. See src/db/outlets.ts. */
+  memberIds: number[];
 }
 
 interface EditorPileItem {
@@ -39,7 +43,7 @@ interface EditorPileItem {
   preprocessedItemId: number | null;
   threadId: number | null;
   score: number;       // grouping-pass-1 relevance score (0–100); max(member) for a thread
-  sourceCount: number; // cluster member count; 1 for singleton; sum(members) for a thread
+  sourceCount: number; // distinct outlets in a cluster; 1 for singleton; sum(members) for a thread
   title: string;
   bodyText: string;    // cluster/thread summary or singleton body excerpt, for tie-break prompt
 }
@@ -47,7 +51,8 @@ interface EditorPileItem {
 // Text caps come from editor.tie_break.body_cap in models.yaml.
 
 /**
- * combined = relevance + W * ln(sources)
+ * combined = relevance + W * ln(sources), where sources is how many
+ * newsrooms reported the story — distinct outlets, not member rows.
  * ln(1) = 0, so a single-source item gets no lift.
  * A 53-source cluster gets roughly +35 at W=9.
  */
@@ -258,6 +263,7 @@ export async function runEditor(
     title: c.title,
     summary: c.summary,
     itemCount: c.memberIds.length,
+    memberIds: c.memberIds,
   }));
   const clusterByIndex = new Map(digestClusters.map((c) => [c.index, c]));
 
@@ -298,6 +304,18 @@ export async function runEditor(
   );
 
   // 6. Build combined item list.
+
+  // Prominence is distinct outlets, not member rows — the same reason as in
+  // grouping-pass-1, and it has to be applied here too because the editor
+  // re-derives the count from the digest rather than reading the stored one.
+  const clusterOutletCounts = await outletCountsByCluster(
+    new Map(
+      clusterPileRows
+        .map((row) => [row.cluster_index, clusterByIndex.get(row.cluster_index)?.memberIds ?? []] as const)
+        .filter(([, ids]) => ids.length > 0),
+    ),
+  );
+
   const clusterItems: EditorPileItem[] = clusterPileRows
     .map((row): EditorPileItem | null => {
       const detail = clusterByIndex.get(row.cluster_index);
@@ -314,7 +332,7 @@ export async function runEditor(
         preprocessedItemId: null,
         threadId: null,
         score: row.score,
-        sourceCount: detail.itemCount,
+        sourceCount: clusterOutletCounts.get(row.cluster_index) ?? detail.itemCount,
         title: detail.title,
         bodyText: excerpt(detail.summary, bodyCap),
       };

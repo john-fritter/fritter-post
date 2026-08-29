@@ -48,7 +48,7 @@ The paper is produced by a daily cron running nine stages.
 9. Publisher (software)
 ```
 
-Stages 1–8 are built. Only the publisher is not.
+All nine stages are built.
 
 **This section has been reconciled with what was actually built.** The
 original conception had seven stages including an agentic *Researcher*
@@ -136,11 +136,20 @@ A thread does not become one piece. It becomes a **section**: a lead, several si
 
 ### Stage 9: Publisher (software)
 
-Pure rendering. Takes the structured document from the editor (ordered list of stories with size tiers, body text, image refs, sources) and produces the page according to layout rules. No judgment. All editorial work happened upstream.
+Pure rendering. Takes the writer run and freezes it into a paper: the prose as
+written, plus the attribution resolved from the lineage underneath it. No
+judgment — every editorial decision was made upstream, and this stage reorders
+nothing and drops nothing except pieces the writers never produced.
 
-Top stories get hero treatment; standard cards fill the body; small cards and one-liners populate the lower section; headlines-only items go to a footer "also today" section. Same visual shape every day, different content. Output is static HTML.
+It exists as a stage rather than as a query because a paper is a daily artifact.
+Re-running grouping tomorrow must not change what yesterday's paper said, and
+`writer_pieces` cannot produce a source link on its own — the URLs are three
+joins away, through the walk the writers' materials resolver already does.
 
-The publisher is designed to be tolerant: structured metadata (story order, size tiers, source attributions) is schema-validated and must be correct; prose bodies are markdown rendered as-is. Graceful degradation when a single piece fails — render what works, log what didn't, never crash the whole paper for one bad article.
+The publisher is designed to be tolerant, and records what it tolerated: a
+failed writer piece is skipped and counted, and a piece whose lineage will not
+resolve is published without links and counted separately. Neither costs the
+edition.
 
 ---
 
@@ -214,17 +223,43 @@ Search, archive browsing, read-later integration, reaction buttons — all reaso
 
 ---
 
-## Card and output format
+## Reading view
 
-Each card has: image, headline, blurb, expandable body, source links, comment field.
+**The index is the paper.** A run is around 150 pieces and roughly 22,000 words —
+about ninety minutes — so the front page is a list of headlines in rank order,
+not a continuous scroll of the whole thing. The reader gets through it in a few
+minutes and goes deeper only where he wants to. That is the "finite artifact"
+principle meeting the fact of how much the pipeline actually produces.
 
-Four size tiers, currently:
-- **Footer one-liner** — headline only, in an "also today" section, no card.
-- **Blurb / small card** — headline, image, 1-2 sentence body, source link. Doesn't expand.
-- **Standard card** — headline, image, blurb visible, expandable to paragraph-length body, multiple source links possible.
-- **Feature card** — headline, image, longer expandable body (300-600 words), substantial source treatment.
+**Containers expand, pieces open.** A thread is the only container: its row
+expands in place to reveal the stories inside it. Every piece — feature,
+standard and brief alike — has its own page, reached by tapping its row.
 
-Image strategy: prefer OG image from source articles when available and not a logo or tracker. Fall back to a curated stock folder (~30 images, photography-leaning, no people, organized by domain tag). Mixed papers look more like real papers than uniform image grids.
+Four registers, distinguished by type scale rather than by badges:
+
+- **thread** — a tinted row, the situation as a standing head, a count of what is
+  inside, and a chevron. Expands.
+- **feature** — the largest headline. Opens a page with 400–600 words.
+- **standard** — a medium headline. Opens a page with 150–200 words.
+- **brief** — small and lighter. Opens a page with a sentence or two.
+
+A section line has no headline by design, so its row and its page lead on its
+sentence. That is a known rough edge: in a continuous-reading layout a line
+needed no headline, and in an index it does.
+
+**Colour means one thing: a link that leaves for someone else's reporting.** The
+index carries no accent at all; the blue appears only on an article's source
+list. "Curate, don't reproduce" made visible — the only coloured thing on a page
+is the way out of it.
+
+Mobile-first, and the same single column on desktop, where the rank figure moves
+into the gutter. The paper ends on a printer's `— 30 —`.
+
+Images are not built. When they come, they belong on article pages rather than as
+index thumbnails: 120 thumbnails turn a list back into a feed and cost 120 image
+loads on cellular. The hard part is OG-image extraction, logo and tracker
+rejection, and whether to rehost or hotlink — a "curate, don't reproduce"
+question more than a technical one.
 
 ---
 

@@ -80,10 +80,10 @@ fritter-post/
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
 │   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
-│   ├── app/                     # Next.js routes (the reading view)
+│   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–038)
+├── migrations/                  # numbered SQL migrations (001–041)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -91,8 +91,7 @@ fritter-post/
 
 ## Pipeline: implemented stages
 
-The pipeline is nine stages (see `docs/concept.md`). The eight below are built.
-Only the publisher is not built; its directory is empty.
+The pipeline is nine stages (see `docs/concept.md`). All nine are built.
 
 The researcher stage was dropped; the editor's tiered output feeds the writers
 directly (see `docs/decisions.md`).
@@ -103,7 +102,7 @@ grouping proved out; see `docs/decisions.md`.)
 
 ```
 collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-           →  thread  →  editor  →  writers
+           →  thread  →  editor  →  writers  →  publisher
 ```
 
 ### collector
@@ -125,6 +124,22 @@ fetch retries once with a browser UA and logs the source if that works. Run #47
 lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
 serve the same feed to any browser. 404/410/5xx are never retried: those mean
 the feed is actually gone or broken, and a second request buys nothing.
+
+**A source's first collection is an archive dump, and per-source windowing now
+applies to feeds too.** `max_age_hours` and `exclude_paths` are declared per
+source and were applied inside `fetchNewsSitemap` only — inert on RSS, the
+format 109 of 111 sources use. The Nugget, a weekly, was added on 2026-08-28
+and its first collection returned 44 items, every one new; three of paper #3's
+top eleven came from that backlog, some a week old. The preprocessor could not
+see it — its recency window is 24h on `fetched_at`, and everything in a first
+collection is fetched now, while the `max_age_days: 14` backstop is set for
+genuine archive dumps. Both options now apply to both formats via
+`collector/window.ts`. **`max_age_hours` is opt-in for RSS with no default**
+(sitemaps keep 24h): a sitemap carries a publisher's whole index and must be
+windowed, a feed windows itself, and a default would change what all 109
+existing sources collect to fix a problem only a new or weekly source has. An
+item with no date is kept — dropping what cannot be dated would silently empty
+feeds that publish no `pubDate`.
 
 **A sitemap is a feed when a publisher serves no feed.** `format: news-sitemap`
 on a source reads a Google News sitemap instead of RSS — same transport, same
@@ -334,6 +349,18 @@ singletons on their English title + body excerpt (capped at
 they are far apart the scorer has real material for clusters and a bare
 headline for singletons, and singleton scores collapse onto a handful of
 values — see `docs/decisions.md`, 2026-08-11.
+**Nearness is part of the interest axis, and routine local business is the
+carve-out that makes it safe.** Run #47 scored a torture arrest in the reader's
+own county `interest=28, consequence=34` and ranked it 103 of 123, below
+Argentina's central bank reform. Consequence was right; the scorer saw the story
+was local (its reason said so) and the interest rubric, which asks about the
+SUBJECT, had nowhere to put it. Geography sat in the bio as a list of places
+with no instruction attached. The axis now says nearness raises interest, with
+the discriminator that stops it becoming a police blotter: **is this out of the
+ordinary for its place?** A house fire and a county hiring notice stay low
+however near they happen. Not measured yet — the controlled form is a re-score
+of one grouping run against the new prompt, diffed with the old.
+
 Source count is stored on each `grouping_pass1_results` row but the scorer
 never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
 Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
@@ -415,8 +442,9 @@ combined = relevance + source_weight * ln(sources)
 ```
 
 `relevance` is the grouping-pass-1 score (0–100), or `max(member score)` for a
-thread; `sources` is the cluster member count (1 for singletons, and
-`ln(1) = 0`, so singletons get no lift), or `sum(member sources)` for a thread;
+thread; `sources` is **how many newsrooms reported it — distinct parent outlets
+in the cluster**, not member rows (1 for singletons, and `ln(1) = 0`, so
+singletons get no lift), or `sum(member sources)` for a thread;
 `source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
 Rows sort by combined descending, then relevance, then ref.
 
@@ -443,6 +471,17 @@ persisted as `editor_runs.tie_break_calls` / `tie_break_failed_calls`
 (migration 040) and shown by `inspect editor --id`; NULL means a run before 040,
 where the console was the only record. A model that answers but omits refs gave
 a worse answer, not a lost call, and is not counted as a failure.
+
+**Prominence is outlets, not rows** (`src/db/outlets.ts`). Run #47's KTVZ feed
+carried the same CNN story in English and Spanish seven times, and each pair
+added a source to the lift. `sources.yaml` has declared a `parent` on sibling
+feeds all along — AP, three Reuters feeds, three Guardian, two each for BBC, the
+NYT and OPB — and no ranking code read it. Counted at 1 minimum, never 0: the
+value is fed to `ln()` and `ln(0)` is -Infinity, which does not throw, it sorts
+the story to the bottom of the paper and looks deliberate. The preprocessor's
+within-parent dedup already collapses sibling duplicates that share a URL or a
+normalized title, so this is a backstop for what that key cannot see — one
+outlet publishing one story under two headlines — and expects a small effect.
 
 Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
 and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
@@ -913,6 +952,81 @@ reproduce" — and is swept on `writers.fetch.retention_days` by the fetch scrip
 Failures and skips are stored too, so a report can say what fraction of the paper
 is running on feed excerpts.
 
+### publisher
+
+**Freezes a writer run into a paper, and adds the one thing the pipeline never
+had: source links.** `npm run publish -- --writer-run <n>`. Writes `papers` /
+`paper_pieces` / `paper_sources` (migration 041).
+
+**It is a stage, not a query, and that is the whole design argument.**
+`writer_pieces` stores a source *count* and no URLs — the attribution is three
+joins away through `thread_members`, `grouping_runs.digest` and
+`preprocessed_items`, which is exactly the walk `writers/materials.ts` exists to
+do. The publisher reuses that resolver rather than reimplementing it. Doing the
+walk per page load would put it on the reader's critical path and, the real
+objection, would make yesterday's paper a view of today's database: re-running
+grouping tomorrow must not change what was published this morning.
+
+**Source rows carry their own copies** of outlet name, title and URL rather than
+only a foreign key, because `raw_items` has a retention window and a published
+paper must keep pointing at its sources after its inputs are swept.
+
+**No third-party article text is ever copied.** `article_texts` stays the only
+table holding that; it writes the paper and never publishes it.
+
+**One paper per day, and re-publishing replaces it.** `papers.published_on` is
+unique and the stage deletes-then-inserts in one transaction, so a re-run
+corrects the morning's paper rather than sitting beside it. The date is the
+*reader's* local day (`PAPER_TIMEZONE`, default `America/Los_Angeles`): a run
+starting at 7pm Pacific must not publish tomorrow's edition.
+
+**Two ways a paper is holed, counted separately.** `pieces_skipped` is writer
+pieces that failed and so are not in the paper; `pieces_unsourced` is published
+pieces whose lineage would not resolve, which the reader cannot follow to
+anyone's reporting. Both are on `papers` for migration 030's reason — a report
+must be able to judge a paper after the console log is gone. `inspect publisher
+--id <n>` shows them per piece as `resolved/ranked`.
+
+Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
+`displayHeadline`, `sourceLabel`, `paragraphs`, `formatEditionDate`,
+`readingMinutes`) are unit-tested in `tests/publisher-assemble.test.ts`.
+
+### the reading view
+
+`src/app/` — the index at `/`, one page per piece at `/story/<ref>`. Server
+components reading only the `paper_*` tables: a published paper is
+self-contained, so rendering never touches the pipeline's working tables.
+
+**Containers expand, pieces open.** A thread is the only container, so it is the
+only thing that expands in place; every piece — brief included — has a page.
+That rule replaced an earlier design where briefs linked straight out to their
+source, which read consistently but meant the 30-word brief bodies were written
+and never displayed, and left the 7 briefs a day with more than one source with
+no defensible destination.
+
+**The index is the paper.** 120-odd headline rows in rank order, because run
+#47's 150 pieces are 21,857 words — about 90 minutes — and a continuous scroll
+of all of it is a reading surface, not a newspaper. Tier is carried by type
+scale alone, no badges.
+
+**Colour means exactly one thing: a link that leaves for someone else's
+reporting.** So the index has no accent in it at all, and blue appears only on
+an article's source list. It is "curate, don't reproduce" made visible.
+
+**A section line has no headline**, so its row and its page lead on its
+sentence, set as prose rather than as a headline it does not have.
+`displayHeadline` deliberately does **not** trim that to a first sentence: every
+cheap way to find one is wrong on news prose, because a period-plus-space ends
+"U.S." and "Adm." as readily as a clause, and `U.S. and NATO officials told AP…`
+becomes the headline `U.S.`. A tall row is a blemish; a headline reading "U.S."
+is a defect. The real fix is upstream — a line should carry its own headline.
+
+**`next.config.ts` aliases `.js` → `.ts` for webpack.** The pipeline is written
+for tsx and node's ESM resolver, so every internal import carries a `.js`
+specifier pointing at a `.ts` file. Webpack does not do that rewrite, and the
+reading view imports publisher modules. The alias keeps one import convention
+across the repo instead of making `src/app` an exception.
+
 ---
 
 ## Conventions
@@ -1054,7 +1168,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **041**.
+number is ambiguous. The next migration is **042**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1072,6 +1186,9 @@ number is ambiguous. The next migration is **041**.
   paper's pieces
 - `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
   pieces, in place
+- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD]` — freeze a writer run
+  into the day's paper with resolved source links. Re-publishing a date replaces
+  that paper, so this is safe to re-run
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -1108,6 +1225,9 @@ number is ambiguous. The next migration is **041**.
   headline-only because the materials audit counts thin *articles*, which is a
   different quantity from a thin *piece*; a non-zero count in a prominent tier
   now means the day ran out of material to trade with, not a mis-assigned slot
+- `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
+  piece with `resolved/ranked` source counts, so a paper the reader cannot follow
+  anywhere is visible without opening it
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 
@@ -1187,6 +1307,65 @@ assuming `docker compose exec` sees the new values.
 
 ---
 
+## Working with Gizmo (the production agent)
+
+**You do not have access to the production box.** post.fritter.lol, its compose
+stack and its database live on fritter.lol, and this session cannot reach them —
+the egress proxy blocks the host, and there is no DATABASE_URL here. Anything
+that has to touch production is done by **Gizmo**, the agent that runs there.
+
+The reader relays between us. So:
+
+- **Deliver every Gizmo task as a file**, via SendUserFile, not as a code block
+  in chat. The reader asked for this explicitly on 2026-08-28: a prompt gets
+  copied into another agent, and picking it out of terminal scrollback is worse
+  than opening a file. Markdown is fine.
+- **Write it for an agent with no context.** Gizmo has not read this
+  conversation. State the branch and commit, what changed, what you are trying
+  to learn, and what to report back.
+- **Give exact commands.** CLI runs inside the container as
+  `docker compose exec -T app npm run <script> -- <args>`.
+- **Always include the network reconnect.** The app service declares only
+  `internal`, and `seedbox_default` is attached by hand, so every
+  `docker compose up -d --build` drops Caddy's route and the site 502s until
+  `docker network connect seedbox_default fritter-post-app-1` runs. This is the
+  single most common way a deploy goes wrong.
+- **Say what must not happen.** Read-only investigations should say so: no
+  `collect`/`preprocess`/`write`/`publish`, no config edits. Findings come back
+  here and the repo change is made on the branch, so the repo and the box do not
+  drift.
+- **Ask for raw evidence and a workspace path.** Gizmo preserves command output
+  and checksums it; take the raw files over the summary when a number matters.
+  It will send individual files if asked.
+
+**Verify its claims, and expect it to verify yours.** Gizmo has caught a real
+error here (a thread story carries `item_type='thread'`, which a fixture got
+wrong) and has also reported a query of ours as defective when it was correct —
+check before accepting either. Its aggregate statistics can be the wrong test
+for a targeted change: a mean over 469 rows cannot see an effect confined to the
+100 local ones, and reading that as "not proven" is a mistake this project has
+already made once.
+
+**Measuring a change on the box.** Two shapes, and they are not
+interchangeable:
+
+- An **LLM-judgment change** (a prompt, the bio) needs a noise control, because
+  the scorer at temperature 0.1 differs run to run. Score the same input three
+  times: the existing run, a re-run on the *old* code, and a run on the new one.
+  Noise is old-vs-old; signal is new-vs-old. Check the stored `system_prompt`
+  hash in `generation_logs` to prove the prompts actually differed — a stale
+  container otherwise produces a confident, meaningless result.
+- A **deterministic change** (a formula, a count) needs no control. Re-run the
+  one stage over the same input at both commits and diff. The editor tie-break
+  is the only LLM in that path, so some rank churn is still expected and is not
+  the change.
+
+**A fresh paper is:** collect → preprocess → prefilter → grouping →
+grouping-pass1 (which runs the thread pass and assembles the pile) → editor →
+fetch-text → write → publish, threading each stage's run id into the next.
+
+---
+
 ## Out of scope for V1
 
 These are documented so they don't get built by accident:
@@ -1210,6 +1389,7 @@ discussion first.
 
 - `docs/concept.md` — vision, principles, pipeline architecture
 - `docs/decisions.md` — why specific choices were made (append-only)
+- `docs/open-items.md` — known defects and deferred work, with the evidence
 - `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, editor, writers
 - `docs/voice.md` — the standing memo; read verbatim into every writer prompt
 - `config/sources.yaml` — current feed list
