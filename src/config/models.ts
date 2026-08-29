@@ -269,7 +269,63 @@ const WritersStageConfigSchema = StageConfigSchema.extend({
   packet: WritersPacketConfigSchema,
 });
 
+// The daily runner. Thresholds, not code: the whole point of the gates is that
+// what counts as "too holed to publish" is a policy decision the reader makes,
+// and re-tuning it must not mean editing a stage.
+const PipelineGatesConfigSchema = z.object({
+  collector: z.object({
+    min_sources_succeeded_fraction: z.number().min(0).max(1),
+    min_items_inserted: z.number().int().nonnegative(),
+  }),
+  preprocessor: z.object({
+    min_items_kept: z.number().int().nonnegative(),
+  }),
+  prefilter: z.object({
+    min_items_kept: z.number().int().nonnegative(),
+    max_cut_fraction: z.number().min(0).max(1),
+  }),
+  grouping: z.object({
+    min_rows: z.number().int().nonnegative(),
+    warn_attach_unrecovered: z.number().int().nonnegative(),
+    warn_split_failed_calls: z.number().int().nonnegative(),
+  }),
+  grouping_pass1: z.object({
+    max_unscored_fraction: z.number().min(0).max(1),
+    abort_unscored_fraction: z.number().min(0).max(1),
+    min_pile_items: z.number().int().nonnegative(),
+  }),
+  thread: z.object({
+    warn_failed_calls: z.number().int().nonnegative(),
+  }),
+  editor: z.object({
+    min_items_ranked: z.number().int().nonnegative(),
+    warn_tie_break_failed_calls: z.number().int().nonnegative(),
+  }),
+  writers: z.object({
+    min_written_fraction: z.number().min(0).max(1),
+  }),
+  publisher: z.object({
+    max_unsourced_fraction: z.number().min(0).max(1),
+  }),
+});
+
+const PipelineConfigSchema = z.object({
+  schedule: z.object({
+    // "HH:MM", 24-hour. Validated here rather than in the timer generator so a
+    // typo fails at config load, where every other bad value in this file does.
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'schedule.time must be "HH:MM"'),
+    timezone: z.string().min(1),
+  }),
+  max_duration_minutes: z.number().int().positive(),
+  writers: z.object({
+    repair_attempts: z.number().int().nonnegative(),
+    repair_delay_ms: z.number().int().nonnegative(),
+  }),
+  gates: PipelineGatesConfigSchema,
+});
+
 const ModelsConfigSchema = z.object({
+  pipeline: PipelineConfigSchema,
   preprocessor: PreprocessorConfigSchema,
   prefilter: BatchStageConfigSchema,
   editor: EditorStageConfigSchema,
@@ -298,6 +354,8 @@ export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
 export type GroupingSplitConfig = z.infer<typeof GroupingSplitConfigSchema>;
 export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
 export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
+export type PipelineGatesConfig = z.infer<typeof PipelineGatesConfigSchema>;
+export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
 const MODELS_PATH = path.join(

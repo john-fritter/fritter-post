@@ -2,6 +2,7 @@
  * Fetches publisher article text for the stories of an editor run.
  *
  * Usage:
+ *   npm run fetch-text
  *   npm run fetch-text -- --editor-run 112
  *   npm run fetch-text -- --editor-run 112 --dry-run
  *   npm run fetch-text -- --editor-run 112 --limit 20
@@ -34,14 +35,16 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const flags = parseArgs(process.argv);
-  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : NaN;
-  if (Number.isNaN(editorRunId)) {
-    console.error("Usage: npm run fetch-text -- --editor-run <n> [--dry-run] [--limit <n>]");
+  // No --editor-run means the latest completed one, which is what every stage
+  // in the middle of the pipeline has always done with its own upstream.
+  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+  if (editorRunId !== undefined && Number.isNaN(editorRunId)) {
+    console.error("--editor-run must be a number");
     process.exit(1);
   }
 
   const summary = await runArticleFetch({
-    editorRunId,
+    ...(editorRunId !== undefined ? { editorRunId } : {}),
     dryRun: flags["dry-run"] === "true",
     ...(flags["limit"] ? { limit: parseInt(flags["limit"], 10) } : {}),
   });

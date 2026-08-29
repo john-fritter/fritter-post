@@ -5205,3 +5205,89 @@ test with three substantive Central Oregon stories on wildfire, drought and
 public lands — all of which the bio weights heavily. The defect is that the
 local three were *older* than the paper implied, and that every future source
 added would have done the same thing once.
+
+## 2026-08-29 — The pipeline gets a runner, and a stage exiting 0 stops being evidence
+
+**Decision:** One entrypoint, `npm run pipeline`, calling the nine stages in
+process and evaluating a gate between each pair. A gate reads the counters its
+stage just persisted and returns ok, warn or abort. `pipeline_runs` and
+`pipeline_stage_runs` (migration 042) record the lineage and every gate
+decision. A systemd timer generated from `pipeline.schedule` in `models.yaml`
+runs it at 06:00 America/Los_Angeles.
+
+**Context:** All nine stages were built and none of them were connected. The
+paper was made by hand, threading run ids between commands. The middle five
+already self-threaded — prefilter, grouping, grouping-pass-1 and the editor each
+default to their latest completed upstream run — so the manual work was really
+the tail three, which required an explicit id and exited 1 without one.
+
+Which made a shell chain look sufficient, and it is not. Every expensive failure
+this pipeline has had exits 0:
+
+- `runWriters` returns a normal summary after its circuit breaker trips, so
+  `write && publish` would freeze an edition of holes;
+- a failed attach call returns an empty set, which is what the model declining
+  every candidate returns;
+- the editor's tie-break catch returns an empty rank map, which is what a tie
+  group the model declined to order returns — run #125 lost 12 of 25 groups and
+  ranked 60-odd items alphabetically;
+- the thread pass losing its one call yields zero threads, which is what a day
+  with no ongoing situations yields — run #50 put three wildfire rows in the
+  top ten that way.
+
+Every counter that distinguishes those cases was already persisted. Migrations
+030, 037, 038, 039 and 040 exist so a run can be judged after the console log is
+gone, and nothing had ever read one back.
+
+**Rationale:** The ordering is the cheap part and the judgment is the point,
+which is the argument for a TypeScript stage-runner over a bash script — the
+same argument that made the publisher a stage rather than a query. Calling the
+`run*()` functions in process rather than shelling out follows from it: every
+one already returns its run id, so ids thread as values instead of being parsed
+back out of stdout.
+
+Three things the gates settled, each of which could have gone the other way:
+
+*Warn is the common case.* The paper has a deadline, and this project has said
+so at every level from `--repair` to graceful degradation. Only two conditions
+abort: there is nothing for the next stage to work on, or the writers came back
+below `min_written_fraction` (0.75) after an automatic repair pass. Everything
+else publishes and records `degraded`. The writers' repair is automatic because
+`--repair` exists for exactly the breaker's failure mode — run #35 lost 32
+pieces to five budget-exhaustion calls and one pass recovered all 32 — and an
+unattended run has nobody to type it.
+
+*A second threshold on the writers was removed rather than tuned.* The first
+draft warned only below 98% written, which made 147 of 150 silent. There is no
+fraction below which a missing piece stops being worth naming; the floor decides
+whether to publish, and any hole above it warns.
+
+*The deadline only refuses to start stages.* An in-flight LLM call cannot be
+cancelled from the runner, so a deadline claiming to interrupt one would be a
+lie. What it can honestly do is decline to start the 150-call writers stage on
+a run that has already blown its budget. The kill that can actually kill is
+systemd's `TimeoutStartSec`, set an hour past the runner's own deadline because
+a stage that starts one minute before it still runs to completion.
+
+**On resume, and why the unit has no `Restart=on-failure`:** retry semantics
+differ by end of the pipeline. The tail is safely re-runnable — `published_on`
+is unique and the publisher deletes-then-inserts — but re-running from `collect`
+is not, because cross-run dedup suppresses everything recent runs already
+processed, so a same-day full re-run comes back near-empty *by design* and would
+replace a good paper with an empty one. Recovery is `--from <stage>`, which
+inherits the recorded lineage rather than re-deriving it. That inheritance is
+the second reason migration 042 exists: `inspect timing` infers a lineage with a
+six-hour heuristic precisely because the real answer was never written down, and
+that inference was wrong for run #45.
+
+**Two defects found while building it, both fixed here.** The preprocessor's
+`--collector-run-id` was stored on the run row and never used for selection —
+the preprocessor windows on `fetched_at` — so collect → preprocess was joined by
+the clock and the flag made the lineage look stronger than it was. And
+`getClusteringItems` tolerates a missing prefilter run ("a null run means
+nothing is excluded on its account"), which is right for an experiment run by
+hand and silent under automation: grouping would cluster the unfiltered set and
+report success. Only a resume can reach that order, and the runner refuses it
+there. The tail three stages also gained the latest-upstream default the middle
+five always had, so the pipeline now defaults consistently whether it is driven
+by the runner or by hand.

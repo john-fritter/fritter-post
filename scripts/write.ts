@@ -2,6 +2,7 @@
  * Writes the paper's pieces for an editor run.
  *
  * Usage:
+ *   npm run write
  *   npm run write -- --editor-run 112
  *   npm run write -- --editor-run 112 --tier feature --limit 3
  *   npm run write -- --repair 3
@@ -43,17 +44,15 @@ async function main() {
     process.exit(0);
   }
 
-  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : NaN;
-  if (Number.isNaN(editorRunId)) {
-    console.error(
-      "Usage: npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]\n" +
-        "       npm run write -- --repair <writer-run-id>",
-    );
+  // No --editor-run means the latest completed one, as in the middle stages.
+  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+  if (editorRunId !== undefined && Number.isNaN(editorRunId)) {
+    console.error("--editor-run must be a number");
     process.exit(1);
   }
 
   const summary = await runWriters({
-    editorRunId,
+    ...(editorRunId !== undefined ? { editorRunId } : {}),
     ...(flags["tier"] ? { tier: flags["tier"] } : {}),
     ...(flags["limit"] ? { limit: parseInt(flags["limit"], 10) } : {}),
   });

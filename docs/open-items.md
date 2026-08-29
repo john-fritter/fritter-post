@@ -104,6 +104,38 @@ the pipeline's primary tuning lever and is inspected by hand.
 distribution across both axes, the fail-safe count, and a source filter so
 "where does the local beat land" is one command.
 
+### 8. The runner's thresholds have never seen a real run
+
+`pipeline.gates.*` in `models.yaml` is policy, and only two of the numbers in it
+are backed by anything. `min_written_fraction: 0.75` and the collector's
+`min_sources_succeeded_fraction: 0.5` are judgment calls; `max_cut_fraction`,
+`max_unscored_fraction` and `abort_unscored_fraction` were picked to be well
+clear of any run we have seen, which is a guess about the shape of the
+distribution rather than a measurement of it.
+
+Every gate persists the metrics it read onto `pipeline_stage_runs.metrics`, so
+this answers itself after a couple of weeks: query the column, look at where the
+real runs sit, and move the thresholds to where they would have fired only on
+the runs that deserved it.
+
+**Also unmeasured:** `max_duration_minutes: 240`. Nobody has timed a full run —
+`inspect timing` exists and the only figure the project has is "about an hour",
+which conflates the pipeline with the deploy and the audit around it. The first
+few `inspect pipeline` rows settle both this and whether 06:00 leaves enough
+margin.
+
+### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
+
+The preprocessor selects `raw_items` by a fixed `fetched_at` window and stores
+the collector run id without ever filtering on it, so collect → preprocess is
+joined by the clock. The runner passes it because recording which collection a
+run was meant to follow is the only honest thing it can mean, but the flag reads
+like a filter and is not one.
+
+**Fix:** either make it real (filter on it when given) or rename it to say what
+it is. Making it real is the better shape and changes what a hand-run
+preprocessor collects, so it wants a decision rather than a patch.
+
 ---
 
 ## Deferred by decision, not defect
@@ -122,6 +154,3 @@ distribution across both axes, the fail-safe count, and a source filter so
   the one table that holds third-party full text and is never published. Raised
   2026-08-28 and left cut; `concept.md`'s answer is that Gizmo handles
   conversation about a story via copy-as-markdown.
-- **The cron.** Still no single entrypoint; stages are run by hand, threading run
-  ids. A systemd timer wants one script that runs the nine stages in order and
-  stops on a stage failure.

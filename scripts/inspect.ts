@@ -1410,6 +1410,112 @@ async function main() {
         break;
       }
 
+      case "pipeline": {
+        const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
+
+        if (id === undefined) {
+          const { rows } = await pool.query(
+            `SELECT r.id, r.status, r.started_from, r.stopped_at_stage,
+                    to_char(r.started_at, 'YYYY-MM-DD HH24:MI') AS started,
+                    EXTRACT(EPOCH FROM (r.completed_at - r.started_at))::int AS secs,
+                    r.paper_id,
+                    (SELECT COUNT(*) FROM pipeline_stage_runs s
+                      WHERE s.pipeline_run_id = r.id AND s.status = 'warn') AS warns
+               FROM pipeline_runs r
+              ORDER BY r.started_at DESC LIMIT 20`,
+          );
+          if (rows.length === 0) {
+            console.log("No pipeline runs yet. `npm run pipeline` is the daily run.");
+            break;
+          }
+          console.log("  id  started           status    from            dur  warns  paper  stopped at");
+          for (const r of rows) {
+            // A run still marked 'running' with no duration was killed rather
+            // than finished -- the systemd timeout, or the box going away.
+            const dur = r.secs === null ? "   —" : `${String(Math.round(r.secs / 60)).padStart(3)}m`;
+            console.log(
+              `  ${String(r.id).padStart(2)}  ${r.started}  ${String(r.status).padEnd(8)}  ` +
+                `${String(r.started_from).padEnd(14)}  ${dur}  ${String(r.warns).padStart(5)}  ` +
+                `${String(r.paper_id ?? "—").padStart(5)}  ${r.stopped_at_stage ?? ""}`,
+            );
+          }
+          console.log(
+            "\n  degraded = a paper came out and something was lost getting there.\n" +
+              "  aborted  = a gate stopped the run on purpose. failed = a stage threw.\n" +
+              "  running with no duration = killed before it finished.",
+          );
+          break;
+        }
+
+        const { rows: runRows } = await pool.query(
+          `SELECT * FROM pipeline_runs WHERE id = $1`,
+          [id],
+        );
+        const run = runRows[0];
+        if (!run) {
+          console.log(`Pipeline run #${id} not found.`);
+          break;
+        }
+
+        console.log(`Pipeline run #${run.id}`);
+        console.log(`  status:       ${run.status}`);
+        console.log(`  started from: ${run.started_from}`);
+        console.log(`  started:      ${run.started_at.toISOString()}`);
+        if (run.completed_at) {
+          const mins = (run.completed_at.getTime() - run.started_at.getTime()) / 60000;
+          console.log(`  duration:     ${mins.toFixed(1)} min`);
+        } else {
+          console.log(`  duration:     — (no completion recorded: killed, or still running)`);
+        }
+        if (run.stopped_at_stage) {
+          console.log(`  stopped at:   ${run.stopped_at_stage}`);
+          console.log(`  because:      ${run.stopped_reason}`);
+        }
+        if (run.notes) console.log(`  notes:        ${run.notes}`);
+
+        console.log("\n  Lineage");
+        const lineage: [string, unknown][] = [
+          ["collector", run.collector_run_id],
+          ["preprocessor", run.preprocessor_run_id],
+          ["prefilter", run.prefilter_run_id],
+          ["grouping", run.grouping_run_id],
+          ["grouping-pass1", run.grouping_pass1_run_id],
+          ["thread", run.thread_run_id],
+          ["pile", run.pile_id],
+          ["editor", run.editor_run_id],
+          ["writer", run.writer_run_id],
+          ["paper", run.paper_id],
+        ];
+        for (const [name, value] of lineage) {
+          console.log(`    ${name.padEnd(16)} ${value === null ? "—" : `#${value}`}`);
+        }
+
+        const { rows: stageRows } = await pool.query(
+          `SELECT stage, seq, status, gate_verdict, gate_reasons, stage_run_id, metrics, error,
+                  EXTRACT(EPOCH FROM (completed_at - started_at))::int AS secs
+             FROM pipeline_stage_runs WHERE pipeline_run_id = $1 ORDER BY seq`,
+          [id],
+        );
+        console.log("\n  Stages");
+        for (const s of stageRows) {
+          const dur = s.secs === null ? "—" : `${s.secs}s`;
+          console.log(
+            `    ${String(s.status).padEnd(8)} ${String(s.stage).padEnd(15)} ` +
+              `${(s.stage_run_id !== null ? `#${s.stage_run_id}` : "").padEnd(7)} ${dur}`,
+          );
+          if (s.gate_reasons) {
+            for (const reason of String(s.gate_reasons).split("\n")) {
+              console.log(`             ↳ ${reason}`);
+            }
+          }
+          if (s.error) console.log(`             ↳ ${String(s.error).split("\n")[0]}`);
+          if (s.metrics && Object.keys(s.metrics).length > 0) {
+            console.log(`             ${JSON.stringify(s.metrics)}`);
+          }
+        }
+        break;
+      }
+
       default:
         console.log(`Usage: npm run inspect -- <command> [options]
 
@@ -1441,6 +1547,8 @@ Commands:
                            Print the full assembled prompt for one story
   writers                  List recent writer runs
   writers --id <n>         Show every written piece; add --full for bodies
+  pipeline                 List recent daily pipeline runs and how each ended
+  pipeline --id <n>        Show one run's lineage, per-stage gates and metrics
 
 Options:
   --source <name>          Filter by source name (exact match)

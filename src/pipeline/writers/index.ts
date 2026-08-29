@@ -21,6 +21,7 @@
 import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
+import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig, type WritersStageConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
@@ -599,7 +600,8 @@ async function fetchRunSummary(
 }
 
 export interface RunWritersOptions {
-  editorRunId: number;
+  /** Defaults to the latest completed editor run, as the middle stages do. */
+  editorRunId?: number;
   /** Restrict to one tier, for a first cautious run. */
   tier?: string;
   /** Cap the number of pieces written. */
@@ -609,7 +611,8 @@ export interface RunWritersOptions {
 export async function runWriters(options: RunWritersOptions): Promise<WriterRunSummary> {
   const pool = getPool();
   const cfg = loadModelConfig().writers;
-  const { editorRunId, tier, limit } = options;
+  const { tier, limit } = options;
+  const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 
   const all = await buildEditorRunPackets(editorRunId);
   let selected = tier ? all.filter((p) => p.packet.tier === tier) : all;

@@ -28,6 +28,7 @@
 import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
+import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig, type WritersFetchConfig } from "../../config/models.js";
 import { decodeHtmlBytes } from "../collector/charset.js";
 import {
@@ -447,7 +448,8 @@ async function upsert(
 }
 
 export interface RunFetchOptions {
-  editorRunId: number;
+  /** Defaults to the latest completed editor run, as the middle stages do. */
+  editorRunId?: number;
   /** Plan and report without making a single request. */
   dryRun?: boolean;
   /** Cap on URLs requested, for a first cautious run. */
@@ -457,7 +459,8 @@ export interface RunFetchOptions {
 export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRunSummary> {
   const pool = getPool();
   const cfg = loadModelConfig().writers.fetch;
-  const { editorRunId, dryRun = false, limit } = options;
+  const { dryRun = false, limit } = options;
+  const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 
   if (!cfg.enabled) {
     throw new Error("writers.fetch.enabled is false in config/models.yaml");

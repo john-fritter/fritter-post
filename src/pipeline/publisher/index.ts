@@ -22,6 +22,7 @@
 
 import "dotenv/config";
 import { getPool } from "../../db/index.js";
+import { latestWriterRunId, resolveRunId } from "../../db/latest.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "../writers/materials.js";
 import {
   buildIndex,
@@ -87,14 +88,15 @@ function toPublishable(row: WriterPieceRow): PublishablePiece {
 }
 
 export interface RunPublisherOptions {
-  writerRunId: number;
+  /** Defaults to the latest completed writer run, as the middle stages do. */
+  writerRunId?: number;
   /** Override the edition date (YYYY-MM-DD). Defaults to the run's local day. */
   date?: string;
 }
 
 export async function runPublisher(options: RunPublisherOptions): Promise<PaperSummary> {
   const pool = getPool();
-  const { writerRunId } = options;
+  const writerRunId = await resolveRunId(options.writerRunId, latestWriterRunId, "writer run");
 
   const { rows: runRows } = await pool.query<{ editor_run_id: number; local_day: string }>(
     `SELECT editor_run_id,
