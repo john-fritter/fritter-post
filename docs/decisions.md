@@ -5291,3 +5291,71 @@ report success. Only a resume can reach that order, and the runner refuses it
 there. The tail three stages also gained the latest-upstream default the middle
 five always had, so the pipeline now defaults consistently whether it is driven
 by the runner or by hand.
+
+## 2026-08-30 — Run #1: a warn has to be an event, not a standing condition
+
+**Decision:** Retune two gates so the steady state is silent. The collector
+warns only above `warn_failed_sources_fraction` (0.05) of its sources failing
+rather than on any failure; the fetch warns only on a host that entered cooldown
+**since the last recorded run**, not on the cooldown set. `max_duration_minutes`
+drops from 240 to 90.
+
+**Context:** The first production run of the runner, 2026-08-30. It worked:
+migration 042 applied clean, all nine stages ran, the lineage was recorded
+(collector #60 → … → paper #4), and it published 150 of 150 pieces with 0
+failed, 0 skipped, 0 unsourced and 267 source links. By every measure the
+pipeline records, a clean paper.
+
+It was recorded `degraded`, on two warnings:
+
+- **collect:** 2 of 111 sources failed. The collector is failure-tolerant by
+  design — a dead feed is logged and skipped — and the gate's own comment said
+  as much while warning on it anyway.
+- **fetch-text:** five hosts in cooldown. `nytimes.com` and `oregonlive.com`
+  have served a DataDome device check for months and are open item 2.
+
+Both would have fired every night indefinitely.
+
+**Rationale:** A status that is always on is not a status. `degraded` exists so
+the reader can tell a night that needs looking at from one that does not, and
+two permanent conditions would have made every night look the same within a
+week — at which point the word stops being read, and the run that *is* degraded
+for a real reason goes unnoticed with it. The failure mode is the boy who cried
+wolf, and it is worse than not warning at all, because it also costs the signal
+it was supposed to carry.
+
+The general rule, which the first draft did not have: **a gate should fire on an
+event, not on a condition.** A condition belongs on
+`pipeline_stage_runs.metrics`, where it is available to anyone diagnosing the
+paper and silent otherwise. So the full cooldown list is still recorded every
+run; what is *new* since the last run is what earns a verdict. That diff cost
+one query and reuses the metrics column, which was added so thresholds could be
+tuned against history — the same history turns out to answer "is this new?".
+
+**This does not reverse the writers' rule** ("any hole warns; there is no
+fraction below which a missing piece stops being worth naming"), and the
+distinction is worth stating because the two look contradictory. A missing piece
+is rare, is caused by that night's run, and shows up as a hole the reader can
+see. A dead feed among 111 is none of those. The test is not "how big is it" but
+"did it happen tonight".
+
+**Also settled: how long the paper takes.** 14m 44s wall clock, 13m 27s inside
+stages, 1m 17s between them; writers 4m 29s, grouping 2m 40s, collect 10s. The
+project's only previous answer was "about an hour", which was the deploy and the
+audit around the pipeline rather than the pipeline. `max_duration_minutes: 240`
+was therefore sixteen times the real run and could not have caught anything; 90
+is six times it, which still absorbs a bad provider day — run #4's outage cost
+31 minutes in the writers alone — while meaning something when it is reached.
+
+**Verification note:** `tests/pipeline-gates.test.ts` now replays run #1's
+metrics verbatim through all ten gates and asserts that none of them speak. A
+clean paper being called degraded is the regression this change exists to
+prevent, so it is pinned rather than described.
+
+**A disagreement recorded, since the convention is to verify rather than
+accept.** Gizmo's report judged that "the degraded status should remain visible
+because five cooldown hosts, three blocked hosts, two fetch errors, and two
+failed collector sources mean the edition does not represent the complete
+configured source set." That is accurate about the edition and wrong about the
+status: the edition has never represented the complete source set and will not
+tomorrow either. A daily artifact's status has to describe the day.

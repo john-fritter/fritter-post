@@ -275,6 +275,7 @@ const WritersStageConfigSchema = StageConfigSchema.extend({
 const PipelineGatesConfigSchema = z.object({
   collector: z.object({
     min_sources_succeeded_fraction: z.number().min(0).max(1),
+    warn_failed_sources_fraction: z.number().min(0).max(1),
     min_items_inserted: z.number().int().nonnegative(),
   }),
   preprocessor: z.object({
@@ -303,6 +304,9 @@ const PipelineGatesConfigSchema = z.object({
   }),
   writers: z.object({
     min_written_fraction: z.number().min(0).max(1),
+  }),
+  fetch: z.object({
+    warn_on_newly_cooled_hosts: z.boolean(),
   }),
   publisher: z.object({
     max_unsourced_fraction: z.number().min(0).max(1),

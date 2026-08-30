@@ -1031,12 +1031,39 @@ immediately asks the same dead provider.
 had a second threshold that made 147 of 150 written silent. There is no fraction
 below which a missing piece stops being worth naming.
 
+**A warn must be an event, not a standing condition — the opposite rule, and
+the one that only a real run could teach.** Run #1 published a flawless paper
+(150 of 150 written, 0 failed, 0 unsourced, 267 source links) and was recorded
+`degraded`, on two warnings that would have fired every night forever: 2 of 111
+feeds failed, and five hosts were in cooldown. Both were true and neither was
+news — the collector is *built* to skip a dead feed, and `nytimes.com` and
+`oregonlive.com` have served a DataDome check for months (open item 2). A status
+that is always on is not a status, and the reader would have learned within a
+week to ignore the word. So the collector warns only above
+`warn_failed_sources_fraction` of its sources, and the fetch warns only on a host
+that entered cooldown **since the last run** — an outlet we were reading
+yesterday and are not today. The full cooldown list stays on the metrics either
+way. Note this does not contradict the writers' rule above: a missing piece is
+rare and the reader sees the hole, where a dead feed among 111 is the steady
+state. `tests/pipeline-gates.test.ts` replays run #1's metrics through every
+gate and asserts none of them speak.
+
 **The deadline only refuses to start stages, and says so.** An in-flight LLM
 call cannot be cancelled from the runner, so `max_duration_minutes` is checked
 between stages only — what it honestly buys is not starting the 150-call writers
 stage on a run that has already blown its budget. The kill that can kill is
 systemd's `TimeoutStartSec`, generated an hour past it because a stage starting
 one minute before the deadline still runs to completion.
+
+**A full run is about fifteen minutes, not about an hour.** Run #1: 14m 44s wall
+clock, 13m 27s inside stages and 1m 17s between them. The longest stages are the
+writers (4m 29s) and grouping (2m 40s); collect is 10 seconds. The project's
+standing figure of "about an hour" was the deploy and the audit around the
+pipeline, not the pipeline — which is what `inspect timing` was built to settle
+and now has. `max_duration_minutes` is 90 on the strength of it: six times the
+observed run, loose enough for a bad provider day (run #4's outage cost 31
+minutes in the writers alone) and tight enough that reaching it means something
+is wrong, which 240 was not.
 
 **`--from <stage>` is the recovery path, and re-running is not.** Retry
 semantics differ by end of the pipeline. The tail is safely re-runnable —

@@ -3,6 +3,7 @@ import {
   evaluate,
   fraction,
   gateCollector,
+  gateFetch,
   gateEditor,
   gateGrouping,
   gateGroupingPass1,
@@ -57,14 +58,26 @@ function testCollectorHealthyRunPasses() {
   assert.equal(r.verdict, "ok");
 }
 
-function testCollectorToleratesDeadFeeds() {
-  // A dead feed is logged and skipped by design. Three of 111 is a Tuesday.
+function testCollectorIsSilentAboutTheSteadyState() {
+  // Run #1, the real one: 2 of 111 failed and the paper was flawless — 150/150
+  // written, 0 unsourced. The gate used to warn on any failure at all, which
+  // made that run 'degraded' and would have made every run degraded. A status
+  // that is always on is not a status.
   const r = gateCollector(
-    { sourcesAttempted: 111, sourcesSucceeded: 108, itemsFetched: 880, itemsInserted: 390 },
+    { sourcesAttempted: 111, sourcesSucceeded: 109, itemsFetched: 2791, itemsInserted: 1043 },
+    GATES.collector,
+  );
+  assert.equal(r.verdict, "ok");
+}
+
+function testCollectorWarnsOnAStepChange() {
+  // Ten of 111 is not the usual couple of dead feeds.
+  const r = gateCollector(
+    { sourcesAttempted: 111, sourcesSucceeded: 101, itemsFetched: 2400, itemsInserted: 900 },
     GATES.collector,
   );
   assert.equal(r.verdict, "warn");
-  assert.match(r.reasons[0]!, /3 source\(s\) failed/);
+  assert.match(r.reasons.join(" "), /more than the usual couple/);
 }
 
 function testCollectorAbortsWhenMostFeedsFail() {
@@ -359,6 +372,65 @@ function testWritersNoPacketsAborts() {
   assert.equal(r.verdict, "abort");
 }
 
+// --- fetch-text: the standing-condition-versus-event distinction ---
+
+function testFetchIsSilentAboutStandingCooldown() {
+  // Run #1's five: nytimes.com and oregonlive.com have served a DataDome check
+  // for months and are tracked in open-items. True, and not news.
+  const r = gateFetch(
+    {
+      requested: 148,
+      ok: 129,
+      thin: 14,
+      newlyCooledHosts: [],
+      cooldownHosts: [
+        "npr.org",
+        "oregonlive.com",
+        "thediplomat.com",
+        "nytimes.com",
+        "insideclimatenews.org",
+      ],
+    },
+    GATES.fetch,
+  );
+  assert.equal(r.verdict, "ok");
+}
+
+function testFetchWarnsOnAHostThatJustStoppedAnswering() {
+  // An outlet we were reading yesterday and are not reading today.
+  const r = gateFetch(
+    {
+      requested: 148,
+      ok: 120,
+      thin: 10,
+      newlyCooledHosts: ["reuters.com"],
+      cooldownHosts: ["nytimes.com", "reuters.com"],
+    },
+    GATES.fetch,
+  );
+  assert.equal(r.verdict, "warn");
+  assert.match(r.reasons.join(" "), /reuters\.com/);
+  assert.match(r.reasons.join(" "), /newly in cooldown/);
+}
+
+function testFetchWarnsWhenNothingUsableCameBack() {
+  const r = gateFetch(
+    { requested: 148, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [] },
+    GATES.fetch,
+  );
+  assert.equal(r.verdict, "warn");
+  assert.match(r.reasons.join(" "), /none yielded usable text/);
+}
+
+function testFetchThatRequestedNothingIsSilent() {
+  // Every story's feed body cleared the floor. Not a failure.
+  const r = gateFetch(
+    { requested: 0, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [] },
+    GATES.fetch,
+  );
+  assert.equal(r.verdict, "ok");
+}
+
 // --- publisher ---
 
 function testPublisherCleanPaperPasses() {
@@ -385,11 +457,90 @@ function testPublisherAbortsOnEmptyPaper() {
   assert.equal(r.verdict, "abort");
 }
 
+// --- run #1, replayed ---
+
+/**
+ * The whole of production run #1 (2026-08-30), metrics verbatim from
+ * pipeline_stage_runs, asserted to pass every gate without a warning.
+ *
+ * That run published paper #4: 150 of 150 pieces written, 0 failed, 0 skipped,
+ * 0 unsourced, 0 empty bodies, 267 source links. By every measure the pipeline
+ * records it was a clean paper, and the runner called it 'degraded' — on two
+ * standing conditions that would have fired every night forever. This is the
+ * test that stops that coming back, and it is the reason the thresholds are
+ * what they are.
+ */
+function testRunOneIsNotDegraded() {
+  const verdicts = [
+    gateCollector(
+      { sourcesAttempted: 111, sourcesSucceeded: 109, itemsFetched: 2791, itemsInserted: 1043 },
+      GATES.collector,
+    ),
+    gatePreprocessor({ rawItemsConsidered: 1039, itemsKept: 1009 }, GATES.preprocessor),
+    gatePrefilter({ itemsIn: 950, itemsKept: 604, itemsCut: 346 }, GATES.prefilter),
+    gateGrouping(
+      {
+        clusterCount: 48,
+        singletonCount: 277,
+        attachUnrecovered: 0,
+        attachFailedCalls: 0,
+        splitFailedCalls: 0,
+        resplitFailedCalls: 0,
+      },
+      GATES.grouping,
+    ),
+    gateGroupingPass1({ itemsIn: 325, unscored: 0, pileItems: 150 }, GATES.grouping_pass1),
+    gateThread({ candidatesIn: 220, threadsFormed: 9, failedCalls: 0 }, GATES.thread),
+    gateEditor(
+      {
+        itemsIn: 150,
+        itemsFeature: 15,
+        itemsStandard: 60,
+        itemsBrief: 75,
+        tieBreakCalls: 30,
+        tieBreakFailedCalls: 0,
+      },
+      GATES.editor,
+    ),
+    gateFetch(
+      {
+        requested: 148,
+        ok: 129,
+        thin: 14,
+        // Nothing entered cooldown that run; all five were already there.
+        newlyCooledHosts: [],
+        cooldownHosts: [
+          "npr.org",
+          "oregonlive.com",
+          "thediplomat.com",
+          "nytimes.com",
+          "insideclimatenews.org",
+        ],
+      },
+      GATES.fetch,
+    ),
+    gateWriters(
+      { piecesIn: 150, piecesWritten: 150, piecesFailed: 0, failedCalls: 0, repairAttempts: 0 },
+      GATES.writers,
+    ),
+    gatePublisher({ pieceCount: 150, piecesSkipped: 0, piecesUnsourced: 0 }, GATES.publisher),
+  ];
+
+  const noisy = verdicts.filter((v) => v.verdict !== "ok");
+  assert.deepEqual(
+    noisy.flatMap((v) => v.reasons),
+    [],
+    "run #1 published a clean paper and must not be recorded degraded",
+  );
+}
+
+testRunOneIsNotDegraded();
 testEvaluateTakesMostSevere();
 testEvaluateWithNothingFiring();
 testFractionOfNothingIsZero();
 testCollectorHealthyRunPasses();
-testCollectorToleratesDeadFeeds();
+testCollectorIsSilentAboutTheSteadyState();
+testCollectorWarnsOnAStepChange();
 testCollectorAbortsWhenMostFeedsFail();
 testCollectorAbortsOnNothingNew();
 testPreprocessorAbortsOnEmptyWindow();
@@ -415,6 +566,10 @@ testWritersThreeHolesPublishesDegraded();
 testWritersTrippedBreakerAborts();
 testWritersFloorBoundaryIsInclusive();
 testWritersNoPacketsAborts();
+testFetchIsSilentAboutStandingCooldown();
+testFetchWarnsOnAHostThatJustStoppedAnswering();
+testFetchWarnsWhenNothingUsableCameBack();
+testFetchThatRequestedNothingIsSilent();
 testPublisherCleanPaperPasses();
 testPublisherWarnsOnUnsourcedPieces();
 testPublisherAbortsOnEmptyPaper();

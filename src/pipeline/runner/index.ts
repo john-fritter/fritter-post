@@ -219,7 +219,7 @@ export async function runPipeline(
 
     let outcome;
     try {
-      outcome = await stage.run({ lineage, dryRun: false });
+      outcome = await stage.run({ lineage, pipelineRunId, dryRun: false });
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
       await pool.query(

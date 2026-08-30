@@ -28,6 +28,7 @@ import { runPublisher } from "../publisher/index.js";
 import {
   evaluate,
   gateCollector,
+  gateFetch,
   gateEditor,
   gateGrouping,
   gateGroupingPass1,
@@ -101,6 +102,8 @@ export interface StageOutcome {
 
 export interface StageContext {
   lineage: Lineage;
+  /** This invocation's pipeline_runs id, so a stage can read what the last one recorded. */
+  pipelineRunId: number;
   /** Set by --dry-run: report what would run, touch nothing. */
   dryRun: boolean;
 }
@@ -121,6 +124,30 @@ function merge(...results: GateResult[]): GateResult {
       })),
     ),
   );
+}
+
+/**
+ * The cooldown host set the previous pipeline run recorded, or null if there
+ * isn't one.
+ *
+ * Null and empty mean different things and the caller must not conflate them:
+ * an empty set means the last run found nothing in cooldown, so everything now
+ * in cooldown is new; null means there is no baseline at all, and with no
+ * baseline nothing can honestly be called new. The first run after this change
+ * therefore reports no newly-cooled hosts rather than all of them.
+ */
+async function previousCooldownHosts(pipelineRunId: number): Promise<Set<string> | null> {
+  const { rows } = await getPool().query<{ metrics: { cooldownHosts?: unknown } | null }>(
+    `SELECT metrics FROM pipeline_stage_runs
+      WHERE stage = 'fetch-text'
+        AND pipeline_run_id <> $1
+        AND metrics IS NOT NULL
+      ORDER BY id DESC LIMIT 1`,
+    [pipelineRunId],
+  );
+  const hosts = rows[0]?.metrics?.cooldownHosts;
+  if (!Array.isArray(hosts)) return null;
+  return new Set(hosts.filter((h): h is string => typeof h === "string"));
 }
 
 /** A gate that fired on a precondition rather than on a stage's own counters. */
@@ -379,29 +406,27 @@ export const STAGES: Stage[] = [
       if (ctx.lineage.editorRunId === null) {
         return abortBecause("no editor run to fetch article text for");
       }
+      const cfg = loadModelConfig().pipeline.gates.fetch;
       const r = await runArticleFetch({ editorRunId: ctx.lineage.editorRunId });
 
-      // No configured thresholds here on purpose: the two things worth saying
-      // are structural, not numeric. A fetch that requested pages and got no
-      // usable text from any of them is a transport problem; a host in cooldown
-      // is the documented cause of top-of-paper stories running headline-only
-      // (open item 2), and it is silent everywhere else at run time.
-      const gate = evaluate([
+      // What the last run found in cooldown, so the gate can report the change
+      // rather than the condition. This is the metrics column earning its keep:
+      // it was added so thresholds could be tuned against history, and the same
+      // history answers "is this new?".
+      const previous = await previousCooldownHosts(ctx.pipelineRunId);
+      const newlyCooledHosts =
+        previous === null ? [] : r.cooldownHosts.filter((h) => !previous.has(h));
+
+      const gate = gateFetch(
         {
-          when: r.requested > 0 && r.ok + r.thin === 0,
-          verdict: "warn",
-          reason:
-            `${r.requested} article(s) requested and none yielded usable text — ` +
-            `every fetched story will be written from its feed body`,
+          requested: r.requested,
+          ok: r.ok,
+          thin: r.thin,
+          newlyCooledHosts,
+          cooldownHosts: r.cooldownHosts,
         },
-        {
-          when: r.cooldownHosts.length > 0,
-          verdict: "warn",
-          reason:
-            `host(s) skipped by cooldown: ${r.cooldownHosts.join(", ")} — ` +
-            `their stories run on headline-level material whatever they rank`,
-        },
-      ]);
+        cfg,
+      );
 
       return {
         stageRunId: null,
@@ -415,6 +440,7 @@ export const STAGES: Stage[] = [
           error: r.error,
           skipped: r.skipped,
           cooldownHosts: r.cooldownHosts,
+          newlyCooledHosts,
           charsBefore: r.charsBefore,
           charsAfter: r.charsAfter,
         },

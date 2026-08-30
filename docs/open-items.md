@@ -45,6 +45,14 @@ missing.
 bio weights hardest. Both serve a DataDome device check the browser UA does not
 pass.
 
+As of the runner, a host **entering** cooldown warns on the pipeline run
+(`pipeline.gates.fetch.warn_on_newly_cooled_hosts`), so a new one is noticed the
+morning it happens rather than whenever someone next reads `inspect fetch`. The
+five standing ones — `npr.org`, `oregonlive.com`, `thediplomat.com`,
+`nytimes.com`, `insideclimatenews.org` as of run #1 — stay silent by design and
+are on `pipeline_stage_runs.metrics` every run. That watches for the problem
+getting worse; it does nothing about the hosts already lost.
+
 **Also watch The Nugget**: three of its article fetches in run #59 returned HTTP
 429 even after the browser-UA retry. It now leads the paper, so if it enters
 cooldown its stories run headline-only at rank 1 — the same failure, at the
@@ -104,25 +112,29 @@ the pipeline's primary tuning lever and is inspected by hand.
 distribution across both axes, the fail-safe count, and a source filter so
 "where does the local beat land" is one command.
 
-### 8. The runner's thresholds have never seen a real run
+### 8. The runner's thresholds have seen exactly one run
 
-`pipeline.gates.*` in `models.yaml` is policy, and only two of the numbers in it
-are backed by anything. `min_written_fraction: 0.75` and the collector's
-`min_sources_succeeded_fraction: 0.5` are judgment calls; `max_cut_fraction`,
-`max_unscored_fraction` and `abort_unscored_fraction` were picked to be well
-clear of any run we have seen, which is a guess about the shape of the
-distribution rather than a measurement of it.
+Run #1 (2026-08-30) retuned the two that were visibly wrong — the collector now
+warns on a step change rather than any dead feed, and the fetch warns only on a
+host newly in cooldown. `max_duration_minutes` is 90 on a measured 14m 44s. See
+`docs/decisions.md`, 2026-08-30.
 
-Every gate persists the metrics it read onto `pipeline_stage_runs.metrics`, so
-this answers itself after a couple of weeks: query the column, look at where the
-real runs sit, and move the thresholds to where they would have fired only on
-the runs that deserved it.
+What is still a guess is everything the run did not exercise, because it was a
+good day: `max_cut_fraction` (0.95 against an observed 36.4%),
+`max_unscored_fraction` and `abort_unscored_fraction` (observed 0 unscored),
+`min_written_fraction` (observed 150/150), and the collector's abort floor of
+0.5 (observed 98.2% succeeded). Every one has an order of magnitude between it
+and the only data point.
 
-**Also unmeasured:** `max_duration_minutes: 240`. Nobody has timed a full run —
-`inspect timing` exists and the only figure the project has is "about an hour",
-which conflates the pipeline with the deploy and the audit around it. The first
-few `inspect pipeline` rows settle both this and whether 06:00 leaves enough
-margin.
+Every gate persists what it read to `pipeline_stage_runs.metrics`, so this
+answers itself: after a couple of weeks, query the column, see where real runs
+sit, and move the thresholds to where they would have fired only on the runs
+that deserved it. Resist tuning them on one more good day — a threshold that has
+never been near a bad run has not been tested, only unused.
+
+**Still open on timing:** whether 06:00 leaves enough margin is now arithmetic
+rather than a guess (15 minutes puts the paper at 06:15), but the timer has not
+been installed and no unattended run has happened.
 
 ### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
 

@@ -30,7 +30,15 @@ pipeline:
   # interrupt one would be lying. What it does buy is real -- it stops a run
   # that has already blown its budget from starting the 150-call writers stage.
   # The hard kill belongs to systemd's TimeoutStartSec, which can actually kill.
-  max_duration_minutes: 240
+  #
+  # Measured on run #1: 14.7 minutes end to end, of which the writers were 4.5
+  # and everything before them about 10. The project's only previous figure was
+  # "about an hour", which turns out to have been the deploy and the audit
+  # around the pipeline rather than the pipeline. 90 is six times the observed
+  # run -- loose enough to absorb a bad provider day (run #4's outage cost 31
+  # minutes in the writers alone) and tight enough that reaching it means
+  # something is wrong, which 240 was not.
+  max_duration_minutes: 90
 
   writers:
     # A tripped breaker means the provider was failing, not the material, and
@@ -54,6 +62,12 @@ pipeline:
       # A single dead feed is normal and the collector is failure-tolerant. Half
       # of them failing is not a feed problem, it is DNS, egress, or the proxy.
       min_sources_succeeded_fraction: 0.5
+      # Above this share failing, say so. Run #1 lost 2 of 111 (1.8%) on a day
+      # that produced a flawless paper, and warning on it would have made every
+      # run degraded -- which costs the word its meaning, since a status that is
+      # always on is not a status. A dead feed is the steady state here; a step
+      # change in how many is the thing worth a look.
+      warn_failed_sources_fraction: 0.05
       # Zero new items in a 24h window means the collector fetched nothing worth
       # having; every stage below it would run on yesterday.
       min_items_inserted: 1
@@ -98,6 +112,16 @@ pipeline:
       # which a missing piece stops being worth saying, and inventing one only
       # decides how many holes go unmentioned.
       min_written_fraction: 0.75
+    fetch:
+      # Cooldown hosts are a STANDING condition, not an event: nytimes.com and
+      # oregonlive.com have served a DataDome check for months and are tracked
+      # in open-items, so naming them nightly is noise that would make every run
+      # degraded. What is genuinely new information is a host that entered
+      # cooldown since the last run -- an outlet we were reading yesterday and
+      # are not reading today. That is the diff, and it needs no threshold.
+      # The full list stays on pipeline_stage_runs.metrics either way.
+      warn_on_newly_cooled_hosts: true
+
     publisher:
       # A published piece whose lineage would not resolve is one the reader
       # cannot follow to anyone's reporting, which is the one thing the paper

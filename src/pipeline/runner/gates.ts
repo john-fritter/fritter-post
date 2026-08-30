@@ -107,13 +107,21 @@ export function gateCollector(
         `every stage below this would run on yesterday`,
     },
     {
-      // Not fatal on its own, and the shape of a partial outage worth naming.
+      // Not on any failure. Run #1 lost 2 of 111 and published a flawless
+      // paper; warning there would have made every run degraded, and a status
+      // that is always on is not a status. The collector is built to skip a
+      // dead feed, so the steady state is not news -- a step change in how many
+      // is. The count is on the metrics either way.
       when:
         m.sourcesAttempted > 0 &&
         succeeded >= cfg.min_sources_succeeded_fraction &&
-        m.sourcesSucceeded < m.sourcesAttempted,
+        fraction(m.sourcesAttempted - m.sourcesSucceeded, m.sourcesAttempted) >
+          cfg.warn_failed_sources_fraction,
       verdict: "warn",
-      reason: `${m.sourcesAttempted - m.sourcesSucceeded} source(s) failed`,
+      reason:
+        `${m.sourcesAttempted - m.sourcesSucceeded} of ${m.sourcesAttempted} sources failed ` +
+        `(${pct(fraction(m.sourcesAttempted - m.sourcesSucceeded, m.sourcesAttempted))}, ` +
+        `ceiling ${pct(cfg.warn_failed_sources_fraction)}) — more than the usual couple`,
     },
   ]);
 }
@@ -356,6 +364,55 @@ export function gateWriters(m: WritersMetrics, cfg: PipelineGatesConfig["writers
       when: m.piecesIn === 0,
       verdict: "abort",
       reason: "the writers were given no packets — the editor run resolved to nothing writable",
+    },
+  ]);
+}
+
+export interface FetchMetrics {
+  requested: number;
+  ok: number;
+  thin: number;
+  /**
+   * Hosts skipped by cooldown that were NOT in cooldown on the previous
+   * recorded run. Empty when there is no previous run to compare against: with
+   * no baseline, nothing can be said to be new.
+   */
+  newlyCooledHosts: string[];
+  /** Everything currently in cooldown, for the reason line's context. */
+  cooldownHosts: string[];
+}
+
+/**
+ * The fetch gate, and the one place a standing condition had to be told apart
+ * from an event.
+ *
+ * Five hosts were in cooldown on run #1 -- nytimes.com and oregonlive.com have
+ * served a DataDome check for months and are tracked in open-items. Naming them
+ * is true and useless: it would fire every night forever, and a run that is
+ * always degraded tells the reader nothing about last night in particular.
+ * A host that entered cooldown SINCE THE LAST RUN is the opposite: an outlet we
+ * were reading yesterday and are not reading today, which is worth a look while
+ * it is still recent enough to do something about.
+ */
+export function gateFetch(
+  m: FetchMetrics,
+  cfg: PipelineGatesConfig["fetch"],
+): GateResult {
+  return evaluate([
+    {
+      when: m.requested > 0 && m.ok + m.thin === 0,
+      verdict: "warn",
+      reason:
+        `${m.requested} article(s) requested and none yielded usable text — ` +
+        `every fetched story will be written from its feed body`,
+    },
+    {
+      when: cfg.warn_on_newly_cooled_hosts && m.newlyCooledHosts.length > 0,
+      verdict: "warn",
+      reason:
+        `host(s) newly in cooldown since the last run: ${m.newlyCooledHosts.join(", ")} — ` +
+        `their stories now run on headline-level material whatever they rank ` +
+        `(${m.cooldownHosts.length} host(s) in cooldown in total)`,
     },
   ]);
 }
