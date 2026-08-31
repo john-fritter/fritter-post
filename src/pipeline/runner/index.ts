@@ -57,6 +57,13 @@ export interface RunPipelineOptions {
   to?: StageName;
   /** Print the plan and the inherited lineage, run nothing. */
   dryRun?: boolean;
+  /**
+   * Testing only: run the preprocessor with cross-run dedup off, so a full
+   * pipeline can be exercised on a day it has already run. The resulting paper
+   * re-uses items an earlier run published, so it is a test artifact and the
+   * pipeline_runs row says so in its notes.
+   */
+  skipCrossRunDedup?: boolean;
 }
 
 const LINEAGE_COLUMNS: Record<keyof Lineage, string> = {
@@ -145,6 +152,12 @@ export async function runPipeline(
       }
     }
     console.log(`[pipeline] deadline: ${config.max_duration_minutes} minutes (checked between stages)`);
+    if (options.skipCrossRunDedup) {
+      console.log(
+        "[pipeline] --skip-cross-run-dedup: TEST RUN — the preprocessor would re-admit items " +
+          "earlier runs already processed, so the paper would not be a normal edition",
+      );
+    }
     console.log("[pipeline] --dry-run: nothing was run");
     return {
       pipelineRunId: -1,
@@ -158,6 +171,13 @@ export async function runPipeline(
     };
   }
 
+  if (options.skipCrossRunDedup) {
+    console.warn(
+      "[pipeline] --skip-cross-run-dedup: the preprocessor will re-admit items earlier runs " +
+        "already processed. This is a TEST RUN and its paper is not a normal edition.",
+    );
+  }
+
   const startedAt = Date.now();
   const deadlineMs = config.max_duration_minutes * 60_000;
 
@@ -166,9 +186,16 @@ export async function runPipeline(
   // is the kind of friction that stops anyone checking.
   const pool = getPool();
 
+  const notes = [
+    inheritedFrom !== null ? `lineage inherited from pipeline run #${inheritedFrom}` : null,
+    options.skipCrossRunDedup
+      ? "TEST RUN: cross-run dedup disabled — this paper re-uses items an earlier run published"
+      : null,
+  ].filter((n): n is string => n !== null);
+
   const { rows: runRows } = await pool.query<{ id: number }>(
     "INSERT INTO pipeline_runs (started_from, notes) VALUES ($1, $2) RETURNING id",
-    [from, inheritedFrom !== null ? `lineage inherited from pipeline run #${inheritedFrom}` : null],
+    [from, notes.length > 0 ? notes.join("; ") : null],
   );
   const pipelineRunId = runRows[0]!.id;
   console.log(
@@ -219,7 +246,12 @@ export async function runPipeline(
 
     let outcome;
     try {
-      outcome = await stage.run({ lineage, pipelineRunId, dryRun: false });
+      outcome = await stage.run({
+        lineage,
+        pipelineRunId,
+        dryRun: false,
+        skipCrossRunDedup: options.skipCrossRunDedup ?? false,
+      });
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
       await pool.query(

@@ -5359,3 +5359,68 @@ failed collector sources mean the edition does not represent the complete
 configured source set." That is accurate about the edition and wrong about the
 status: the edition has never represented the complete source set and will not
 tomorrow either. A daily artifact's status has to describe the day.
+
+## 2026-08-31 — Run #2: the retune holds, and the label alone on its line
+
+**Decision:** Keep the retuned gates. Fix `parseWriterOutput` so a bare
+`HEADLINE:` label is not published as a headline. Add
+`--skip-cross-run-dedup` to the runner for testing.
+
+**Context:** Run #2 on the retuned code, a full run from collect to publish.
+The two gates changed on run #1 behaved exactly as intended and in opposite
+directions:
+
+- **collect** saw 1 of 111 sources fail (0.9%) and said nothing, where run #1's
+  2 of 111 had warned. The standing condition is silent.
+- **fetch-text** warned, naming `washingtonpost.com` and `newsinfo.inquirer.net`
+  as newly in cooldown out of seven total. The five from run #1 were not
+  re-announced.
+
+So run #2 is `degraded` and it is right to be: two outlets we could read
+yesterday we cannot read today. That is the distinction the retune exists to
+draw, and under the old gate it would have been buried inside a list of five
+names that never changes. **`degraded` should not be read as a failure to reach
+`ok`** — it is the runner saying something happened last night, which on this
+night it had.
+
+**The real find is in the paper, not the runner.** Rank 65 (S68421) published
+with the literal headline `HEADLINE:`, a 185-word body, and `status='ok'`. The
+path is unambiguous and reproduces in one line: `matchHeadlineLabel` requires
+`(.+)` after the colon, so a label alone on its line never matches it, and it
+falls through to the unlabelled branch that accepts any first line of 160
+characters or fewer. `HEADLINE:` is nine. The real headline was pushed into the
+body, which is also why the piece ran long for its tier.
+
+Fixing it turned up a second defect in the same three lines, older and quieter:
+`**HEADLINE:**` alone on a line *does* match the label pattern, with `**` as its
+text, which `clean` strips to `""` — and the code returned null, failing the
+whole piece. That is run #3's "unparseable output" failure mode still alive in
+the one branch nobody had looked at, because reaching it needs the model to bold
+a label it had already put on its own line.
+
+**Rationale:** The parser's standing argument is that a model which wrote the
+piece correctly in a shape the contract did not ask for has done the job, and
+refusing to read it is the parser's failure. A label on its own line with the
+headline beneath it is exactly that shape. Where what follows is too long to be a
+headline, or is the piece's only line — a 25-word brief legitimately is — the
+text is kept with a null headline rather than the piece being failed, which is
+the unlabelled branch's own fallback and run #36's lesson: a missing headline
+costs a headline, refusing the piece costs the piece.
+
+Deliberately *not* extended to mid-body restarts. A revision that restarts with a
+bare label stays undetectable, as an unlabelled revision always was, because
+widening the strict restart matcher to bare labels risks truncating a piece that
+parsed correctly — the trade the strict/forgiving split was made to get right.
+
+**On testing the pipeline end to end.** Cross-run dedup makes a same-day full
+re-run come back near-empty, which is correct for production and makes the
+pipeline untestable on any day it has already run. The preprocessor has had
+`skipCrossRunDedup` all along and the runner did not expose it;
+`--skip-cross-run-dedup` now does, warns on the way in, and writes
+"TEST RUN: cross-run dedup disabled" into `pipeline_runs.notes` — because a paper
+built from items an earlier run published is a test artifact, and six months from
+now nothing else would say so.
+
+**Timing, second data point:** 16m 43s against run #1's 14m 44s. The variance is
+grouping-pass-1 (3m 20s → 4m 54s) tracking the day's row count, 325 to 398. Both
+sit far inside the 90-minute budget.

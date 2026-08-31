@@ -6,6 +6,7 @@
  *   npm run pipeline -- --from editor
  *   npm run pipeline -- --from write --to publish
  *   npm run pipeline -- --dry-run
+ *   npm run pipeline -- --skip-cross-run-dedup   # testing only, see below
  *   npm run pipeline -- --print-timer [--working-dir /opt/fritter-post]
  *
  * --from is the recovery path, and it is not the same as re-running. Retrying
@@ -16,6 +17,11 @@
  * is unique and the publisher deletes-then-inserts — so recovery resumes.
  *
  * This is also why the systemd unit has no Restart=on-failure.
+ *
+ * --skip-cross-run-dedup exists for the other side of that: testing the whole
+ * pipeline on a day it has already run. It makes the preprocessor re-admit items
+ * earlier runs processed, so the paper it produces is a test artifact rather than
+ * an edition, and the pipeline_runs row records that.
  */
 
 import "dotenv/config";
@@ -88,6 +94,7 @@ async function main() {
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
     dryRun: flags["dry-run"] === "true",
+    skipCrossRunDedup: flags["skip-cross-run-dedup"] === "true",
   });
 
   if (flags["dry-run"] === "true") process.exit(0);

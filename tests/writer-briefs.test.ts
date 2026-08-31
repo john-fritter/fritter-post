@@ -312,6 +312,60 @@ function testDecoratedLabelsAreRead() {
   assert.equal(parseWriterOutput("## HEADLINE: A heading label\n\nBody.")!.headline, "A heading label");
 }
 
+function testTheLabelAloneOnItsLineIsNotTheHeadline() {
+  // Run #2's rank 65 (S68421) published with the literal headline "HEADLINE:"
+  // and its real headline sitting at the top of the body. matchHeadlineLabel
+  // requires text after the colon, so a bare label never matched it and fell
+  // through to the unlabelled branch, which takes any first line of 160 chars
+  // or fewer. "HEADLINE:" is nine.
+  const parsed = parseWriterOutput(
+    "HEADLINE:\nThird person dies in ICE custody\n\nA man died in custody on Tuesday.",
+  );
+  assert.equal(parsed!.headline, "Third person dies in ICE custody");
+  assert.equal(parsed!.body, "A man died in custody on Tuesday.");
+}
+
+function testABareLabelSurvivesABlankLineAndBolding() {
+  const spaced = parseWriterOutput("HEADLINE:\n\nThird person dies\n\nA man died.");
+  assert.equal(spaced!.headline, "Third person dies");
+  assert.equal(spaced!.body, "A man died.");
+
+  // `**HEADLINE:**` matches the label pattern with `**` as its text, which
+  // cleans away to nothing. That returned null and failed the whole piece —
+  // run #3's failure mode surviving in the one branch nobody had looked at.
+  const bold = parseWriterOutput("**HEADLINE:**\nA real headline\n\nBody text here.");
+  assert.equal(bold!.headline, "A real headline");
+  assert.equal(bold!.body, "Body text here.");
+}
+
+function testABareLabelFollowedByProseLosesOnlyTheHeadline() {
+  // The model labelled and went straight into the piece. Publishing a paragraph
+  // as a headline is what the length guard exists to prevent, so the piece keeps
+  // its text and loses the headline it never wrote.
+  const body =
+    "A man died in custody on Tuesday and the agency confirmed it late in the day " +
+    "after repeated questions from reporters who had been asking since the morning, " +
+    "according to two people briefed on the case.";
+  const parsed = parseWriterOutput(`HEADLINE:\n\n${body}`);
+  assert.equal(parsed!.headline, null);
+  assert.equal(parsed!.body, body);
+}
+
+function testABareLabelWithNothingUnderItIsStillAFailedPiece() {
+  // Nothing to publish at all.
+  assert.equal(parseWriterOutput("HEADLINE:"), null);
+  assert.equal(parseWriterOutput("HEADLINE:\n\n   \n"), null);
+}
+
+function testABareLabelOverOneShortLineKeepsThePiece() {
+  // A 25-word brief is legitimately one line under the headline ceiling, so
+  // treating it as a headline with no body would fail the piece. The unlabelled
+  // branch already falls back to a null headline here; this one matches it.
+  const parsed = parseWriterOutput("HEADLINE:\nOregon extended its wildfire fund through 2030.");
+  assert.equal(parsed!.headline, null);
+  assert.equal(parsed!.body, "Oregon extended its wildfire fund through 2030.");
+}
+
 function testAnUnlabelledShortFirstLineIsTheHeadline() {
   // The model wrote the piece correctly and skipped the label. Refusing to read
   // that costs a whole piece for nothing.
@@ -486,6 +540,11 @@ testLabelledHeadlineIsRead();
 testPreambleBeforeTheHeadlineIsSkipped();
 testCodeFencesAreIgnored();
 testDecoratedLabelsAreRead();
+testTheLabelAloneOnItsLineIsNotTheHeadline();
+testABareLabelSurvivesABlankLineAndBolding();
+testABareLabelFollowedByProseLosesOnlyTheHeadline();
+testABareLabelWithNothingUnderItIsStillAFailedPiece();
+testABareLabelOverOneShortLineKeepsThePiece();
 testAnUnlabelledShortFirstLineIsTheHeadline();
 testMarkdownHeadingAsHeadline();
 testProseWithNoHeadlineIsPublishedWithoutOne();

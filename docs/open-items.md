@@ -45,6 +45,12 @@ missing.
 bio weights hardest. Both serve a DataDome device check the browser UA does not
 pass.
 
+**Run #2 added two more:** `washingtonpost.com` and `newsinfo.inquirer.net`
+entered cooldown on 2026-08-31, taking the total to seven. That is the warning
+working, and it is also two more outlets whose stories now run on headline-level
+material at whatever rank they earn. Worth a look at *why* those two started
+refusing before they settle in as permanent like the first five.
+
 As of the runner, a host **entering** cooldown warns on the pipeline run
 (`pipeline.gates.fetch.warn_on_newly_cooled_hosts`), so a new one is noticed the
 morning it happens rather than whenever someone next reads `inspect fetch`. The
@@ -119,12 +125,16 @@ warns on a step change rather than any dead feed, and the fetch warns only on a
 host newly in cooldown. `max_duration_minutes` is 90 on a measured 14m 44s. See
 `docs/decisions.md`, 2026-08-30.
 
-What is still a guess is everything the run did not exercise, because it was a
-good day: `max_cut_fraction` (0.95 against an observed 36.4%),
-`max_unscored_fraction` and `abort_unscored_fraction` (observed 0 unscored),
-`min_written_fraction` (observed 150/150), and the collector's abort floor of
-0.5 (observed 98.2% succeeded). Every one has an order of magnitude between it
-and the only data point.
+Run #2 confirmed the retune from both sides: collect went silent at 1/111, and
+fetch warned naming the two hosts that were genuinely new. Neither needed
+touching again.
+
+What is still a guess is everything neither run exercised, because both were
+good days: `max_cut_fraction` (0.95 against 36.4% and 32.3%),
+`max_unscored_fraction` and `abort_unscored_fraction` (0 unscored both runs),
+`min_written_fraction` (150/150 both runs), and the collector's abort floor of
+0.5 (98.2% and 99.1% succeeded). Every one has an order of magnitude between it
+and the observed data.
 
 Every gate persists what it read to `pipeline_stage_runs.metrics`, so this
 answers itself: after a couple of weeks, query the column, see where real runs
@@ -132,9 +142,9 @@ sit, and move the thresholds to where they would have fired only on the runs
 that deserved it. Resist tuning them on one more good day — a threshold that has
 never been near a bad run has not been tested, only unused.
 
-**Still open on timing:** whether 06:00 leaves enough margin is now arithmetic
-rather than a guess (15 minutes puts the paper at 06:15), but the timer has not
-been installed and no unattended run has happened.
+**Still open on timing:** 14m 44s and 16m 43s across two runs, so 06:00 puts the
+paper up around 06:17. The variance is grouping-pass-1 tracking the day's row
+count. The timer has not been installed and no unattended run has happened.
 
 ### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
 
@@ -147,6 +157,21 @@ like a filter and is not one.
 **Fix:** either make it real (filter on it when given) or rename it to say what
 it is. Making it real is the better shape and changes what a hand-run
 preprocessor collects, so it wants a decision rather than a patch.
+
+---
+
+### 10. Paper #5 rank 65 is published with the headline "HEADLINE:"
+
+The parser defect that caused it is fixed (`docs/decisions.md`, 2026-08-31), but
+the fix does not reach back into a published paper. Paper #5 (2026-08-31), rank
+65, ref S68421 still carries the literal headline `HEADLINE:` with its real
+headline as the first line of its body.
+
+**Fix:** re-run the writers for that one piece and re-publish the paper —
+`npm run write -- --repair 50` will not do it, because the piece is
+`status='ok'` and repair only re-writes failed pieces. Either clear that row's
+status by hand first or accept it; it is one headline in one back number. Worth
+deciding rather than leaving, since the archive keeps it.
 
 ---
 

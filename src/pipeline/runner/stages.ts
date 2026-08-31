@@ -106,6 +106,13 @@ export interface StageContext {
   pipelineRunId: number;
   /** Set by --dry-run: report what would run, touch nothing. */
   dryRun: boolean;
+  /**
+   * Testing only. Cross-run dedup is what makes a same-day full re-run come back
+   * near-empty by design, which is correct for production and makes the pipeline
+   * untestable end to end on a day it has already run. Turning it off produces a
+   * paper built from items an earlier run already published.
+   */
+  skipCrossRunDedup: boolean;
 }
 
 export interface Stage {
@@ -190,17 +197,19 @@ export const STAGES: Stage[] = [
       // fetched_at window. Passed anyway so the lineage says which collection
       // this run was meant to follow, which is the only honest thing it can
       // mean here.
-      const r = await runPreprocessor(
-        ctx.lineage.collectorRunId !== null
+      const r = await runPreprocessor({
+        ...(ctx.lineage.collectorRunId !== null
           ? { collectorRunId: ctx.lineage.collectorRunId }
-          : {},
-      );
+          : {}),
+        ...(ctx.skipCrossRunDedup ? { skipCrossRunDedup: true } : {}),
+      });
       const metrics = {
         rawItemsConsidered: r.rawItemsConsidered,
         itemsKept: r.itemsKept,
         itemsDroppedRecency: r.itemsDroppedRecency,
         itemsDroppedDuplicate: r.itemsDroppedDuplicate,
         itemsDroppedCrossRun: r.itemsDroppedCrossRun,
+        crossRunDedupSkipped: r.crossRunDedupSkipped,
       };
       return {
         stageRunId: r.id,

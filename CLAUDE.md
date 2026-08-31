@@ -885,6 +885,22 @@ calls had succeeded. `parseWriterOutput` scans the opening lines for a label,
 ignores code fences, and falls back to a short unlabelled first line. A brief
 missing from a batch gets one follow-up call for the stragglers.
 
+**The label alone on its line is a label, not a headline.** Run #2's rank 65
+(S68421) published with the literal headline `HEADLINE:` and its real headline
+sitting at the top of its body. `matchHeadlineLabel` requires text after the
+colon, so a bare label never matched it and fell through to the unlabelled
+branch, which takes any first line of 160 characters or fewer — and `HEADLINE:`
+is nine. The headline is now read from the next line with content. The same fix
+covers `**HEADLINE:**`, which *did* match the label pattern with `**` as its
+text, cleaned away to nothing, and failed the whole piece — run #3's failure
+mode surviving in the one branch nobody had looked at, because it needed the
+model to bold a label it had put on its own line. When what follows is too long
+to be a headline, or is the piece's only line, the text is kept with a null
+headline rather than lost. This is the *primary* parse only: a mid-body revision
+that restarts with a bare label is still undetectable, as an unlabelled revision
+always was, because widening the strict restart matcher would risk truncating a
+piece that parsed correctly.
+
 **And a piece with no headline is still a piece.** The parser used to refuse a
 first line that was plainly prose, reasoning that publishing a paragraph as a
 headline is worse than recording a failure. That reasoning only holds while the
@@ -1056,8 +1072,10 @@ systemd's `TimeoutStartSec`, generated an hour past it because a stage starting
 one minute before the deadline still runs to completion.
 
 **A full run is about fifteen minutes, not about an hour.** Run #1: 14m 44s wall
-clock, 13m 27s inside stages and 1m 17s between them. The longest stages are the
-writers (4m 29s) and grouping (2m 40s); collect is 10 seconds. The project's
+clock, 13m 27s inside stages and 1m 17s between them; run #2: 16m 43s. The
+longest stages are the writers (4m 29s / 4m 44s) and grouping-pass-1, which
+varies most (3m 20s / 4m 54s, tracking how many rows the day produced — 325 then
+398); collect is 10 seconds. The project's
 standing figure of "about an hour" was the deploy and the audit around the
 pipeline, not the pipeline — which is what `inspect timing` was built to settle
 and now has. `max_duration_minutes` is 90 on the strength of it: six times the
@@ -1305,6 +1323,11 @@ number is ambiguous. The next migration is **043**.
   come back near-empty by design
 - `npm run pipeline -- --dry-run` — print the plan and the lineage it would
   inherit, run nothing. Needs no database when starting from `collect`
+- `npm run pipeline -- --skip-cross-run-dedup` — **testing only.** A full run on
+  a day the pipeline has already run comes back near-empty by design; this makes
+  the preprocessor re-admit what earlier runs took, so the whole pipeline can be
+  exercised end to end. The paper it makes re-uses published items and is a test
+  artifact, which the `pipeline_runs` note records
 - `npm run pipeline -- --print-timer [--working-dir <path>]` — generate the
   systemd unit and timer from `pipeline.schedule`
 
