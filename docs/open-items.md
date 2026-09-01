@@ -160,21 +160,6 @@ preprocessor collects, so it wants a decision rather than a patch.
 
 ---
 
-### 10. Paper #5 rank 65 is published with the headline "HEADLINE:"
-
-The parser defect that caused it is fixed (`docs/decisions.md`, 2026-08-31), but
-the fix does not reach back into a published paper. Paper #5 (2026-08-31), rank
-65, ref S68421 still carries the literal headline `HEADLINE:` with its real
-headline as the first line of its body.
-
-**Fix:** re-run the writers for that one piece and re-publish the paper —
-`npm run write -- --repair 50` will not do it, because the piece is
-`status='ok'` and repair only re-writes failed pieces. Either clear that row's
-status by hand first or accept it; it is one headline in one back number. Worth
-deciding rather than leaving, since the archive keeps it.
-
----
-
 ## Deferred by decision, not defect
 
 - **Images.** No pipeline exists. `.art-figure` is reserved in `globals.css` so
@@ -186,6 +171,15 @@ deciding rather than leaving, since the archive keeps it.
 - **Per-story comments and copy-as-markdown.** `concept.md` V1.5. The comment
   field feeds the next day's editor, which is a feedback loop the pipeline does
   not have.
+- **Paper #5's "HEADLINE:" headline stays.** Paper #5 (2026-08-31) rank 65, ref
+  S68421, is published with the literal headline `HEADLINE:` and its real
+  headline as the first line of its body. The parser defect is fixed
+  (`docs/decisions.md`, 2026-08-31) but a fix does not reach back into a
+  published paper, and `--repair` only re-writes pieces marked failed, so
+  correcting it would mean clearing that row's status by hand and re-publishing
+  an edition already read. Left as-is by decision 2026-09-01: one headline in one
+  back number, and the archive is a record of what was published. Noted here so
+  nobody re-diagnoses it as a live defect.
 - **In-paper AI Q&A.** Explicitly out of scope in `CLAUDE.md`, and the reasoning
   holds: answering questions about a story means grounding in `article_texts`,
   the one table that holds third-party full text and is never published. Raised
