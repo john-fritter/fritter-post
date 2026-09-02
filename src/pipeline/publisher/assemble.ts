@@ -232,3 +232,30 @@ export function formatEditionDate(iso: string): string {
     weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "UTC",
   }).format(new Date(Date.UTC(y, m - 1, d)));
 }
+
+/**
+ * Whether a re-publish would shrink the edition past the point of being a
+ * correction, and by how much. Null means go ahead.
+ *
+ * **The only place a stage guards an artifact the reader already has**, which is
+ * why it is a refusal rather than a warning. Re-publishing a date replaces it —
+ * right for correcting a morning, wrong for a second run the same day. Cross-run
+ * dedup gave the earlier run today's news, so the second one sees only the hours
+ * since and assembles a small paper; every stage's counters look healthy because
+ * each is fine in isolation, and a 150-piece edition becomes a 56-piece one
+ * behind nine `ok` gates. A warning would arrive after the delete, and the
+ * smaller paper is strictly worse than the one it destroyed.
+ *
+ * Growth is never refused, and neither is replacing a paper that had no pieces:
+ * the guard exists to protect a real edition, not to make re-publishing hard.
+ */
+export function replacementShortfall(
+  existingPieceCount: number,
+  newPieceCount: number,
+  floor: number,
+): { ratio: number; existingPieceCount: number; newPieceCount: number } | null {
+  if (existingPieceCount <= 0) return null;
+  const ratio = newPieceCount / existingPieceCount;
+  if (ratio >= floor) return null;
+  return { ratio, existingPieceCount, newPieceCount };
+}

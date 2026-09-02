@@ -521,6 +521,7 @@ export const STAGES: Stage[] = [
         piecesSkipped: r.piecesSkipped,
         piecesUnsourced: r.piecesUnsourced,
         replaced: r.replaced,
+        replacedPieceCount: r.replacedPieceCount,
       };
       return {
         stageRunId: r.paperId,

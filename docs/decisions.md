@@ -5424,3 +5424,55 @@ now nothing else would say so.
 **Timing, second data point:** 16m 43s against run #1's 14m 44s. The variance is
 grouping-pass-1 (3m 20s → 4m 54s) tracking the day's row count, 325 to 398. Both
 sit far inside the 90-minute budget.
+
+## 2026-09-01 — The publisher refuses to shrink a paper it is replacing
+
+**Decision:** Before replacing an existing paper, the publisher compares its
+piece count against the one it would write, and refuses below
+`pipeline.gates.publisher.min_replacement_fraction` (0.75) unless `--force`.
+The check runs before the materials walk, so a refusal is free.
+
+**Context:** Found while answering a scheduling question, not a bug report. The
+timer had just been installed, and the question was whether to run the pipeline
+by hand the same evening. Working through what a second run would do turned up
+this:
+
+Re-publishing a date replaces it — `published_on` is unique and the publisher
+deletes-then-inserts. That is exactly right for correcting a morning. But
+cross-run dedup means a second run on the same day sees only the hours since the
+first, so it assembles a small pile and writes a small paper. Replay a plausible
+second run through the gates and **all nine return `ok`**: 120 items kept, 70
+through the prefilter, 56 rows, 56 ranked, 56 written, 56 published. Each stage
+is genuinely fine on its own numbers. The edition goes from 150 pieces to 56 and
+nothing anywhere says so.
+
+This is the exact failure the runner was built to catch — everything exits 0,
+everything reports success, and the reader's artifact is gutted — and the runner
+could not catch it, because no single stage's counters are wrong. The quantity
+that matters is a comparison between two runs, and until now nothing held both.
+
+The timer is what made it urgent. Before, a same-day double run took someone
+typing the command twice; now the 06:00 run happens on its own, so *any* hand-run
+later that day for testing or debugging would have done this silently.
+
+**Rationale:** It refuses rather than warns, which is the opposite of the rule
+every other gate follows, and the difference is worth stating. Everywhere else
+the paper has a deadline and a degraded paper beats no paper — the run is
+producing something that does not exist yet. Here the artifact already exists and
+is in the reader's hands, the replacement is strictly worse than it, and the
+warning would arrive after the delete. There is nothing to trade off: refusing
+leaves the better paper up.
+
+`--force` keeps the deliberate path open, and the refusal message names it along
+with the reason, because the person hitting this is usually mid-debug and needs
+to know the existing paper is the good one rather than that they typed something
+wrong.
+
+Growth is never refused, and neither is replacing a paper with zero pieces —
+the guard protects a real edition, it does not make re-publishing hard.
+
+**Not a gate, deliberately.** It lives in the publisher rather than in
+`runner/gates.ts` because the accident happens most easily through a bare
+`npm run publish`, and a guard that only exists in the runner would not be there
+for it. `replacementShortfall` is pure and tested; the runner records
+`replacedPieceCount` on the publish stage's metrics either way.

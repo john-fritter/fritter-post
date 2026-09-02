@@ -127,6 +127,19 @@ pipeline:
       # cannot follow to anyone's reporting, which is the one thing the paper
       # promises.
       max_unsourced_fraction: 0.1
+      # Re-publishing a date REPLACES it, which is right for correcting a
+      # morning and wrong for a second run the same day. Cross-run dedup means
+      # that second run sees only the hours since the first, so it builds a
+      # small paper -- and every stage's own counters look healthy, because each
+      # one is fine in isolation. Run it four hours after the timer and a
+      # 150-piece edition becomes a 56-piece one with nine `ok` gates.
+      #
+      # Below this share of the paper it replaces, the publisher refuses. It is
+      # the one place a stage guards an artifact the reader already has, and the
+      # reason it refuses rather than warns: by the time a warning could be read
+      # the old paper is gone, and the smaller paper is strictly worse than the
+      # one it destroyed. `--force` is the deliberate path.
+      min_replacement_fraction: 0.75
 
 # Preprocessor tuning. The preprocessor is deterministic (no LLM), but its
 # recency window and dedup lookback are configuration, not magic numbers.

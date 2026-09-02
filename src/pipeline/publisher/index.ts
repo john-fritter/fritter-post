@@ -23,9 +23,11 @@
 import "dotenv/config";
 import { getPool } from "../../db/index.js";
 import { latestWriterRunId, resolveRunId } from "../../db/latest.js";
+import { loadModelConfig } from "../../config/models.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "../writers/materials.js";
 import {
   buildIndex,
+  replacementShortfall,
   resolvePieceSources,
   type PublishablePiece,
   type PaperTier,
@@ -51,6 +53,8 @@ export interface PaperSummary {
   piecesSkipped: number;
   piecesUnsourced: number;
   replaced: boolean;
+  /** Pieces in the paper this one replaced, or null if it replaced nothing. */
+  replacedPieceCount: number | null;
 }
 
 interface WriterPieceRow {
@@ -92,6 +96,13 @@ export interface RunPublisherOptions {
   writerRunId?: number;
   /** Override the edition date (YYYY-MM-DD). Defaults to the run's local day. */
   date?: string;
+  /**
+   * Replace an existing paper even when the replacement is substantially
+   * smaller. The deliberate path for a re-publish that is meant to shrink the
+   * edition; without it the publisher refuses rather than destroying a bigger
+   * paper the reader already has.
+   */
+  force?: boolean;
 }
 
 export async function runPublisher(options: RunPublisherOptions): Promise<PaperSummary> {
@@ -136,6 +147,41 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
   }
 
   const pieces = pieceRows.map(toPublishable);
+
+  // **A re-publish must not be able to shrink the edition by accident.**
+  //
+  // Re-publishing a date replaces it, which is right for correcting a morning
+  // and wrong for a second run on the same day: cross-run dedup means that run
+  // sees only the hours since the first, so it assembles a small paper and every
+  // stage's counters look healthy, because each one is fine in isolation. Run
+  // four hours after the timer, a 150-piece edition becomes a 56-piece one with
+  // nine `ok` gates and nothing to read afterwards saying what happened.
+  //
+  // This is the only place in the pipeline where a stage guards something the
+  // reader already has, so it refuses rather than warns. A warning arrives after
+  // the delete, and the smaller paper is strictly worse than the one it
+  // destroyed. `--force` is the deliberate path.
+  const { rows: existingRows } = await pool.query<{ piece_count: number }>(
+    "SELECT piece_count FROM papers WHERE published_on = $1",
+    [publishedOn],
+  );
+  const existingPieceCount = existingRows[0]?.piece_count ?? null;
+
+  if (existingPieceCount !== null && !options.force) {
+    const floor = loadModelConfig().pipeline.gates.publisher.min_replacement_fraction;
+    const short = replacementShortfall(existingPieceCount, pieces.length, floor);
+    if (short !== null) {
+      throw new Error(
+        `Refusing to replace the paper for ${publishedOn}: it has ${short.existingPieceCount} ` +
+          `piece(s) and writer run #${writerRunId} would publish ${short.newPieceCount} ` +
+          `(${(short.ratio * 100).toFixed(0)}%, floor ${(floor * 100).toFixed(0)}%).\n` +
+          `If this is a second run today, cross-run dedup has already given the earlier ` +
+          `run today's news and this one saw only the hours since — the existing paper is ` +
+          `the better one.\nTo replace it anyway: npm run publish -- --writer-run ` +
+          `${writerRunId} --force`,
+      );
+    }
+  }
 
   // The writers' own resolver, reused rather than reimplemented. It is the only
   // thing that knows how to walk thread -> cluster -> item.
@@ -234,5 +280,6 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
     paperId, publishedOn, writerRunId, editorRunId, storyCount,
     pieceCount: pieces.length, sourceCount: sourceTotal, wordCount: wordTotal,
     piecesSkipped, piecesUnsourced, replaced,
+    replacedPieceCount: replaced ? existingPieceCount : null,
   };
 }

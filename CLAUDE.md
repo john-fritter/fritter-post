@@ -992,9 +992,22 @@ paper must keep pointing at its sources after its inputs are swept.
 **No third-party article text is ever copied.** `article_texts` stays the only
 table holding that; it writes the paper and never publishes it.
 
-**One paper per day, and re-publishing replaces it.** `papers.published_on` is
-unique and the stage deletes-then-inserts in one transaction, so a re-run
-corrects the morning's paper rather than sitting beside it. The date is the
+**One paper per day, and re-publishing replaces it — but it will not shrink one
+by accident.** `papers.published_on` is unique and the stage deletes-then-inserts
+in one transaction, so a re-run corrects the morning's paper rather than sitting
+beside it. That is right for a correction and dangerous once the timer runs
+daily: a second run the same day sees only the hours since the first, because
+cross-run dedup already gave that run today's news, so it assembles a small
+paper — and **every stage's counters look healthy, because each one is fine in
+isolation**. Four hours after the timer, a 150-piece edition becomes a 56-piece
+one behind nine `ok` gates. `replacementShortfall` refuses below
+`pipeline.gates.publisher.min_replacement_fraction` of the paper being replaced;
+`--force` is the deliberate path. **It refuses rather than warns**, which is the
+opposite of every other gate, and the reason is that this is the only place a
+stage guards an artifact the reader already has: a warning arrives after the
+delete, and the smaller paper is strictly worse than the one it destroyed. The
+check runs before the materials walk, so a refusal costs nothing, and growth or
+replacing an empty paper is never refused. The date is the
 *reader's* local day (`PAPER_TIMEZONE`, default `America/Los_Angeles`): a run
 starting at 7pm Pacific must not publish tomorrow's edition.
 
@@ -1007,7 +1020,8 @@ must be able to judge a paper after the console log is gone. `inspect publisher
 
 Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
 `displayHeadline`, `sourceLabel`, `paragraphs`, `formatEditionDate`,
-`readingMinutes`) are unit-tested in `tests/publisher-assemble.test.ts`.
+`readingMinutes`, `replacementShortfall`) are unit-tested in
+`tests/publisher-assemble.test.ts`.
 
 ### the runner
 
@@ -1310,9 +1324,10 @@ number is ambiguous. The next migration is **043**.
   paper's pieces
 - `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
   pieces, in place
-- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD]` — freeze a writer run
-  into the day's paper with resolved source links. Re-publishing a date replaces
-  that paper, so this is safe to re-run
+- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]` — freeze a
+  writer run into the day's paper with resolved source links. Re-publishing a
+  date replaces that paper, so this is safe to re-run; `--force` is needed to
+  replace one with a substantially smaller paper
 
 **The daily run**
 - `npm run pipeline` — every stage in order, with a gate between each pair.

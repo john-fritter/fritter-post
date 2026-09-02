@@ -310,6 +310,7 @@ const PipelineGatesConfigSchema = z.object({
   }),
   publisher: z.object({
     max_unsourced_fraction: z.number().min(0).max(1),
+    min_replacement_fraction: z.number().min(0).max(1),
   }),
 });
 
