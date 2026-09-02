@@ -383,6 +383,25 @@ export interface FetchMetrics {
 }
 
 /**
+ * Which of today's cooldown hosts are genuinely new.
+ *
+ * `baseline` is every host seen in cooldown by any run inside the fetch stage's
+ * cooldown window, not just yesterday's — a blocked host is skipped, writes no
+ * new attempt rows, ages out of the lookback after `window_days`, gets retried,
+ * fails, and returns. Yesterday alone would call that cycle a new event once a
+ * week forever.
+ *
+ * A null baseline means there is no run to compare against, and returns nothing:
+ * with no baseline, nothing can honestly be called new. An empty baseline is
+ * different — the window held runs and none of them found anything in cooldown —
+ * so everything in cooldown today is genuinely new.
+ */
+export function newlyCooled(baseline: Set<string> | null, current: string[]): string[] {
+  if (baseline === null) return [];
+  return current.filter((host) => !baseline.has(host));
+}
+
+/**
  * The fetch gate, and the one place a standing condition had to be told apart
  * from an event.
  *

@@ -4,6 +4,7 @@ import {
   fraction,
   gateCollector,
   gateFetch,
+  newlyCooled,
   gateEditor,
   gateGrouping,
   gateGroupingPass1,
@@ -372,6 +373,50 @@ function testWritersNoPacketsAborts() {
   assert.equal(r.verdict, "abort");
 }
 
+// --- newlyCooled: the baseline is a window, because a blocked host oscillates ---
+
+function testTheOscillationIsSuppressed() {
+  // A host in cooldown is skipped, so it writes no new attempt rows; after
+  // window_days its failures age out of the lookback and it leaves the set, then
+  // the next story from it puts it back. Run #3 showed the first half:
+  // thediplomat.com and insideclimatenews.org left the set between 2026-08-31
+  // and 2026-09-02 with no code change and no recovery. Diffing against
+  // yesterday alone would announce the return as news once a week forever.
+  const windowBaseline = new Set([
+    "npr.org", "oregonlive.com", "thediplomat.com", "nytimes.com",
+    "insideclimatenews.org", "washingtonpost.com", "newsinfo.inquirer.net",
+  ]);
+  const today = [
+    "npr.org", "newsinfo.inquirer.net", "washingtonpost.com", "nytimes.com",
+    "oregonlive.com", "thediplomat.com",
+  ];
+  assert.deepEqual(newlyCooled(windowBaseline, today), []);
+}
+
+function testAGenuinelyNewHostStillWarns() {
+  const windowBaseline = new Set(["npr.org", "nytimes.com", "oregonlive.com"]);
+  assert.deepEqual(
+    newlyCooled(windowBaseline, ["npr.org", "nytimes.com", "reuters.com"]),
+    ["reuters.com"],
+  );
+}
+
+function testNoBaselineMeansNothingIsNew() {
+  // Null and empty are different and must not be conflated. Null is the first
+  // run: with nothing to compare against, calling all seven hosts "new" would
+  // be the standing-condition warning all over again.
+  assert.deepEqual(newlyCooled(null, ["npr.org", "nytimes.com"]), []);
+  // Empty is a window of runs that found nothing cooling, so this is real.
+  assert.deepEqual(newlyCooled(new Set(), ["npr.org"]), ["npr.org"]);
+}
+
+function testRecoveryIsSilent() {
+  // A host leaving cooldown is good news, not a warning.
+  const windowBaseline = new Set(["npr.org", "nytimes.com"]);
+  assert.deepEqual(newlyCooled(windowBaseline, ["npr.org"]), []);
+  assert.deepEqual(newlyCooled(windowBaseline, []), []);
+}
+
 // --- fetch-text: the standing-condition-versus-event distinction ---
 
 function testFetchIsSilentAboutStandingCooldown() {
@@ -566,6 +611,10 @@ testWritersThreeHolesPublishesDegraded();
 testWritersTrippedBreakerAborts();
 testWritersFloorBoundaryIsInclusive();
 testWritersNoPacketsAborts();
+testTheOscillationIsSuppressed();
+testAGenuinelyNewHostStillWarns();
+testNoBaselineMeansNothingIsNew();
+testRecoveryIsSilent();
 testFetchIsSilentAboutStandingCooldown();
 testFetchWarnsOnAHostThatJustStoppedAnswering();
 testFetchWarnsWhenNothingUsableCameBack();

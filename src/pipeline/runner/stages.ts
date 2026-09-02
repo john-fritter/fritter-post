@@ -29,6 +29,7 @@ import {
   evaluate,
   gateCollector,
   gateFetch,
+  newlyCooled,
   gateEditor,
   gateGrouping,
   gateGroupingPass1,
@@ -134,27 +135,49 @@ function merge(...results: GateResult[]): GateResult {
 }
 
 /**
- * The cooldown host set the previous pipeline run recorded, or null if there
- * isn't one.
+ * Every host seen in cooldown by any run inside the cooldown window, or null if
+ * there is no run to compare against.
  *
- * Null and empty mean different things and the caller must not conflate them:
- * an empty set means the last run found nothing in cooldown, so everything now
- * in cooldown is new; null means there is no baseline at all, and with no
- * baseline nothing can honestly be called new. The first run after this change
- * therefore reports no newly-cooled hosts rather than all of them.
+ * **The baseline is a window, not the previous run, because a blocked host
+ * oscillates.** A host in cooldown is skipped, so it writes no new attempt rows;
+ * after `window_days` its failures age out of `hostsInCooldown`'s lookback and
+ * it leaves the set; the next run that has a story from it retries it, it fails
+ * again, and it is back. Diffing against yesterday alone would call that
+ * "newly in cooldown" once a week forever — the standing condition returning as
+ * a periodic event, which is precisely what the run #1 retune removed.
+ *
+ * Run #3 showed the first half of that cycle: thediplomat.com and
+ * insideclimatenews.org left the set between 2026-08-31 and 2026-09-02 with no
+ * code change and no recovery, purely by ageing out. Matching the baseline to
+ * the same window that causes the cycle suppresses the whole of it while still
+ * naming a host that genuinely stopped answering.
+ *
+ * Null and empty mean different things and must not be conflated: empty means
+ * the window held runs and none of them found anything in cooldown, so anything
+ * now in cooldown is new; null means there is no baseline at all, and with no
+ * baseline nothing can honestly be called new.
  */
-async function previousCooldownHosts(pipelineRunId: number): Promise<Set<string> | null> {
+async function cooldownBaseline(
+  pipelineRunId: number,
+  windowDays: number,
+): Promise<Set<string> | null> {
   const { rows } = await getPool().query<{ metrics: { cooldownHosts?: unknown } | null }>(
     `SELECT metrics FROM pipeline_stage_runs
       WHERE stage = 'fetch-text'
         AND pipeline_run_id <> $1
         AND metrics IS NOT NULL
-      ORDER BY id DESC LIMIT 1`,
-    [pipelineRunId],
+        AND started_at >= NOW() - ($2::int || ' days')::interval
+      ORDER BY id DESC`,
+    [pipelineRunId, windowDays],
   );
-  const hosts = rows[0]?.metrics?.cooldownHosts;
-  if (!Array.isArray(hosts)) return null;
-  return new Set(hosts.filter((h): h is string => typeof h === "string"));
+  if (rows.length === 0) return null;
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const hosts = row.metrics?.cooldownHosts;
+    if (!Array.isArray(hosts)) continue;
+    for (const h of hosts) if (typeof h === "string") seen.add(h);
+  }
+  return seen;
 }
 
 /** A gate that fired on a precondition rather than on a stage's own counters. */
@@ -415,16 +438,20 @@ export const STAGES: Stage[] = [
       if (ctx.lineage.editorRunId === null) {
         return abortBecause("no editor run to fetch article text for");
       }
-      const cfg = loadModelConfig().pipeline.gates.fetch;
+      const config = loadModelConfig();
+      const cfg = config.pipeline.gates.fetch;
       const r = await runArticleFetch({ editorRunId: ctx.lineage.editorRunId });
 
-      // What the last run found in cooldown, so the gate can report the change
+      // What recent runs found in cooldown, so the gate reports the change
       // rather than the condition. This is the metrics column earning its keep:
       // it was added so thresholds could be tuned against history, and the same
-      // history answers "is this new?".
-      const previous = await previousCooldownHosts(ctx.pipelineRunId);
-      const newlyCooledHosts =
-        previous === null ? [] : r.cooldownHosts.filter((h) => !previous.has(h));
+      // history answers "is this new?". The window is the fetch stage's own
+      // cooldown window, because that is what sets the oscillation's period.
+      const baseline = await cooldownBaseline(
+        ctx.pipelineRunId,
+        config.writers.fetch.cooldown.window_days,
+      );
+      const newlyCooledHosts = newlyCooled(baseline, r.cooldownHosts);
 
       const gate = gateFetch(
         {

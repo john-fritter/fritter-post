@@ -5476,3 +5476,62 @@ the guard protects a real edition, it does not make re-publishing hard.
 `npm run publish`, and a guard that only exists in the runner would not be there
 for it. `replacementShortfall` is pure and tested; the runner records
 `replacedPieceCount` on the publish stage's metrics either way.
+
+## 2026-09-02 — Run #3 runs itself, and the cooldown baseline becomes a window
+
+**Decision:** Widen the fetch gate's baseline from "the previous run" to "every
+host seen in cooldown by any run inside `writers.fetch.cooldown.window_days`".
+
+**Context:** The first unattended run. The timer fired at 13:00 UTC = 06:00 PDT,
+`ExecStartPre` confirmed the app container was up, `ExecStart` returned 0, and
+pipeline run #3 finished `ok` in 17m 57s with **no gate firing at all** —
+150 of 150 pieces, 0 failed, 0 skipped, 0 unsourced, 279 source links, on the
+largest corpus yet (1,435 items collected, 486 rows out of grouping). The parser
+fix held on real output: paper #6 had zero literal `HEADLINE:` headlines and its
+10 null headlines were all legitimate section lines.
+
+The finding is in the cooldown data. Run #2 recorded seven hosts; run #3
+recorded five — `thediplomat.com` and `insideclimatenews.org` were gone, with no
+code change and no recovery.
+
+Gizmo read that as the list being "the set relevant to this run's fetch scope,"
+which is wrong and worth correcting because it would make the whole diff
+meaningless. `hostsInCooldown` is not scoped to the run's fetch plan: it is every
+host with at least `min_attempts` recorded attempts and no successes inside
+`window_days` (7). Those two hosts left because their failures **aged out**.
+
+Which exposes an oscillation the gate would have misreported. A host in cooldown
+is *skipped*, so it writes no new attempt rows; its existing failures age past
+the 7-day lookback; it leaves the set; the next story from it retries it; it
+fails three times; it is back. Diffing against yesterday alone would call that
+return "newly in cooldown" — once a week, per chronic host, forever.
+
+**Rationale:** That is the standing condition arriving as a periodic event, which
+is exactly what the run #1 retune existed to remove, coming back through a side
+door. Weekly is quieter than nightly and still wrong for the same reason: a
+warning that fires on a schedule stops being read.
+
+The baseline is now the union of cooldown sets across the same window that
+causes the cycle, which is the natural period to suppress and needs no threshold
+of its own. Verified by replaying runs #1-#3's real cooldown lists into a scratch
+database: `thediplomat.com` returning is silent, both aged-out hosts returning
+together is silent, a recovery is silent, and a genuinely new outlet
+(`reuters.com`) still warns.
+
+**Half of this is observed and half is predicted, and the entry should say so.**
+The ageing-out is measured — run #3's list really did shrink by two with nothing
+changed. The re-entry has not happened yet; it follows from the code rather than
+from data. The fix was made anyway because the mechanism is not in doubt and the
+cost of being early is a gate that is slightly quieter than it needs to be,
+against a cost of being late that is the retune undone.
+
+**Timing, third data point:** 14m 44s, 16m 43s, 17m 57s, tracking the size of
+the day (325, 398, 486 rows). Comfortably inside the 90-minute budget, and the
+trend is worth watching rather than acting on.
+
+**The replacement guard is deployed and its permissive path is verified.**
+Re-publishing writer run #51 over its own paper replaced 150 pieces with 150 and
+returned `replacedPieceCount: 150`, so the guard does not block a legitimate
+correction — which is the failure mode that mattered more than the refusal,
+since the refusal is unit-tested and a false refusal would block a real repair.
+The destructive path was deliberately not simulated on production.

@@ -1071,9 +1071,22 @@ news — the collector is *built* to skip a dead feed, and `nytimes.com` and
 that is always on is not a status, and the reader would have learned within a
 week to ignore the word. So the collector warns only above
 `warn_failed_sources_fraction` of its sources, and the fetch warns only on a host
-that entered cooldown **since the last run** — an outlet we were reading
-yesterday and are not today. The full cooldown list stays on the metrics either
-way. Note this does not contradict the writers' rule above: a missing piece is
+not seen in cooldown by **any run inside the cooldown window** — an outlet we
+were reading last week and are not today. The full cooldown list stays on the
+metrics either way.
+
+**The fetch baseline is a window rather than yesterday, because a blocked host
+oscillates.** A host in cooldown is skipped, so it writes no attempt rows; after
+`writers.fetch.cooldown.window_days` its failures age out of
+`hostsInCooldown`'s lookback and it leaves the set; the next story from it
+retries it, it fails, and it is back. Run #3 showed the first half —
+`thediplomat.com` and `insideclimatenews.org` left the set between 2026-08-31
+and 2026-09-02 with no code change and no recovery — and diffing against
+yesterday alone would have announced the return as news once a week forever,
+which is the standing condition arriving as a periodic event. Matching the
+baseline to the window that causes the cycle suppresses all of it and still
+names a host that genuinely stopped answering. `newlyCooled` is pure and
+tested. Note this does not contradict the writers' rule above: a missing piece is
 rare and the reader sees the hole, where a dead feed among 111 is the steady
 state. `tests/pipeline-gates.test.ts` replays run #1's metrics through every
 gate and asserts none of them speak.
@@ -1085,11 +1098,13 @@ stage on a run that has already blown its budget. The kill that can kill is
 systemd's `TimeoutStartSec`, generated an hour past it because a stage starting
 one minute before the deadline still runs to completion.
 
-**A full run is about fifteen minutes, not about an hour.** Run #1: 14m 44s wall
-clock, 13m 27s inside stages and 1m 17s between them; run #2: 16m 43s. The
-longest stages are the writers (4m 29s / 4m 44s) and grouping-pass-1, which
-varies most (3m 20s / 4m 54s, tracking how many rows the day produced — 325 then
-398); collect is 10 seconds. The project's
+**A full run is fifteen to eighteen minutes, not about an hour.** Runs #1-#3:
+14m 44s, 16m 43s, 17m 57s wall clock, of which 1m 15s-1m 17s is between stages
+rather than inside them. Duration tracks the size of the day — 325, 398 then 486
+rows out of grouping — and the stages that move with it are grouping-pass-1 and
+the writers. The project's standing figure of "about an hour" was the deploy and
+the audit around the pipeline, not the pipeline, which is what `inspect timing`
+was built to settle and now has. The project's
 standing figure of "about an hour" was the deploy and the audit around the
 pipeline, not the pipeline — which is what `inspect timing` was built to settle
 and now has. `max_duration_minutes` is 90 on the strength of it: six times the

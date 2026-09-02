@@ -45,11 +45,17 @@ missing.
 bio weights hardest. Both serve a DataDome device check the browser UA does not
 pass.
 
-**Run #2 added two more:** `washingtonpost.com` and `newsinfo.inquirer.net`
-entered cooldown on 2026-08-31, taking the total to seven. That is the warning
-working, and it is also two more outlets whose stories now run on headline-level
-material at whatever rank they earn. Worth a look at *why* those two started
-refusing before they settle in as permanent like the first five.
+**The list churns, and the churn is not recovery.** Run #2 added
+`washingtonpost.com` and `newsinfo.inquirer.net`, taking it to seven; run #3
+showed five, because `thediplomat.com` and `insideclimatenews.org` aged out of
+the 7-day lookback rather than starting to work. A blocked host is skipped, so it
+writes no attempt rows, ages out, gets retried, fails and returns — the set
+oscillates around a stable core of chronically blocked outlets. Do not read a
+shrinking list as improvement; `inspect fetch` is where a host's actual history
+is.
+
+Worth a look at *why* washingtonpost.com and newsinfo.inquirer.net started
+refusing, before they settle in as permanent like nytimes.com and oregonlive.com.
 
 As of the runner, a host **entering** cooldown warns on the pipeline run
 (`pipeline.gates.fetch.warn_on_newly_cooled_hosts`), so a new one is noticed the
@@ -129,12 +135,18 @@ Run #2 confirmed the retune from both sides: collect went silent at 1/111, and
 fetch warned naming the two hosts that were genuinely new. Neither needed
 touching again.
 
-What is still a guess is everything neither run exercised, because both were
-good days: `max_cut_fraction` (0.95 against 36.4% and 32.3%),
-`max_unscored_fraction` and `abort_unscored_fraction` (0 unscored both runs),
-`min_written_fraction` (150/150 both runs), and the collector's abort floor of
-0.5 (98.2% and 99.1% succeeded). Every one has an order of magnitude between it
-and the observed data.
+Run #3 fired **no gate at all** — the first run to do so, and the retune's real
+vindication.
+
+What is still a guess is everything none of the three runs exercised, because
+all three were good days: `max_cut_fraction` (0.95 against 36.4%, 32.3%, 33.5%),
+`max_unscored_fraction` and `abort_unscored_fraction` (0 unscored every run),
+`min_written_fraction` (150/150 every run), the collector's abort floor of 0.5
+(98.2%, 99.1%, 98.2% succeeded), and the publisher's
+`min_replacement_fraction` (only its permissive path has run in production).
+Every one has an order of magnitude between it and the observed data. **A
+threshold that has never been near a bad run has not been tested, only unused**
+— so keep resisting the urge to tune them on another good day.
 
 Every gate persists what it read to `pipeline_stage_runs.metrics`, so this
 answers itself: after a couple of weeks, query the column, see where real runs
