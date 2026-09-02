@@ -1396,6 +1396,10 @@ number is ambiguous. The next migration is **043**.
   headline-only because the materials audit counts thin *articles*, which is a
   different quantity from a thin *piece*; a non-zero count in a prominent tier
   now means the day ran out of material to trade with, not a mis-assigned slot
+- `npm run inspect -- fetch [--days <n>]` — per-source article fetch outcomes
+  from `article_texts` (default 14 days): what a writer ends up with per outlet,
+  why we did not ask, and which hosts are in cooldown. This is where a host's
+  actual history is, as against the cooldown list a single run happened to see
 - `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
   piece with `resolved/ranked` source counts, so a paper the reader cannot follow
   anywhere is visible without opening it
