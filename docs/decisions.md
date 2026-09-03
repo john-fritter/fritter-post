@@ -20,6 +20,66 @@ Entry format:
 
 ---
 
+## 2026-09-03 — The cross-run title key is no longer scoped to the outlet
+
+**Decision:** In the preprocessor's cross-run dedup, key the normalized-title
+match on the bare title rather than on `parent::title`. The 30-character floor
+stays. URL keys stay scoped to the source and its parent. The within-run parent
+dedup is untouched.
+
+**Context:** A read-only audit of the six editions published 2026-08-27 through
+2026-09-03 found the reader's "same story every day" complaint had three
+distinct causes: syndicated copies re-ingested under another masthead, genuine
+continuing situations whose headlines keep naming the umbrella instead of the
+day's development, and a few topic-bundle threads.
+
+The first cause turned out to be entirely deterministic and already inside our
+reach. All nine of the audit's confirmed cross-edition repeats were **exact**
+normalized-title matches, all fell **inside** the existing five-day lookback,
+and all arrived the second time from a **different parent**: NPR → OPB four
+times (the Iran six-month analysis, Leipzig, the OpenAI lawsuits, the ICE
+detainee death), Oregon Capital Chronicle → OPB and → The Bend Bulletin, The
+Guardian US → Grist, Wired → Ars Technica. The lookback window was never the
+binding constraint. The key's scope was.
+
+`parent::title` asks "did *this outlet* already run this headline". Syndication
+answers no every time, by definition — a wire story reaching a member station is
+a different masthead carrying identical words.
+
+**Rationale:** This is the cheapest correct fix available for the largest
+confirmed share of the problem: no LLM, no new table, no new stage, and no new
+cross-day abstraction. It is also the fix that does *not* touch the two causes
+that must not be fixed by suppression — a continuing situation needs continuity,
+not deletion, and that work is separate.
+
+Scope was widened on the cross-run key only. The within-run parent dedup stays
+outlet-scoped on purpose: two outlets carrying one story on one day is
+prominence, which is what the editor's `ln(sources)` lift reads and what a
+cluster exists to show. The same headline five days later is not pickup.
+
+The 30-character floor is what keeps the now-unscoped key safe. Below it, a
+shared headline between outlets is a coincidence of brevity ("Markets close
+higher"); at 30-plus normalized characters an exact match between two
+newsrooms inside five days is syndication.
+
+Suppressing the later copy is right even where the story is genuinely still
+moving. The audit's Leipzig cluster also carried Meduza and BBC reporting on
+9/3, so it survives losing the day-old OPB copy and gets written from what is
+new rather than anchored on what already ran.
+
+URL keys were deliberately left alone. No case in the audit turned on a URL, and
+this project's dedup rules accrete from audit evidence rather than from
+symmetry.
+
+**Validation:** Deterministic, so no noise control is needed — but the
+preprocessor cannot be re-run to measure it (cross-run dedup makes a same-day
+re-run near-empty by design, and it writes rows). `preprocessed_items` is never
+swept — only `article_texts` has a retention delete — so the whole history is
+still in the database and the change is measured by replaying the new key over
+past runs in read-only SQL. See the 2026-09-03 Gizmo task.
+
+---
+
 ## 2026-08-22 — The writers stage is done; the parsers were the real defect
 
 **Decision:** Stop rewriting the paper to tune the writers stage. Remaining

@@ -7,6 +7,8 @@ import {
 
 const identityParent = (s: string) => s;
 const LONG_TITLE = "Senate passes major infrastructure bill today 2026"; // 50 chars ≥ 30
+// A real repeat from the 2026-09-03 report: NPR on 9/2, OPB on 9/3.
+const SYNDICATED_TITLE = "ICE detainee dies just hours after he was admitted into detention";
 
 // --- normalizeTitle ---
 
@@ -39,9 +41,21 @@ function testBuildCrossRunKeysAddsNormalizedTitleKeyForLongTitle() {
   const rows = [{ source_name: "AP", canonical_url: "https://ap.com/story", title: LONG_TITLE }];
   const keys = buildCrossRunKeys(rows, identityParent);
   assert.ok(
-    keys.titleKeys.has(`AP::${normalizeTitle(LONG_TITLE)}`),
+    keys.titleKeys.has(normalizeTitle(LONG_TITLE)),
     "long title must be added as a normalized title key",
   );
+}
+
+function testBuildCrossRunKeysTitleKeyIsNotOutletScoped() {
+  // The key is the bare normalized title. Scoping it to the outlet is what let
+  // syndicated copies through -- see dedup.ts.
+  const rows = [{ source_name: "NPR News", canonical_url: "https://npr.org/story", title: SYNDICATED_TITLE }];
+  const keys = buildCrossRunKeys(rows, identityParent);
+  assert.ok(
+    !keys.titleKeys.has(`NPR News::${normalizeTitle(SYNDICATED_TITLE)}`),
+    "title key must not carry an outlet prefix",
+  );
+  assert.equal(keys.titleKeys.size, 1);
 }
 
 function testBuildCrossRunKeysOmitsShortTitleFromTitleKeys() {
@@ -67,6 +81,36 @@ function testIsCrossRunDuplicateDetectsTitleMatch() {
   assert.ok(
     isCrossRunDuplicate({ sourceName: "AP", canonicalUrl: "https://ap.com/different", title: LONG_TITLE }, keys, identityParent),
     "matching title must be flagged as a cross-run duplicate",
+  );
+}
+
+function testIsCrossRunDuplicateCatchesSyndicatedCopyFromAnotherOutlet() {
+  // The whole point of the change. NPR ran it yesterday; OPB carries the same
+  // wire copy today under a different URL and a different masthead. This is
+  // four of the nine confirmed repeats in the 2026-09-03 report.
+  const rows = [{ source_name: "NPR News", canonical_url: "https://npr.org/2026/ice-detainee", title: SYNDICATED_TITLE }];
+  const keys = buildCrossRunKeys(rows, identityParent);
+  const opbCopy = {
+    sourceName: "OPB (Oregon Public Broadcasting) News",
+    canonicalUrl: "https://opb.org/article/2026/ice-detainee-dies",
+    title: SYNDICATED_TITLE.toUpperCase(),   // normalization must still match
+  };
+  assert.ok(
+    isCrossRunDuplicate(opbCopy, keys, identityParent),
+    "a syndicated copy from another outlet must be flagged as a cross-run duplicate",
+  );
+}
+
+function testIsCrossRunDuplicateAllowsShortSharedTitleFromAnotherOutlet() {
+  // The near-miss that must survive. Below 30 chars a shared headline is a
+  // coincidence of brevity, not evidence of syndication, so the floor still
+  // guards the now-unscoped key.
+  const shortTitle = "Markets close higher"; // 20 chars < 30
+  const rows = [{ source_name: "Reuters", canonical_url: "https://reuters.com/a", title: shortTitle }];
+  const keys = buildCrossRunKeys(rows, identityParent);
+  assert.ok(
+    !isCrossRunDuplicate({ sourceName: "AP", canonicalUrl: "https://ap.com/b", title: shortTitle }, keys, identityParent),
+    "a short shared title from another outlet must not be flagged",
   );
 }
 
@@ -179,8 +223,11 @@ testBuildCrossRunKeysAddsSourceAndParentUrlKeys();
 testBuildCrossRunKeysAddsParentUrlKeyForSubfeed();
 testBuildCrossRunKeysAddsNormalizedTitleKeyForLongTitle();
 testBuildCrossRunKeysOmitsShortTitleFromTitleKeys();
+testBuildCrossRunKeysTitleKeyIsNotOutletScoped();
 testIsCrossRunDuplicateDetectsUrlMatch();
 testIsCrossRunDuplicateDetectsTitleMatch();
+testIsCrossRunDuplicateCatchesSyndicatedCopyFromAnotherOutlet();
+testIsCrossRunDuplicateAllowsShortSharedTitleFromAnotherOutlet();
 testIsCrossRunDuplicateNoMatchForDistinctItem();
 testFlagDefaultIsFalse();
 testFlagFalseDropsItemAlreadyInHistory();

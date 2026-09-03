@@ -150,12 +150,16 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
     }));
 
     // 3b. Cross-run dedup: suppress a story we already processed in a recent run
-    //     but that has been re-ingested under a new URL/guid (so the within-run
-    //     maps below never see it). Keyed on the same canonical-URL and
-    //     normalized-title keys used in-run; titles must be >= 30 chars to be
-    //     distinctive enough for a title match. Exact-URL repeats match
-    //     regardless of title length. Reworded-headline dupes are left to the
-    //     downstream grouping + pile-merge semantic layer.
+    //     but that has been re-ingested under a new URL/guid, a new headline, or
+    //     a new outlet (so the within-run maps below never see it). Keyed on
+    //     canonical URL, scoped to the source and its parent; and on normalized
+    //     title, scoped to NOTHING, because syndication re-ingests a story under
+    //     another masthead and an outlet-scoped title key cannot see that. See
+    //     dedup.ts for the nine published repeats that is drawn from. Titles must
+    //     be >= 30 chars to be distinctive enough to match on; exact-URL repeats
+    //     match regardless of title length. Reworded-headline dupes are still
+    //     left to the downstream grouping layer, which is where the semantic
+    //     judgment belongs.
     //
     //     skipCrossRunDedup bypasses this entire step for repeatable testing on
     //     the same day's data. It is always off in production and is recorded on
