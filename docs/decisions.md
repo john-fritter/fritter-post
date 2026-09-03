@@ -5205,3 +5205,333 @@ test with three substantive Central Oregon stories on wildfire, drought and
 public lands — all of which the bio weights heavily. The defect is that the
 local three were *older* than the paper implied, and that every future source
 added would have done the same thing once.
+
+## 2026-08-29 — The pipeline gets a runner, and a stage exiting 0 stops being evidence
+
+**Decision:** One entrypoint, `npm run pipeline`, calling the nine stages in
+process and evaluating a gate between each pair. A gate reads the counters its
+stage just persisted and returns ok, warn or abort. `pipeline_runs` and
+`pipeline_stage_runs` (migration 042) record the lineage and every gate
+decision. A systemd timer generated from `pipeline.schedule` in `models.yaml`
+runs it at 06:00 America/Los_Angeles.
+
+**Context:** All nine stages were built and none of them were connected. The
+paper was made by hand, threading run ids between commands. The middle five
+already self-threaded — prefilter, grouping, grouping-pass-1 and the editor each
+default to their latest completed upstream run — so the manual work was really
+the tail three, which required an explicit id and exited 1 without one.
+
+Which made a shell chain look sufficient, and it is not. Every expensive failure
+this pipeline has had exits 0:
+
+- `runWriters` returns a normal summary after its circuit breaker trips, so
+  `write && publish` would freeze an edition of holes;
+- a failed attach call returns an empty set, which is what the model declining
+  every candidate returns;
+- the editor's tie-break catch returns an empty rank map, which is what a tie
+  group the model declined to order returns — run #125 lost 12 of 25 groups and
+  ranked 60-odd items alphabetically;
+- the thread pass losing its one call yields zero threads, which is what a day
+  with no ongoing situations yields — run #50 put three wildfire rows in the
+  top ten that way.
+
+Every counter that distinguishes those cases was already persisted. Migrations
+030, 037, 038, 039 and 040 exist so a run can be judged after the console log is
+gone, and nothing had ever read one back.
+
+**Rationale:** The ordering is the cheap part and the judgment is the point,
+which is the argument for a TypeScript stage-runner over a bash script — the
+same argument that made the publisher a stage rather than a query. Calling the
+`run*()` functions in process rather than shelling out follows from it: every
+one already returns its run id, so ids thread as values instead of being parsed
+back out of stdout.
+
+Three things the gates settled, each of which could have gone the other way:
+
+*Warn is the common case.* The paper has a deadline, and this project has said
+so at every level from `--repair` to graceful degradation. Only two conditions
+abort: there is nothing for the next stage to work on, or the writers came back
+below `min_written_fraction` (0.75) after an automatic repair pass. Everything
+else publishes and records `degraded`. The writers' repair is automatic because
+`--repair` exists for exactly the breaker's failure mode — run #35 lost 32
+pieces to five budget-exhaustion calls and one pass recovered all 32 — and an
+unattended run has nobody to type it.
+
+*A second threshold on the writers was removed rather than tuned.* The first
+draft warned only below 98% written, which made 147 of 150 silent. There is no
+fraction below which a missing piece stops being worth naming; the floor decides
+whether to publish, and any hole above it warns.
+
+*The deadline only refuses to start stages.* An in-flight LLM call cannot be
+cancelled from the runner, so a deadline claiming to interrupt one would be a
+lie. What it can honestly do is decline to start the 150-call writers stage on
+a run that has already blown its budget. The kill that can actually kill is
+systemd's `TimeoutStartSec`, set an hour past the runner's own deadline because
+a stage that starts one minute before it still runs to completion.
+
+**On resume, and why the unit has no `Restart=on-failure`:** retry semantics
+differ by end of the pipeline. The tail is safely re-runnable — `published_on`
+is unique and the publisher deletes-then-inserts — but re-running from `collect`
+is not, because cross-run dedup suppresses everything recent runs already
+processed, so a same-day full re-run comes back near-empty *by design* and would
+replace a good paper with an empty one. Recovery is `--from <stage>`, which
+inherits the recorded lineage rather than re-deriving it. That inheritance is
+the second reason migration 042 exists: `inspect timing` infers a lineage with a
+six-hour heuristic precisely because the real answer was never written down, and
+that inference was wrong for run #45.
+
+**Two defects found while building it, both fixed here.** The preprocessor's
+`--collector-run-id` was stored on the run row and never used for selection —
+the preprocessor windows on `fetched_at` — so collect → preprocess was joined by
+the clock and the flag made the lineage look stronger than it was. And
+`getClusteringItems` tolerates a missing prefilter run ("a null run means
+nothing is excluded on its account"), which is right for an experiment run by
+hand and silent under automation: grouping would cluster the unfiltered set and
+report success. Only a resume can reach that order, and the runner refuses it
+there. The tail three stages also gained the latest-upstream default the middle
+five always had, so the pipeline now defaults consistently whether it is driven
+by the runner or by hand.
+
+## 2026-08-30 — Run #1: a warn has to be an event, not a standing condition
+
+**Decision:** Retune two gates so the steady state is silent. The collector
+warns only above `warn_failed_sources_fraction` (0.05) of its sources failing
+rather than on any failure; the fetch warns only on a host that entered cooldown
+**since the last recorded run**, not on the cooldown set. `max_duration_minutes`
+drops from 240 to 90.
+
+**Context:** The first production run of the runner, 2026-08-30. It worked:
+migration 042 applied clean, all nine stages ran, the lineage was recorded
+(collector #60 → … → paper #4), and it published 150 of 150 pieces with 0
+failed, 0 skipped, 0 unsourced and 267 source links. By every measure the
+pipeline records, a clean paper.
+
+It was recorded `degraded`, on two warnings:
+
+- **collect:** 2 of 111 sources failed. The collector is failure-tolerant by
+  design — a dead feed is logged and skipped — and the gate's own comment said
+  as much while warning on it anyway.
+- **fetch-text:** five hosts in cooldown. `nytimes.com` and `oregonlive.com`
+  have served a DataDome device check for months and are open item 2.
+
+Both would have fired every night indefinitely.
+
+**Rationale:** A status that is always on is not a status. `degraded` exists so
+the reader can tell a night that needs looking at from one that does not, and
+two permanent conditions would have made every night look the same within a
+week — at which point the word stops being read, and the run that *is* degraded
+for a real reason goes unnoticed with it. The failure mode is the boy who cried
+wolf, and it is worse than not warning at all, because it also costs the signal
+it was supposed to carry.
+
+The general rule, which the first draft did not have: **a gate should fire on an
+event, not on a condition.** A condition belongs on
+`pipeline_stage_runs.metrics`, where it is available to anyone diagnosing the
+paper and silent otherwise. So the full cooldown list is still recorded every
+run; what is *new* since the last run is what earns a verdict. That diff cost
+one query and reuses the metrics column, which was added so thresholds could be
+tuned against history — the same history turns out to answer "is this new?".
+
+**This does not reverse the writers' rule** ("any hole warns; there is no
+fraction below which a missing piece stops being worth naming"), and the
+distinction is worth stating because the two look contradictory. A missing piece
+is rare, is caused by that night's run, and shows up as a hole the reader can
+see. A dead feed among 111 is none of those. The test is not "how big is it" but
+"did it happen tonight".
+
+**Also settled: how long the paper takes.** 14m 44s wall clock, 13m 27s inside
+stages, 1m 17s between them; writers 4m 29s, grouping 2m 40s, collect 10s. The
+project's only previous answer was "about an hour", which was the deploy and the
+audit around the pipeline rather than the pipeline. `max_duration_minutes: 240`
+was therefore sixteen times the real run and could not have caught anything; 90
+is six times it, which still absorbs a bad provider day — run #4's outage cost
+31 minutes in the writers alone — while meaning something when it is reached.
+
+**Verification note:** `tests/pipeline-gates.test.ts` now replays run #1's
+metrics verbatim through all ten gates and asserts that none of them speak. A
+clean paper being called degraded is the regression this change exists to
+prevent, so it is pinned rather than described.
+
+**A disagreement recorded, since the convention is to verify rather than
+accept.** Gizmo's report judged that "the degraded status should remain visible
+because five cooldown hosts, three blocked hosts, two fetch errors, and two
+failed collector sources mean the edition does not represent the complete
+configured source set." That is accurate about the edition and wrong about the
+status: the edition has never represented the complete source set and will not
+tomorrow either. A daily artifact's status has to describe the day.
+
+## 2026-08-31 — Run #2: the retune holds, and the label alone on its line
+
+**Decision:** Keep the retuned gates. Fix `parseWriterOutput` so a bare
+`HEADLINE:` label is not published as a headline. Add
+`--skip-cross-run-dedup` to the runner for testing.
+
+**Context:** Run #2 on the retuned code, a full run from collect to publish.
+The two gates changed on run #1 behaved exactly as intended and in opposite
+directions:
+
+- **collect** saw 1 of 111 sources fail (0.9%) and said nothing, where run #1's
+  2 of 111 had warned. The standing condition is silent.
+- **fetch-text** warned, naming `washingtonpost.com` and `newsinfo.inquirer.net`
+  as newly in cooldown out of seven total. The five from run #1 were not
+  re-announced.
+
+So run #2 is `degraded` and it is right to be: two outlets we could read
+yesterday we cannot read today. That is the distinction the retune exists to
+draw, and under the old gate it would have been buried inside a list of five
+names that never changes. **`degraded` should not be read as a failure to reach
+`ok`** — it is the runner saying something happened last night, which on this
+night it had.
+
+**The real find is in the paper, not the runner.** Rank 65 (S68421) published
+with the literal headline `HEADLINE:`, a 185-word body, and `status='ok'`. The
+path is unambiguous and reproduces in one line: `matchHeadlineLabel` requires
+`(.+)` after the colon, so a label alone on its line never matches it, and it
+falls through to the unlabelled branch that accepts any first line of 160
+characters or fewer. `HEADLINE:` is nine. The real headline was pushed into the
+body, which is also why the piece ran long for its tier.
+
+Fixing it turned up a second defect in the same three lines, older and quieter:
+`**HEADLINE:**` alone on a line *does* match the label pattern, with `**` as its
+text, which `clean` strips to `""` — and the code returned null, failing the
+whole piece. That is run #3's "unparseable output" failure mode still alive in
+the one branch nobody had looked at, because reaching it needs the model to bold
+a label it had already put on its own line.
+
+**Rationale:** The parser's standing argument is that a model which wrote the
+piece correctly in a shape the contract did not ask for has done the job, and
+refusing to read it is the parser's failure. A label on its own line with the
+headline beneath it is exactly that shape. Where what follows is too long to be a
+headline, or is the piece's only line — a 25-word brief legitimately is — the
+text is kept with a null headline rather than the piece being failed, which is
+the unlabelled branch's own fallback and run #36's lesson: a missing headline
+costs a headline, refusing the piece costs the piece.
+
+Deliberately *not* extended to mid-body restarts. A revision that restarts with a
+bare label stays undetectable, as an unlabelled revision always was, because
+widening the strict restart matcher to bare labels risks truncating a piece that
+parsed correctly — the trade the strict/forgiving split was made to get right.
+
+**On testing the pipeline end to end.** Cross-run dedup makes a same-day full
+re-run come back near-empty, which is correct for production and makes the
+pipeline untestable on any day it has already run. The preprocessor has had
+`skipCrossRunDedup` all along and the runner did not expose it;
+`--skip-cross-run-dedup` now does, warns on the way in, and writes
+"TEST RUN: cross-run dedup disabled" into `pipeline_runs.notes` — because a paper
+built from items an earlier run published is a test artifact, and six months from
+now nothing else would say so.
+
+**Timing, second data point:** 16m 43s against run #1's 14m 44s. The variance is
+grouping-pass-1 (3m 20s → 4m 54s) tracking the day's row count, 325 to 398. Both
+sit far inside the 90-minute budget.
+
+## 2026-09-01 — The publisher refuses to shrink a paper it is replacing
+
+**Decision:** Before replacing an existing paper, the publisher compares its
+piece count against the one it would write, and refuses below
+`pipeline.gates.publisher.min_replacement_fraction` (0.75) unless `--force`.
+The check runs before the materials walk, so a refusal is free.
+
+**Context:** Found while answering a scheduling question, not a bug report. The
+timer had just been installed, and the question was whether to run the pipeline
+by hand the same evening. Working through what a second run would do turned up
+this:
+
+Re-publishing a date replaces it — `published_on` is unique and the publisher
+deletes-then-inserts. That is exactly right for correcting a morning. But
+cross-run dedup means a second run on the same day sees only the hours since the
+first, so it assembles a small pile and writes a small paper. Replay a plausible
+second run through the gates and **all nine return `ok`**: 120 items kept, 70
+through the prefilter, 56 rows, 56 ranked, 56 written, 56 published. Each stage
+is genuinely fine on its own numbers. The edition goes from 150 pieces to 56 and
+nothing anywhere says so.
+
+This is the exact failure the runner was built to catch — everything exits 0,
+everything reports success, and the reader's artifact is gutted — and the runner
+could not catch it, because no single stage's counters are wrong. The quantity
+that matters is a comparison between two runs, and until now nothing held both.
+
+The timer is what made it urgent. Before, a same-day double run took someone
+typing the command twice; now the 06:00 run happens on its own, so *any* hand-run
+later that day for testing or debugging would have done this silently.
+
+**Rationale:** It refuses rather than warns, which is the opposite of the rule
+every other gate follows, and the difference is worth stating. Everywhere else
+the paper has a deadline and a degraded paper beats no paper — the run is
+producing something that does not exist yet. Here the artifact already exists and
+is in the reader's hands, the replacement is strictly worse than it, and the
+warning would arrive after the delete. There is nothing to trade off: refusing
+leaves the better paper up.
+
+`--force` keeps the deliberate path open, and the refusal message names it along
+with the reason, because the person hitting this is usually mid-debug and needs
+to know the existing paper is the good one rather than that they typed something
+wrong.
+
+Growth is never refused, and neither is replacing a paper with zero pieces —
+the guard protects a real edition, it does not make re-publishing hard.
+
+**Not a gate, deliberately.** It lives in the publisher rather than in
+`runner/gates.ts` because the accident happens most easily through a bare
+`npm run publish`, and a guard that only exists in the runner would not be there
+for it. `replacementShortfall` is pure and tested; the runner records
+`replacedPieceCount` on the publish stage's metrics either way.
+
+## 2026-09-02 — Run #3 runs itself, and the cooldown baseline becomes a window
+
+**Decision:** Widen the fetch gate's baseline from "the previous run" to "every
+host seen in cooldown by any run inside `writers.fetch.cooldown.window_days`".
+
+**Context:** The first unattended run. The timer fired at 13:00 UTC = 06:00 PDT,
+`ExecStartPre` confirmed the app container was up, `ExecStart` returned 0, and
+pipeline run #3 finished `ok` in 17m 57s with **no gate firing at all** —
+150 of 150 pieces, 0 failed, 0 skipped, 0 unsourced, 279 source links, on the
+largest corpus yet (1,435 items collected, 486 rows out of grouping). The parser
+fix held on real output: paper #6 had zero literal `HEADLINE:` headlines and its
+10 null headlines were all legitimate section lines.
+
+The finding is in the cooldown data. Run #2 recorded seven hosts; run #3
+recorded five — `thediplomat.com` and `insideclimatenews.org` were gone, with no
+code change and no recovery.
+
+Gizmo read that as the list being "the set relevant to this run's fetch scope,"
+which is wrong and worth correcting because it would make the whole diff
+meaningless. `hostsInCooldown` is not scoped to the run's fetch plan: it is every
+host with at least `min_attempts` recorded attempts and no successes inside
+`window_days` (7). Those two hosts left because their failures **aged out**.
+
+Which exposes an oscillation the gate would have misreported. A host in cooldown
+is *skipped*, so it writes no new attempt rows; its existing failures age past
+the 7-day lookback; it leaves the set; the next story from it retries it; it
+fails three times; it is back. Diffing against yesterday alone would call that
+return "newly in cooldown" — once a week, per chronic host, forever.
+
+**Rationale:** That is the standing condition arriving as a periodic event, which
+is exactly what the run #1 retune existed to remove, coming back through a side
+door. Weekly is quieter than nightly and still wrong for the same reason: a
+warning that fires on a schedule stops being read.
+
+The baseline is now the union of cooldown sets across the same window that
+causes the cycle, which is the natural period to suppress and needs no threshold
+of its own. Verified by replaying runs #1-#3's real cooldown lists into a scratch
+database: `thediplomat.com` returning is silent, both aged-out hosts returning
+together is silent, a recovery is silent, and a genuinely new outlet
+(`reuters.com`) still warns.
+
+**Half of this is observed and half is predicted, and the entry should say so.**
+The ageing-out is measured — run #3's list really did shrink by two with nothing
+changed. The re-entry has not happened yet; it follows from the code rather than
+from data. The fix was made anyway because the mechanism is not in doubt and the
+cost of being early is a gate that is slightly quieter than it needs to be,
+against a cost of being late that is the retune undone.
+
+**Timing, third data point:** 14m 44s, 16m 43s, 17m 57s, tracking the size of
+the day (325, 398, 486 rows). Comfortably inside the 90-minute budget, and the
+trend is worth watching rather than acting on.
+
+**The replacement guard is deployed and its permissive path is verified.**
+Re-publishing writer run #51 over its own paper replaced 150 pieces with 150 and
+returned `replacedPieceCount: 150`, so the guard does not block a legitimate
+correction — which is the failure mode that mattered more than the refusal,
+since the refusal is unit-tested and a false refusal would block a real repair.
+The destructive path was deliberately not simulated on production.

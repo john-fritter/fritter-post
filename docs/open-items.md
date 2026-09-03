@@ -45,6 +45,26 @@ missing.
 bio weights hardest. Both serve a DataDome device check the browser UA does not
 pass.
 
+**The list churns, and the churn is not recovery.** Run #2 added
+`washingtonpost.com` and `newsinfo.inquirer.net`, taking it to seven; run #3
+showed five, because `thediplomat.com` and `insideclimatenews.org` aged out of
+the 7-day lookback rather than starting to work. A blocked host is skipped, so it
+writes no attempt rows, ages out, gets retried, fails and returns — the set
+oscillates around a stable core of chronically blocked outlets. Do not read a
+shrinking list as improvement; `inspect fetch` is where a host's actual history
+is.
+
+Worth a look at *why* washingtonpost.com and newsinfo.inquirer.net started
+refusing, before they settle in as permanent like nytimes.com and oregonlive.com.
+
+As of the runner, a host **entering** cooldown warns on the pipeline run
+(`pipeline.gates.fetch.warn_on_newly_cooled_hosts`), so a new one is noticed the
+morning it happens rather than whenever someone next reads `inspect fetch`. The
+five standing ones — `npr.org`, `oregonlive.com`, `thediplomat.com`,
+`nytimes.com`, `insideclimatenews.org` as of run #1 — stay silent by design and
+are on `pipeline_stage_runs.metrics` every run. That watches for the problem
+getting worse; it does nothing about the hosts already lost.
+
 **Also watch The Nugget**: three of its article fetches in run #59 returned HTTP
 429 even after the browser-UA retry. It now leads the paper, so if it enters
 cooldown its stories run headline-only at rank 1 — the same failure, at the
@@ -104,6 +124,52 @@ the pipeline's primary tuning lever and is inspected by hand.
 distribution across both axes, the fail-safe count, and a source filter so
 "where does the local beat land" is one command.
 
+### 8. The runner's thresholds have seen exactly one run
+
+Run #1 (2026-08-30) retuned the two that were visibly wrong — the collector now
+warns on a step change rather than any dead feed, and the fetch warns only on a
+host newly in cooldown. `max_duration_minutes` is 90 on a measured 14m 44s. See
+`docs/decisions.md`, 2026-08-30.
+
+Run #2 confirmed the retune from both sides: collect went silent at 1/111, and
+fetch warned naming the two hosts that were genuinely new. Neither needed
+touching again.
+
+Run #3 fired **no gate at all** — the first run to do so, and the retune's real
+vindication.
+
+What is still a guess is everything none of the three runs exercised, because
+all three were good days: `max_cut_fraction` (0.95 against 36.4%, 32.3%, 33.5%),
+`max_unscored_fraction` and `abort_unscored_fraction` (0 unscored every run),
+`min_written_fraction` (150/150 every run), the collector's abort floor of 0.5
+(98.2%, 99.1%, 98.2% succeeded), and the publisher's
+`min_replacement_fraction` (only its permissive path has run in production).
+Every one has an order of magnitude between it and the observed data. **A
+threshold that has never been near a bad run has not been tested, only unused**
+— so keep resisting the urge to tune them on another good day.
+
+Every gate persists what it read to `pipeline_stage_runs.metrics`, so this
+answers itself: after a couple of weeks, query the column, see where real runs
+sit, and move the thresholds to where they would have fired only on the runs
+that deserved it. Resist tuning them on one more good day — a threshold that has
+never been near a bad run has not been tested, only unused.
+
+**Still open on timing:** 14m 44s and 16m 43s across two runs, so 06:00 puts the
+paper up around 06:17. The variance is grouping-pass-1 tracking the day's row
+count. The timer has not been installed and no unattended run has happened.
+
+### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
+
+The preprocessor selects `raw_items` by a fixed `fetched_at` window and stores
+the collector run id without ever filtering on it, so collect → preprocess is
+joined by the clock. The runner passes it because recording which collection a
+run was meant to follow is the only honest thing it can mean, but the flag reads
+like a filter and is not one.
+
+**Fix:** either make it real (filter on it when given) or rename it to say what
+it is. Making it real is the better shape and changes what a hand-run
+preprocessor collects, so it wants a decision rather than a patch.
+
 ---
 
 ## Deferred by decision, not defect
@@ -117,11 +183,17 @@ distribution across both axes, the fail-safe count, and a source filter so
 - **Per-story comments and copy-as-markdown.** `concept.md` V1.5. The comment
   field feeds the next day's editor, which is a feedback loop the pipeline does
   not have.
+- **Paper #5's "HEADLINE:" headline stays.** Paper #5 (2026-08-31) rank 65, ref
+  S68421, is published with the literal headline `HEADLINE:` and its real
+  headline as the first line of its body. The parser defect is fixed
+  (`docs/decisions.md`, 2026-08-31) but a fix does not reach back into a
+  published paper, and `--repair` only re-writes pieces marked failed, so
+  correcting it would mean clearing that row's status by hand and re-publishing
+  an edition already read. Left as-is by decision 2026-09-01: one headline in one
+  back number, and the archive is a record of what was published. Noted here so
+  nobody re-diagnoses it as a live defect.
 - **In-paper AI Q&A.** Explicitly out of scope in `CLAUDE.md`, and the reasoning
   holds: answering questions about a story means grounding in `article_texts`,
   the one table that holds third-party full text and is never published. Raised
   2026-08-28 and left cut; `concept.md`'s answer is that Gizmo handles
   conversation about a story via copy-as-markdown.
-- **The cron.** Still no single entrypoint; stages are run by hand, threading run
-  ids. A systemd timer wants one script that runs the nine stages in order and
-  stops on a stage failure.

@@ -1,6 +1,146 @@
 # Model assignments per pipeline stage.
 # All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
 
+# The daily run. The runner (`npm run pipeline`) calls the nine stages in order
+# and decides, between each pair, whether the next one should start.
+#
+# It has to decide, because a stage exiting 0 does not mean it worked. The
+# writers return a normal summary after their circuit breaker trips; grouping
+# reports success with attach judgments unrecovered; the editor's tie-break
+# lost 12 of 25 groups to 429s in run #125 and warned. Every one of those is
+# already counted on the stage's own run row -- migrations 030, 037, 038, 039
+# and 040 exist so a run can be judged without the console log -- and nothing
+# read them back. These gates are what reads them back.
+pipeline:
+  schedule:
+    # Local time the daily run starts, and the timezone it means. This is the
+    # source of truth: `npm run pipeline -- --print-timer` generates the systemd
+    # unit from it, so the hour is not maintained in two places.
+    #
+    # Constrained from both ends. The collector's window is 24h on fetched_at,
+    # so an earlier start reaches less of yesterday evening; and the publisher
+    # dates the paper by the reader's local day, so a run must not cross
+    # midnight into an edition it did not gather.
+    time: "06:00"
+    timezone: America/Los_Angeles
+
+  # Stop STARTING new stages once the run has been going this long. Checked
+  # between stages only, which is the only place it can be honest: an in-flight
+  # LLM call cannot be cancelled from here, so a deadline that claimed to
+  # interrupt one would be lying. What it does buy is real -- it stops a run
+  # that has already blown its budget from starting the 150-call writers stage.
+  # The hard kill belongs to systemd's TimeoutStartSec, which can actually kill.
+  #
+  # Measured on run #1: 14.7 minutes end to end, of which the writers were 4.5
+  # and everything before them about 10. The project's only previous figure was
+  # "about an hour", which turns out to have been the deploy and the audit
+  # around the pipeline rather than the pipeline. 90 is six times the observed
+  # run -- loose enough to absorb a bad provider day (run #4's outage cost 31
+  # minutes in the writers alone) and tight enough that reaching it means
+  # something is wrong, which 240 was not.
+  max_duration_minutes: 90
+
+  writers:
+    # A tripped breaker means the provider was failing, not the material, and
+    # --repair exists for exactly this: run #35 lost 32 pieces to five
+    # budget-exhaustion calls and one repair pass recovered all 32. Attempted
+    # automatically before the gate judges the run, because an unattended run
+    # has nobody to type it.
+    repair_attempts: 1
+    # Waited before each repair attempt. The breaker trips on an outage, and
+    # re-asking immediately asks the same dead provider.
+    repair_delay_ms: 120000
+
+  # Each gate is evaluated against the counters its stage just wrote. A gate
+  # either passes, warns (the run continues and is recorded 'degraded'), or
+  # aborts (the next stage does not start). Warn is the common case by design:
+  # the paper has a deadline, and a degraded paper beats no paper. The aborts
+  # are the two cases where continuing is worse than stopping -- there is
+  # nothing to work on, or the writers came back too holed to be a paper.
+  gates:
+    collector:
+      # A single dead feed is normal and the collector is failure-tolerant. Half
+      # of them failing is not a feed problem, it is DNS, egress, or the proxy.
+      min_sources_succeeded_fraction: 0.5
+      # Above this share failing, say so. Run #1 lost 2 of 111 (1.8%) on a day
+      # that produced a flawless paper, and warning on it would have made every
+      # run degraded -- which costs the word its meaning, since a status that is
+      # always on is not a status. A dead feed is the steady state here; a step
+      # change in how many is the thing worth a look.
+      warn_failed_sources_fraction: 0.05
+      # Zero new items in a 24h window means the collector fetched nothing worth
+      # having; every stage below it would run on yesterday.
+      min_items_inserted: 1
+    preprocessor:
+      min_items_kept: 1
+    prefilter:
+      min_items_kept: 1
+      # The prefilter is a relevance floor, not a shredder. Cutting nearly
+      # everything means the prompt or the bio load went wrong, and the paper
+      # below it would be built from the remainder.
+      max_cut_fraction: 0.95
+    grouping:
+      min_rows: 1
+      # attach_unrecovered is judgments still missing after the straggler
+      # re-ask. Non-zero means the cluster/singleton split understates real
+      # grouping -- the paper is still a paper, so this warns, but the run must
+      # not be used to tune similarity_threshold and the warning is how anyone
+      # would know.
+      warn_attach_unrecovered: 1
+      warn_split_failed_calls: 1
+    grouping_pass1:
+      # An unscored row scores 0 by design (FAIL_SAFE_SCORE), so a handful is
+      # survivable and the pile simply prefers judged rows. A quarter of the
+      # corpus unjudged is a different thing: the ranking below it is noise.
+      max_unscored_fraction: 0.25
+      abort_unscored_fraction: 0.9
+      min_pile_items: 1
+    thread:
+      # A failed thread call yields zero threads rather than a wrong answer,
+      # which is the right failure -- but run #50 lost its single call and put
+      # three separate wildfire rows in the top ten. Worth saying out loud.
+      warn_failed_calls: 1
+    editor:
+      min_items_ranked: 1
+      # Ties fall back to ref order, which is alphabetical, at a boundary that
+      # decides feature versus standard.
+      warn_tie_break_failed_calls: 1
+    writers:
+      # After repair. Below this the run aborts and nothing is published, so
+      # yesterday's paper stays up rather than today's being mostly holes.
+      # Any hole above it warns and publishes: there is no threshold below
+      # which a missing piece stops being worth saying, and inventing one only
+      # decides how many holes go unmentioned.
+      min_written_fraction: 0.75
+    fetch:
+      # Cooldown hosts are a STANDING condition, not an event: nytimes.com and
+      # oregonlive.com have served a DataDome check for months and are tracked
+      # in open-items, so naming them nightly is noise that would make every run
+      # degraded. What is genuinely new information is a host that entered
+      # cooldown since the last run -- an outlet we were reading yesterday and
+      # are not reading today. That is the diff, and it needs no threshold.
+      # The full list stays on pipeline_stage_runs.metrics either way.
+      warn_on_newly_cooled_hosts: true
+
+    publisher:
+      # A published piece whose lineage would not resolve is one the reader
+      # cannot follow to anyone's reporting, which is the one thing the paper
+      # promises.
+      max_unsourced_fraction: 0.1
+      # Re-publishing a date REPLACES it, which is right for correcting a
+      # morning and wrong for a second run the same day. Cross-run dedup means
+      # that second run sees only the hours since the first, so it builds a
+      # small paper -- and every stage's own counters look healthy, because each
+      # one is fine in isolation. Run it four hours after the timer and a
+      # 150-piece edition becomes a 56-piece one with nine `ok` gates.
+      #
+      # Below this share of the paper it replaces, the publisher refuses. It is
+      # the one place a stage guards an artifact the reader already has, and the
+      # reason it refuses rather than warns: by the time a warning could be read
+      # the old paper is gone, and the smaller paper is strictly worse than the
+      # one it destroyed. `--force` is the deliberate path.
+      min_replacement_fraction: 0.75
+
 # Preprocessor tuning. The preprocessor is deterministic (no LLM), but its
 # recency window and dedup lookback are configuration, not magic numbers.
 preprocessor:

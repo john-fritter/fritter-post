@@ -263,6 +263,20 @@ question more than a technical one.
 
 ---
 
+## Decided since
+
+- **Time-of-day for the cron.** 06:00 in the reader's timezone, set in
+  `pipeline.schedule` in `config/models.yaml` and generated into the systemd
+  timer from there. Constrained from both ends: the collector's window is 24h on
+  `fetched_at`, and the publisher dates the edition by the reader's local day.
+- **Failure-mode policy for catastrophically bad days.** The runner's gates
+  (`pipeline.gates.*`). Most sources down aborts at the collector; a provider
+  outage during scoring aborts at grouping-pass-1; writers below
+  `min_written_fraction` after an automatic repair pass do not publish, so
+  yesterday's paper stays up rather than today's being mostly holes. Everything
+  short of those publishes and records `degraded`, because the paper has a
+  deadline. See `docs/decisions.md`, 2026-08-29.
+
 ## What we haven't decided
 
 - Schema details. Roughly known shape, but column-level decisions are for implementation time.
@@ -272,9 +286,7 @@ question more than a technical one.
 - Source policy specifics. Same — the operational document needs to be drafted.
 - UI specifics beyond rough layout principles.
 - Archive browsing UX — search box, calendar, tag filter, some mix.
-- Time-of-day for the cron.
 - LLM client library vs. writing it ourselves — leaning toward writing it, but not decided.
-- Failure-mode policy for catastrophically bad days (most sources down, etc.).
 - Whether yesterday's paper gets read in full or in distilled form by the editor.
 - Whether and when to add MCP layer for Gizmo to query the paper's database.
 

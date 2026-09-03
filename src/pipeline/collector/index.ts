@@ -19,7 +19,24 @@ interface SourceResult {
   duration_ms: number;
 }
 
-export async function runCollector(options: CollectorOptions = {}): Promise<void> {
+/**
+ * What a collection did, returned rather than only logged.
+ *
+ * Every other stage returns its run; this one printed its counters and returned
+ * void, so the runner would have had to re-read "the latest collector run" and
+ * hope it was the one it had just started.
+ */
+export interface CollectorRunSummary {
+  runId: number;
+  sourcesAttempted: number;
+  sourcesSucceeded: number;
+  itemsFetched: number;
+  itemsInserted: number;
+}
+
+export async function runCollector(
+  options: CollectorOptions = {}
+): Promise<CollectorRunSummary> {
   const { sourceFilter, concurrency = 10 } = options;
   const pool = getPool();
 
@@ -137,4 +154,12 @@ export async function runCollector(options: CollectorOptions = {}): Promise<void
     `\nRun #${runId} complete: ${succeeded}/${sources.length} sources OK, ` +
     `${totalFetched} items fetched, ${totalInserted} new`
   );
+
+  return {
+    runId,
+    sourcesAttempted: sources.length,
+    sourcesSucceeded: succeeded,
+    itemsFetched: totalFetched,
+    itemsInserted: totalInserted,
+  };
 }

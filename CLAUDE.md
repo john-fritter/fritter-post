@@ -41,9 +41,10 @@ features in the direction of any of these. When in doubt, less is more.
   Embedding vectors (4096-dim, `qwen/qwen3-embedding-8b` via OpenRouter)
   stored in `item_embeddings`. Used by the grouping stage.
 - **Deployment:** Docker container, fronted by Caddy, on fritter.lol
-- **Cron:** *planned* — a systemd timer on the host invoking a pipeline
-  entrypoint. Not built. There is no single entrypoint script; the stages are
-  run by hand, in order, threading run ids between them.
+- **Cron:** a systemd timer on the host invoking `npm run pipeline` inside the
+  app container. The schedule lives in `pipeline.schedule` in `models.yaml`
+  (default 06:00 America/Los_Angeles) and the unit is generated from it by
+  `npm run pipeline -- --print-timer`, so the hour is not maintained twice.
 
 ---
 
@@ -76,14 +77,15 @@ fritter-post/
 │   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # materials + fetch + assembler + the writer calls
-│   │   └── publisher/           # (not built — empty)
+│   │   ├── publisher/           # freezes a writer run into the day's paper
+│   │   └── runner/              # the daily run: stage order + gates + lineage
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
 │   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–041)
+├── migrations/                  # numbered SQL migrations (001–042)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -883,6 +885,22 @@ calls had succeeded. `parseWriterOutput` scans the opening lines for a label,
 ignores code fences, and falls back to a short unlabelled first line. A brief
 missing from a batch gets one follow-up call for the stragglers.
 
+**The label alone on its line is a label, not a headline.** Run #2's rank 65
+(S68421) published with the literal headline `HEADLINE:` and its real headline
+sitting at the top of its body. `matchHeadlineLabel` requires text after the
+colon, so a bare label never matched it and fell through to the unlabelled
+branch, which takes any first line of 160 characters or fewer — and `HEADLINE:`
+is nine. The headline is now read from the next line with content. The same fix
+covers `**HEADLINE:**`, which *did* match the label pattern with `**` as its
+text, cleaned away to nothing, and failed the whole piece — run #3's failure
+mode surviving in the one branch nobody had looked at, because it needed the
+model to bold a label it had put on its own line. When what follows is too long
+to be a headline, or is the piece's only line, the text is kept with a null
+headline rather than lost. This is the *primary* parse only: a mid-body revision
+that restarts with a bare label is still undetectable, as an unlabelled revision
+always was, because widening the strict restart matcher would risk truncating a
+piece that parsed correctly.
+
 **And a piece with no headline is still a piece.** The parser used to refuse a
 first line that was plainly prose, reasoning that publishing a paragraph as a
 headline is worse than recording a failure. That reasoning only holds while the
@@ -974,9 +992,22 @@ paper must keep pointing at its sources after its inputs are swept.
 **No third-party article text is ever copied.** `article_texts` stays the only
 table holding that; it writes the paper and never publishes it.
 
-**One paper per day, and re-publishing replaces it.** `papers.published_on` is
-unique and the stage deletes-then-inserts in one transaction, so a re-run
-corrects the morning's paper rather than sitting beside it. The date is the
+**One paper per day, and re-publishing replaces it — but it will not shrink one
+by accident.** `papers.published_on` is unique and the stage deletes-then-inserts
+in one transaction, so a re-run corrects the morning's paper rather than sitting
+beside it. That is right for a correction and dangerous once the timer runs
+daily: a second run the same day sees only the hours since the first, because
+cross-run dedup already gave that run today's news, so it assembles a small
+paper — and **every stage's counters look healthy, because each one is fine in
+isolation**. Four hours after the timer, a 150-piece edition becomes a 56-piece
+one behind nine `ok` gates. `replacementShortfall` refuses below
+`pipeline.gates.publisher.min_replacement_fraction` of the paper being replaced;
+`--force` is the deliberate path. **It refuses rather than warns**, which is the
+opposite of every other gate, and the reason is that this is the only place a
+stage guards an artifact the reader already has: a warning arrives after the
+delete, and the smaller paper is strictly worse than the one it destroyed. The
+check runs before the materials walk, so a refusal costs nothing, and growth or
+replacing an empty paper is never refused. The date is the
 *reader's* local day (`PAPER_TIMEZONE`, default `America/Los_Angeles`): a run
 starting at 7pm Pacific must not publish tomorrow's edition.
 
@@ -989,7 +1020,129 @@ must be able to judge a paper after the console log is gone. `inspect publisher
 
 Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
 `displayHeadline`, `sourceLabel`, `paragraphs`, `formatEditionDate`,
-`readingMinutes`) are unit-tested in `tests/publisher-assemble.test.ts`.
+`readingMinutes`, `replacementShortfall`) are unit-tested in
+`tests/publisher-assemble.test.ts`.
+
+### the runner
+
+**One entrypoint, and the gates are the point.** `npm run pipeline` calls the
+nine stages in order and evaluates a gate between each pair. Writes
+`pipeline_runs` / `pipeline_stage_runs` (migration 042); read them back with
+`inspect pipeline`.
+
+**Ordering is the cheap part.** A shell chain would order the stages correctly
+and would even thread most of the ids, since the middle five default to their
+latest completed upstream run. What it cannot do is notice a stage that failed
+while exiting 0, and that is every expensive failure this pipeline has had:
+`runWriters` returns a normal summary after its breaker trips, so
+`write && publish` freezes an edition of holes; a failed attach call returns an
+empty set, indistinguishable from the model declining every candidate; the
+editor's tie-break catch returns an empty rank map, which is what a tie group
+the model declined to order returns. Every counter that separates those cases
+was already persisted — migrations 030, 037, 038, 039, 040 exist for exactly
+that — and nothing read one back. `runner/gates.ts` is what reads them back, and
+it is pure, so the policy is testable without a database or a provider.
+
+**Three verdicts, and warn is the common case.** `ok`, `warn` (the run continues
+and is recorded `degraded`), `abort` (the next stage does not start). The paper
+has a deadline, so only two things abort: there is nothing for the next stage to
+work on, or the writers came back below `writers.min_written_fraction` after the
+automatic repair pass. Thresholds are `pipeline.gates.*` in `models.yaml`,
+because what counts as too holed to publish is the reader's policy, not a
+stage's.
+
+**The writers' repair is automatic.** `--repair` exists for the breaker's exact
+failure mode — run #35 lost 32 pieces to five budget-exhaustion calls and one
+pass recovered all 32 — and an unattended run has nobody to type it. It waits
+`repair_delay_ms` first, because the breaker trips on an outage and re-asking
+immediately asks the same dead provider.
+
+**Any hole warns; only the floor decides whether to publish.** The first draft
+had a second threshold that made 147 of 150 written silent. There is no fraction
+below which a missing piece stops being worth naming.
+
+**A warn must be an event, not a standing condition — the opposite rule, and
+the one that only a real run could teach.** Run #1 published a flawless paper
+(150 of 150 written, 0 failed, 0 unsourced, 267 source links) and was recorded
+`degraded`, on two warnings that would have fired every night forever: 2 of 111
+feeds failed, and five hosts were in cooldown. Both were true and neither was
+news — the collector is *built* to skip a dead feed, and `nytimes.com` and
+`oregonlive.com` have served a DataDome check for months (open item 2). A status
+that is always on is not a status, and the reader would have learned within a
+week to ignore the word. So the collector warns only above
+`warn_failed_sources_fraction` of its sources, and the fetch warns only on a host
+not seen in cooldown by **any run inside the cooldown window** — an outlet we
+were reading last week and are not today. The full cooldown list stays on the
+metrics either way.
+
+**The fetch baseline is a window rather than yesterday, because a blocked host
+oscillates.** A host in cooldown is skipped, so it writes no attempt rows; after
+`writers.fetch.cooldown.window_days` its failures age out of
+`hostsInCooldown`'s lookback and it leaves the set; the next story from it
+retries it, it fails, and it is back. Run #3 showed the first half —
+`thediplomat.com` and `insideclimatenews.org` left the set between 2026-08-31
+and 2026-09-02 with no code change and no recovery — and diffing against
+yesterday alone would have announced the return as news once a week forever,
+which is the standing condition arriving as a periodic event. Matching the
+baseline to the window that causes the cycle suppresses all of it and still
+names a host that genuinely stopped answering. `newlyCooled` is pure and
+tested. Note this does not contradict the writers' rule above: a missing piece is
+rare and the reader sees the hole, where a dead feed among 111 is the steady
+state. `tests/pipeline-gates.test.ts` replays run #1's metrics through every
+gate and asserts none of them speak.
+
+**The deadline only refuses to start stages, and says so.** An in-flight LLM
+call cannot be cancelled from the runner, so `max_duration_minutes` is checked
+between stages only — what it honestly buys is not starting the 150-call writers
+stage on a run that has already blown its budget. The kill that can kill is
+systemd's `TimeoutStartSec`, generated an hour past it because a stage starting
+one minute before the deadline still runs to completion.
+
+**A full run is fifteen to eighteen minutes, not about an hour.** Runs #1-#3:
+14m 44s, 16m 43s, 17m 57s wall clock, of which 1m 15s-1m 17s is between stages
+rather than inside them. Duration tracks the size of the day — 325, 398 then 486
+rows out of grouping — and the stages that move with it are grouping-pass-1 and
+the writers. The project's standing figure of "about an hour" was the deploy and
+the audit around the pipeline, not the pipeline, which is what `inspect timing`
+was built to settle and now has. The project's
+standing figure of "about an hour" was the deploy and the audit around the
+pipeline, not the pipeline — which is what `inspect timing` was built to settle
+and now has. `max_duration_minutes` is 90 on the strength of it: six times the
+observed run, loose enough for a bad provider day (run #4's outage cost 31
+minutes in the writers alone) and tight enough that reaching it means something
+is wrong, which 240 was not.
+
+**`--from <stage>` is the recovery path, and re-running is not.** Retry
+semantics differ by end of the pipeline. The tail is safely re-runnable —
+`papers.published_on` is unique and the publisher deletes-then-inserts — but
+re-running from `collect` is not: cross-run dedup suppresses everything recent
+runs already processed, so a same-day full re-run comes back near-empty **by
+design** and would replace a good paper with an empty one. This is why the
+generated unit has no `Restart=on-failure`. A resume inherits the recorded
+lineage rather than re-deriving it, which is the second reason migration 042
+exists: `inspect timing` infers a lineage with a six-hour heuristic precisely
+because the real answer was never written down, and that inference was wrong for
+run #45.
+
+**A stage row is written when the stage starts.** The writers' lesson applied to
+the runner itself — run #29 persisted zero rows because it held everything until
+the end and was killed before it got there. A run killed by the systemd timeout
+leaves a `status='running'` row with no `completed_at`, which is the only thing
+that says which stage it died in.
+
+**Grouping will not start without a prefilter run for its preprocessor run.**
+`getClusteringItems` tolerates a missing one — "a null run means nothing is
+excluded on its account" — which is right for an experiment run by hand and
+silent under automation: grouping would cluster the unfiltered set and report
+success. Only a resume can reach that order, and this is where it is caught.
+
+**The schedule is configuration.** `pipeline.schedule` in `models.yaml`;
+`npm run pipeline -- --print-timer` generates the systemd unit and timer from
+it. A timer cannot read YAML, so without generation the hour would exist in two
+places and drift — with the failure mode being a reader who changes the config,
+sees nothing happen, and has no reason to suspect the unit file. The
+timezone-qualified `OnCalendar` needs systemd 252 or newer; the generated timer
+says so and says what to do instead.
 
 ### the reading view
 
@@ -1168,7 +1321,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **042**.
+number is ambiguous. The next migration is **043**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1186,9 +1339,27 @@ number is ambiguous. The next migration is **042**.
   paper's pieces
 - `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
   pieces, in place
-- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD]` — freeze a writer run
-  into the day's paper with resolved source links. Re-publishing a date replaces
-  that paper, so this is safe to re-run
+- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]` — freeze a
+  writer run into the day's paper with resolved source links. Re-publishing a
+  date replaces that paper, so this is safe to re-run; `--force` is needed to
+  replace one with a substantially smaller paper
+
+**The daily run**
+- `npm run pipeline` — every stage in order, with a gate between each pair.
+  This is what the systemd timer invokes
+- `npm run pipeline -- --from <stage> [--to <stage>]` — resume from a stage,
+  inheriting the last run's recorded lineage. The recovery path: re-running from
+  `collect` is not a retry, because cross-run dedup makes a same-day full re-run
+  come back near-empty by design
+- `npm run pipeline -- --dry-run` — print the plan and the lineage it would
+  inherit, run nothing. Needs no database when starting from `collect`
+- `npm run pipeline -- --skip-cross-run-dedup` — **testing only.** A full run on
+  a day the pipeline has already run comes back near-empty by design; this makes
+  the preprocessor re-admit what earlier runs took, so the whole pipeline can be
+  exercised end to end. The paper it makes re-uses published items and is a test
+  artifact, which the `pipeline_runs` note records
+- `npm run pipeline -- --print-timer [--working-dir <path>]` — generate the
+  systemd unit and timer from `pipeline.schedule`
 
 **Inspection**
 - `npm run inspect -- count [--source <name>]`
@@ -1225,11 +1396,19 @@ number is ambiguous. The next migration is **042**.
   headline-only because the materials audit counts thin *articles*, which is a
   different quantity from a thin *piece*; a non-zero count in a prominent tier
   now means the day ran out of material to trade with, not a mis-assigned slot
+- `npm run inspect -- fetch [--days <n>]` — per-source article fetch outcomes
+  from `article_texts` (default 14 days): what a writer ends up with per outlet,
+  why we did not ask, and which hosts are in cooldown. This is where a host's
+  actual history is, as against the cooldown list a single run happened to see
 - `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
   piece with `resolved/ranked` source counts, so a paper the reader cannot follow
   anywhere is visible without opening it
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
+- `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;
+  `--id` shows one run's lineage, per-stage gate verdicts with their reasons,
+  and the metrics each gate read. This is where "why is the paper short" is
+  answered after the console log is gone
 
 **Experiments**
 - `npm run probe-source -- --robots <host>` — fetch a publisher's robots.txt and
@@ -1360,9 +1539,17 @@ interchangeable:
   is the only LLM in that path, so some rank churn is still expected and is not
   the change.
 
-**A fresh paper is:** collect → preprocess → prefilter → grouping →
-grouping-pass1 (which runs the thread pass and assembles the pile) → editor →
-fetch-text → write → publish, threading each stage's run id into the next.
+**A fresh paper is:** `npm run pipeline`. It runs collect → preprocess →
+prefilter → grouping → grouping-pass1 (which runs the thread pass and assembles
+the pile) → editor → fetch-text → write → publish, threading each stage's run id
+into the next and stopping if a gate says to.
+
+Running the stages by hand is still supported and is what an investigation
+wants: every stage defaults to its latest completed upstream run, the tail three
+included, so the commands can be run bare and in order. What that loses is the
+gates — a hand-run `write` followed by a hand-run `publish` will publish an
+edition of holes without comment, which is the failure the runner exists to
+prevent.
 
 ---
 

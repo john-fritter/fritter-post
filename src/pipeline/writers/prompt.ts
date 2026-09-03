@@ -603,19 +603,57 @@ export function parseWriterOutput(text: string): ParsedWriterOutput | null {
       .replace(/^["'“”]|["'“”]$/g, "")
       .trim();
 
+  // The longest a line can be and still be read as a headline rather than prose.
+  const MAX_UNLABELLED_HEADLINE_CHARS = 160;
+
   // A labelled headline anywhere in the opening lines, past any preamble.
   const LOOKAHEAD = 5;
   for (let i = firstContentIndex; i < Math.min(lines.length, firstContentIndex + LOOKAHEAD); i++) {
     const match = matchHeadlineLabel(lines[i]!);
-    if (match === null) continue;
-    const headline = clean(match);
-    const body = lines.slice(i + 1);
-    if (headline.length === 0) return null;
-    return lastDraft(headline, body, clean);
+    const labelText = match === null ? "" : clean(match);
+    if (labelText.length > 0) {
+      return lastDraft(labelText, lines.slice(i + 1), clean);
+    }
+
+    // **The label alone on its line is a label, not a headline.** Run #2's
+    // rank 65 (S68421) published with the literal headline "HEADLINE:" and the
+    // real headline sitting at the top of its body, because `matchHeadlineLabel`
+    // requires text after the colon — so a bare label never matched it and fell
+    // through to the unlabelled branch below, which takes any first line of 160
+    // characters or less. "HEADLINE:" is nine.
+    //
+    // The model put the label on one line and the headline on the next, which is
+    // the piece written correctly in a shape the contract did not ask for. This
+    // parser's whole argument is that refusing to read that is the parser's
+    // failure rather than the writer's, so the headline is read from the next
+    // line with content.
+    //
+    // `match !== null` with nothing left after cleaning is the same shape wearing
+    // markdown: `**HEADLINE:**` matches the label pattern with `**` as its text,
+    // which `clean` strips to "". That used to return null and fail the whole
+    // piece — the run #3 failure mode, surviving in the one branch nobody looked
+    // at because it needed the model to bold a label it had put on its own line.
+    if (match !== null || isBareHeadlineLabel(lines[i]!)) {
+      const next = lines.findIndex((line, k) => k > i && line.trim().length > 0);
+      // A label with nothing under it is still a failed piece: there is no prose.
+      if (next === -1) return null;
+      const labelled = clean(lines[next]!.replace(/^#{1,3}\s*/, ""));
+      const rest = lines.slice(next).join("\n").trim();
+      if (labelled.length > 0 && labelled.length <= MAX_UNLABELLED_HEADLINE_CHARS) {
+        const parsed = lastDraft(labelled, lines.slice(next + 1), clean);
+        if (parsed !== null) return parsed;
+      }
+      // Either the model labelled and went straight into prose — publishing a
+      // paragraph as a headline is what the length guard exists to stop — or the
+      // whole piece is one short line, which a 25-word brief legitimately is.
+      // Both keep their text and lose the headline the model never wrote, which
+      // is the unlabelled branch's own fallback and run #36's lesson: a missing
+      // headline costs a headline, and refusing the piece costs the piece.
+      return rest.length > 0 ? { headline: null, body: rest } : null;
+    }
   }
 
   // No label. A short first line followed by a body is a headline.
-  const MAX_UNLABELLED_HEADLINE_CHARS = 160;
   const candidate = clean(lines[firstContentIndex]!.replace(/^#{1,3}\s*/, ""));
   const body = lines.slice(firstContentIndex + 1);
   if (candidate.length > 0 && candidate.length <= MAX_UNLABELLED_HEADLINE_CHARS) {
@@ -656,6 +694,23 @@ function matchHeadlineLabel(line: string, strict = false): string | null {
     : /^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*(.+)$/i;
   const match = line.trim().match(pattern);
   return match ? match[1]! : null;
+}
+
+/**
+ * The contract's label alone on a line, with nothing after the colon.
+ *
+ * Matched forgivingly for the same reason the opening label is: this is the
+ * shape a model produces when it treats `HEADLINE:` as a section header rather
+ * than a prefix, and the cost of not recognising it is a published headline
+ * that reads "HEADLINE:".
+ *
+ * Note this is the *primary* parse only. A mid-body revision that restarts with
+ * a bare label is still undetectable, as a revision that never re-labels always
+ * was — widening the strict restart matcher to bare labels would risk
+ * truncating a piece that parsed correctly, which is the worse trade.
+ */
+function isBareHeadlineLabel(line: string): boolean {
+  return /^#{0,3}\s*\**\s*headline\s*\**\s*[::]\s*\**\s*$/i.test(line.trim());
 }
 
 /**

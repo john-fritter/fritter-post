@@ -7,6 +7,7 @@ import {
   paragraphs,
   formatEditionDate,
   readingMinutes,
+  replacementShortfall,
   type PublishablePiece,
 } from "../src/pipeline/publisher/assemble.js";
 import type {
@@ -14,6 +15,50 @@ import type {
   StoryMember,
   StoryArticle,
 } from "../src/pipeline/writers/materials.js";
+
+
+// --- replacementShortfall: the guard on an artifact the reader already has ---
+
+const FLOOR = 0.75;
+
+function testASecondRunTheSameDayIsRefused() {
+  // The real shape. The timer publishes 150 at 06:00; a hand-run four hours
+  // later sees only the hours since, because cross-run dedup gave the earlier
+  // run today's news. Every stage's counters look healthy in isolation and the
+  // edition would go from 150 pieces to 56 behind nine `ok` gates.
+  const short = replacementShortfall(150, 56, FLOOR);
+  assert.notEqual(short, null);
+  assert.equal(short!.existingPieceCount, 150);
+  assert.equal(short!.newPieceCount, 56);
+}
+
+function testCorrectingAMorningIsAllowed() {
+  // What re-publishing is actually for: a repair pass filled three holes, or a
+  // couple of pieces failed. Same paper, corrected.
+  assert.equal(replacementShortfall(150, 150, FLOOR), null);
+  assert.equal(replacementShortfall(150, 148, FLOOR), null);
+  assert.equal(replacementShortfall(150, 120, FLOOR), null); // exactly at the floor
+}
+
+function testGrowthIsNeverRefused() {
+  // A repair that recovers pieces makes the paper bigger. The guard protects
+  // against losing an edition, not against changing one.
+  assert.equal(replacementShortfall(56, 150, FLOOR), null);
+}
+
+function testReplacingAnEmptyPaperIsAllowed() {
+  // Nothing to protect, and refusing would make a genuinely broken morning
+  // unfixable.
+  assert.equal(replacementShortfall(0, 10, FLOOR), null);
+  assert.equal(replacementShortfall(0, 0, FLOOR), null);
+}
+
+function testTheFloorIsTheConfiguredOne() {
+  // The threshold is policy, so the function must not carry its own.
+  assert.equal(replacementShortfall(100, 80, 0.75), null);
+  assert.notEqual(replacementShortfall(100, 80, 0.9), null);
+}
+
 
 // --- fixtures ---
 
@@ -251,4 +296,9 @@ testSourceLabelReportsResolvedLinks();
 testParagraphSplitting();
 testReadingTimeIsWithheldOnShortPieces();
 testEditionDateDoesNotDriftAcrossTheDateLine();
+testASecondRunTheSameDayIsRefused();
+testCorrectingAMorningIsAllowed();
+testGrowthIsNeverRefused();
+testReplacingAnEmptyPaperIsAllowed();
+testTheFloorIsTheConfiguredOne();
 console.log("publisher assemble tests passed");

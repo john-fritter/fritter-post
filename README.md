@@ -87,7 +87,39 @@ docker compose exec app npm run migrate
 ```bash
 git pull
 docker compose up -d --build
+docker network connect seedbox_default fritter-post-app-1
 ```
+
+That third line every time. The app service declares only the internal network
+and joins `seedbox_default` by hand, so every `up -d --build` drops Caddy's route
+and the site 502s until it runs. See below for how to check.
+
+### The daily run
+
+The paper is produced by a systemd timer on the host that runs the whole
+pipeline inside the app container:
+
+```bash
+docker compose exec -T app npm run pipeline
+```
+
+That runs the nine stages in order and evaluates a gate between each pair, so a
+stage that fails while exiting 0 stops the run instead of publishing a broken
+paper. The schedule lives in `pipeline.schedule` in `config/models.yaml`
+(06:00 America/Los_Angeles), and the systemd unit and timer are generated from
+it rather than maintained separately:
+
+```bash
+docker compose exec -T app npm run pipeline -- --print-timer --working-dir /srv/fritter-post
+```
+
+Read a run back with `npm run inspect -- pipeline [--id <n>]`, which shows the
+lineage, each gate's verdict and the metrics it read.
+
+**Re-running from the top is not a retry.** Cross-run dedup means a same-day full
+re-run comes back near-empty by design, so recovery is `npm run pipeline --
+--from <stage>`, which inherits the recorded lineage. This is also why the
+generated unit has no `Restart=on-failure`.
 
 ### Running CLI scripts on the deployed stack
 
@@ -132,16 +164,25 @@ container name. The Caddy configuration lives outside this repo.
 ## Project layout
 
 ```
-src/pipeline/   Six-stage pipeline (collector → publisher)
+src/pipeline/   Nine-stage pipeline (collector → publisher) plus runner/
 src/llm/        OpenAI SDK wrapper with logging and budgets
 src/db/         Postgres connection pool
-src/app/        Next.js App Router (the reading view — currently a placeholder)
+src/app/        Next.js App Router — the reading view
 src/lib/        Shared utilities
-scripts/        CLI tools (migrate, inspect, test, one per pipeline stage)
+scripts/        CLI tools (migrate, inspect, test, pipeline, one per stage)
 migrations/     Numbered SQL migrations
 config/         sources.yaml, models.yaml
-docs/           concept.md, decisions.md, bio.md
+docs/           concept.md, decisions.md, open-items.md, bio.md, voice.md
 ```
 
-Built and working: collector → preprocessor → prefilter → grouping →
-grouping-pass-1 → editor. Writers and publisher are not built yet.
+All nine stages are built and the pipeline runs itself on a daily timer:
+
+```
+collector → preprocessor → prefilter → grouping → grouping-pass-1
+          → thread → editor → writers → publisher
+```
+
+`docs/concept.md` has the vision and what each stage is for; `CLAUDE.md` has the
+operational detail and the reasoning behind specific behaviours;
+`docs/decisions.md` is the append-only log of why things are the way they are;
+`docs/open-items.md` is what is known to be wrong or deferred.

@@ -22,6 +22,7 @@
     "fetch-text": "tsx scripts/fetch-article-text.ts",
     "write": "tsx scripts/write.ts",
     "publish": "tsx scripts/publish.ts",
+    "pipeline": "tsx scripts/pipeline.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts",
     "probe-source": "tsx scripts/probe-source.ts"
   },
