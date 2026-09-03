@@ -105,6 +105,35 @@ distinct outlets *within that member*, but two clusters in one thread that both
 contain AP still count AP twice. Correcting it means counting distinct outlets
 across every member's items, which the thread pass does not currently load.
 
+### 5b. `getParent` falls back to the source name, so a config rename orphans history
+
+`loadOutletMap` is built from `sources.yaml`, and `getParent` returns the source
+name itself for anything not in it. So the moment a source is renamed or removed,
+every historical `preprocessed_items` row carrying the old name stops resolving
+to its parent — silently.
+
+Found while reading the 2026-09-03 cross-run replay. `AP Top News` and
+`AP Politics` both declared `parent: "AP"` until commit `9ad8e72` (2026-08-26)
+replaced them with a single `AP News`. Their rows are still in the database and
+now resolve to two distinct outlets. It cost nothing here — the two affected rows
+are from feeds that cannot produce more — but the same fallback governs the
+cross-run URL key and `countDistinctOutlets`, so a future rename of a
+high-volume source would quietly un-group its recent history and inflate the
+editor's `ln(sources)` lift for a few days.
+
+**Fix:** either an `aliases:` list on a source, or a small persisted
+`source_name → parent` history. Neither is worth building until a rename is
+actually planned; the note exists so the next rename is done deliberately.
+
+### 5c. The under-30-character title population has never been measured
+
+The cross-run title key has a 30-character floor, and the 2026-09-03 replay
+observed a minimum matched length of 32. That is not evidence that nothing sits
+below 30 — the supplemental boundary query errored and was correctly left
+unrepaired, so the population is simply unmeasured. The risk direction is a miss,
+not a false positive, so it does not block anything. Worth one query next time
+someone is in that data.
+
 ### 6. `exclude_paths` on RSS has no user
 
 It works on both formats since 2026-08-29, and no source sets it. KTVZ's CNN

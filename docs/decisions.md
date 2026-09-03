@@ -75,8 +75,34 @@ symmetry.
 preprocessor cannot be re-run to measure it (cross-run dedup makes a same-day
 re-run near-empty by design, and it writes rows). `preprocessed_items` is never
 swept — only `article_texts` has a retention delete — so the whole history is
-still in the database and the change is measured by replaying the new key over
-past runs in read-only SQL. See the 2026-09-03 Gizmo task.
+still in the database and the change was measured by replaying the new key over
+past runs in read-only SQL. Measured on the box, 45-day window, 20 clean runs:
+
+- **35 exact normalized-title collisions**, of which **33 are cross-parent** and
+  the two remaining are `AP Top News`/`AP Politics`, two feeds that no longer
+  exist (commit `9ad8e72`, 2026-08-26, replaced both with a single `AP News`).
+- **1 to 5 per run**, never more. The audit's nine confirmed published repeats
+  sit inside this, as they must: the replay counts every re-ingested copy and
+  the audit counted only the ones that reached print.
+- Dominated by exactly the routes predicted: **NPR → OPB 10**, Oregon Capital
+  Chronicle → The Bend Bulletin **7**, Oregon Capital Chronicle → OPB **3**,
+  Wired → Ars Technica **2**. The other ten routes contribute one each.
+- **No false positives** in a manual read of all 35 pairs.
+- Title lengths 32–99, median 79 — nothing near the 30-character floor.
+- Largest per-outlet impact **2.7%** (OPB), against a 25% concern threshold.
+- 25 of 35 pairs are one day apart, 31 of 35 within two, none at five. The
+  five-day lookback is generous rather than load-bearing.
+
+**The first replay was measured wrong and the error is worth keeping.** It ran
+over all runs and returned four-digit counts for seven of them, which tripped the
+brief's own stop gate. Those seven were all `cross_run_dedup_skipped = true` —
+`--skip-cross-run-dedup` testing runs, which exist precisely to **re-admit what
+earlier runs took**. Their rows never met the filter, so counting them as
+candidates measures the testing artifact. The tell was the distribution: bimodal,
+1025–2059 against 1–5, with nothing in between, and two runs landing on exactly
+1522. A rule that is genuinely too loose degrades smoothly; it does not leave a
+200× gap. Any future replay over `preprocessed_items` must exclude
+`cross_run_dedup_skipped` runs from both sides of the join.
 
 ---
 
