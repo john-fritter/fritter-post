@@ -78,6 +78,7 @@ fritter-post/
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # materials + fetch + assembler + the writer calls
 │   │   ├── publisher/           # freezes a writer run into the day's paper
+│   │   ├── lineage/             # cross-day continuity: the "previously" marker
 │   │   └── runner/              # the daily run: stage order + gates + lineage
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
@@ -85,7 +86,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–042)
+├── migrations/                  # numbered SQL migrations (001–043)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -1023,6 +1024,79 @@ Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
 `readingMinutes`, `replacementShortfall`) are unit-tested in
 `tests/publisher-assemble.test.ts`.
 
+### lineage
+
+**Cross-day story continuity — the "previously" marker.** Runs inside the
+publisher, after the paper is frozen. Writes `paper_piece_lineage` (migration
+043) and `papers.pieces_with_lineage`.
+
+**It is not a stage, because it has no independent input.** It reads the paper
+that was just written and the papers before it, and the publisher is already the
+place that turns a writer run into an artifact with attribution attached.
+Continuity belongs beside attribution; the pipeline stays at nine stages.
+
+**The defect it closes.** The 2026-09-03 repeated-headline audit found the paper
+has **no cross-edition story identity** — `T0` and `C27` are run-local, and
+nothing outside the publisher reads `papers`. Nvidia/Hugging Face is the case
+that names it: a report on 8/27, a further report on 8/28, a six-source
+confirmation on 9/3. The 9/3 piece was legitimately new and must not be
+suppressed; what was missing was any marker saying it was the same transaction
+advancing. Nepal, Iran and the USPS fight are the same shape — a real new
+development every day, reading like a rerun because nothing said otherwise.
+
+**The relation is "same situation", not "same story", and that is what makes it
+cheap.** Telling a resurfaced copy from a genuine follow-up is a hard judgment
+and would need an LLM. A continuity marker does not need it: two consecutive days
+of Iran coverage are different developments, and "previously, Sept 2" is correct
+and useful about both. The distinction would only matter if something were being
+deleted, and nothing here deletes anything — **no stage reads these rows to drop
+a story.** Continuity is the fix for a continuing story; deletion is the fix for
+a duplicate, and that one already happened in the preprocessor.
+
+**The data was already there.** `item_embeddings` is keyed on
+`preprocessed_item_id`, upserted by every grouping run, and — unlike
+`article_texts` — never swept; `paper_sources.preprocessed_item_id` reaches every
+published piece's articles. So "did we cover this before" is a vector query over
+rows that have accumulated since the project started. No backfill, no new
+embedding pass.
+
+**The vector maths stays in Postgres and the policy stays in `select.ts`.**
+pgvector computes 4096-dimension cosine next to the data; what crosses into Node
+is a small scored candidate list. `selectLineageLinks` then applies the rules,
+and they are unit-tested: one link per piece (enforced again by a unique index),
+ties broken toward the **more recent** prior piece — a story running four days
+straight should say what the paper said last, not what it said first — and a
+deterministic ref tie-break so a re-run inserts identically.
+
+**Similarity is max-pairwise, not centroid.** A cluster's items are the same
+event by construction and a section's pieces are partitioned by member, so the
+strongest single pairing is the honest measure. A centroid over a thread's eleven
+members would dilute exactly the signal wanted.
+
+**`publisher.lineage.similarity_threshold` is the knob, and it has never been
+swept.** 0.80 against grouping's 0.66 edge cutoff, deliberately stricter because
+the errors are asymmetric: a false link prints a "previously" line about an
+unrelated story where the reader can see it, while a missed link leaves the paper
+exactly as it is today. `top_k: 3` keeps the near misses so an audit can say
+whether the value sits in the right place; `inspect publisher --id` prints every
+link with its similarity. See `docs/open-items.md`.
+
+**The marker is text, never a link.** `/story/<ref>` resolves refs against the
+*latest* paper only, so a route to yesterday's piece does not exist — and the
+reading view's rule is that colour means exactly one thing, a link that leaves
+for someone else's reporting. A "previously" line is the paper talking about
+itself, so it is set unlinked and uncoloured under the headline. A prior *section
+line* has no headline of its own and is dropped rather than rendered: a pointer
+to a pointer is not worth a row.
+
+**It runs outside the publisher's transaction and never fails a paper.** A paper
+with no continuity markers is a complete paper; a failure here is caught, warned,
+and the edition still publishes. Re-publishing a date recomputes rather than
+accumulating. The FKs into the prior paper are `ON DELETE SET NULL` with the date
+and headline copied beside them — the `paper_sources` rule, for the same reason:
+correcting an earlier edition must not silently erase what today's paper said
+about it.
+
 ### the runner
 
 **One entrypoint, and the gates are the point.** `npm run pipeline` calls the
@@ -1321,7 +1395,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **043**.
+number is ambiguous. The next migration is **044**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1402,7 +1476,9 @@ number is ambiguous. The next migration is **043**.
   actual history is, as against the cooldown list a single run happened to see
 - `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
   piece with `resolved/ranked` source counts, so a paper the reader cannot follow
-  anywhere is visible without opening it
+  anywhere is visible without opening it, plus each piece's `previously` link and
+  the similarity that produced it — the only way to tune
+  `publisher.lineage.similarity_threshold`
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 - `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;

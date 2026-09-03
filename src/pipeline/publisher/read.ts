@@ -47,8 +47,25 @@ export interface PaperSourceRow {
   publishedAt: Date | null;
 }
 
+/**
+ * What this paper said about this story before.
+ *
+ * Text, not a link: `/story/<ref>` resolves refs against the *latest* paper
+ * only, so a route to yesterday's piece does not exist. That is not a gap to
+ * fill here either — the reading view's rule is that colour means exactly one
+ * thing, a link that leaves for someone else's reporting, and a "previously"
+ * line is the paper talking about itself.
+ */
+export interface PaperLineageRow {
+  publishedOn: string;
+  headline: string | null;
+  ref: string;
+}
+
 export interface PaperPiece extends PaperPieceRow {
   sources: PaperSourceRow[];
+  /** Null when this piece continues nothing, which is the common case. */
+  previously: PaperLineageRow | null;
 }
 
 interface RawPieceRow {
@@ -146,6 +163,16 @@ export async function loadPaperPiece(paperId: number, ref: string): Promise<Pape
     [r.id],
   );
 
+  const { rows: prev } = await pool.query<{
+    prior_published_on: string; prior_headline: string | null; prior_ref: string;
+  }>(
+    `SELECT to_char(prior_published_on, 'YYYY-MM-DD') AS prior_published_on,
+            prior_headline, prior_ref
+       FROM paper_piece_lineage WHERE paper_piece_id = $1`,
+    [r.id],
+  );
+  const pv = prev[0];
+
   return {
     ...toRow(r),
     sources: srcs.map((s) => ({
@@ -154,6 +181,13 @@ export async function loadPaperPiece(paperId: number, ref: string): Promise<Pape
       url: s.url,
       publishedAt: s.published_at,
     })),
+    previously: pv
+      ? {
+          publishedOn: pv.prior_published_on,
+          headline: pv.prior_headline,
+          ref: pv.prior_ref,
+        }
+      : null,
   };
 }
 

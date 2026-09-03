@@ -141,6 +141,37 @@ pipeline:
       # one it destroyed. `--force` is the deliberate path.
       min_replacement_fraction: 0.75
 
+# Publisher tuning. The publisher is deterministic (no LLM); this block is the
+# cross-day lineage pass it runs after freezing the paper.
+publisher:
+  # Cross-day story lineage -- the "previously" marker. Finds, for each piece of
+  # today's paper, the piece in a recent paper that covered the same continuing
+  # situation. It never suppresses anything: a continuing story is fixed by
+  # continuity, and a duplicate is fixed upstream in the preprocessor.
+  lineage:
+    enabled: true
+    # How far back to look for prior coverage. Seven days because the audit's
+    # Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3, and a six-day window
+    # would have missed the confirmation that most needed the marker.
+    lookback_days: 7
+    # THE KNOB. Cosine floor for calling two pieces the same continuing
+    # situation, on the same 4096-dim embeddings grouping uses.
+    #
+    # Grouping's edge cutoff is 0.66 for same-*event* items inside one day.
+    # This is deliberately stricter, because the two errors are not symmetric:
+    # a false link prints a "previously" line about an unrelated story where the
+    # reader can see it, while a missed link leaves the paper exactly as it is
+    # today. Precision is worth more than recall.
+    #
+    # 0.80 is a STARTING POINT, not a measured value -- it has never been swept.
+    # Sweep it the way grouping's was: read the links a run produces, not an
+    # aggregate. See docs/open-items.md.
+    similarity_threshold: 0.80
+    # Prior pieces scored per piece before the threshold is applied. Only the
+    # best survives; this bounds what the query ships, and gives an audit the
+    # near-misses that say whether the threshold is in the right place.
+    top_k: 3
+
 # Preprocessor tuning. The preprocessor is deterministic (no LLM), but its
 # recency window and dedup lookback are configuration, not magic numbers.
 preprocessor:

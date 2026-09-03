@@ -87,6 +87,38 @@ starts looking wrong in a way nearness does not explain.
 
 ## Structural, no reader impact yet
 
+### 3b. The lineage similarity threshold has never been swept
+
+`publisher.lineage.similarity_threshold` is 0.80 and that number is a guess.
+Grouping's same-event edge cutoff is 0.66 on the same embeddings, and continuity
+across days should be stricter, but nothing has measured where the line actually
+falls. The errors are asymmetric — a false link prints a "previously" line about
+an unrelated story where the reader can see it; a missed link leaves the paper as
+it already is — so the value is set toward precision on purpose.
+
+**How to sweep it:** `inspect publisher --id <n>` prints every link with its
+similarity, and `top_k: 3` means the near misses were scored and are visible in
+the same query. Read the links a real paper produces rather than an aggregate,
+the way grouping's threshold was tuned. The first paper published with this pass
+is the first data point.
+
+### 3c. Continuity is recorded but only the reader sees it
+
+The lineage pass writes `paper_piece_lineage` and the story page renders it. The
+two consumers that would fix the *headlines* rather than annotate them are not
+built:
+
+- **The writers** could foreground what changed instead of restating the
+  situation, which is what Nvidia/Hugging Face and the Leipzig drone story needed.
+- **The thread pass** could avoid regenerating an umbrella title three editions
+  running, which is what put "six months" on the Iran section on 8/27, 8/28 and
+  8/30.
+
+Both are deferred on purpose until the threshold above is measured, because both
+work by putting text about the paper into a prompt, and this project has five
+recorded instances of a model relaying exactly that to the reader. Precision
+first, then the prompt.
+
 ### 4. The outlet count is derived in two places
 
 `src/db/outlets.ts` is called from grouping-pass-1, which stores the count on

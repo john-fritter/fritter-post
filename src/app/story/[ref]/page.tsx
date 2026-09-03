@@ -12,9 +12,11 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import {
   displayHeadline,
+  formatMarkerDate,
   paragraphs,
   readingMinutes,
 } from "@/pipeline/publisher/assemble";
+import { lineageLabel } from "@/pipeline/lineage/select";
 import { loadLatestPaper, loadPaperPiece } from "@/pipeline/publisher/read";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +48,14 @@ export default async function StoryPage({ params }: { params: Promise<{ ref: str
   // A section line has no headline; its sentence leads the page instead, and
   // then must not be repeated as the body underneath it.
   const leadsOnSentence = !piece.headline || !piece.headline.trim();
+  // Null when nothing was linked, and also when the prior piece was a section
+  // line with no headline of its own — a pointer to a pointer is not worth a row.
+  const previously = piece.previously
+    ? lineageLabel(
+        { priorPublishedOn: piece.previously.publishedOn, priorHeadline: piece.previously.headline },
+        formatMarkerDate,
+      )
+    : null;
 
   return (
     <main className="app">
@@ -66,6 +76,13 @@ export default async function StoryPage({ params }: { params: Promise<{ ref: str
         <h1 className={leadsOnSentence ? "art-hl art-hl-line" : "art-hl"}>
           {displayHeadline(piece)}
         </h1>
+
+        {previously ? (
+          <p className="art-prev">
+            <span className="art-prev-label">Previously</span>
+            {previously}
+          </p>
+        ) : null}
 
         <p className="art-meta">
           No. {piece.rank}

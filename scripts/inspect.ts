@@ -1323,20 +1323,21 @@ async function main() {
           const { rows } = await pool.query(
             `SELECT id, to_char(published_on, 'YYYY-MM-DD') AS day, writer_run_id,
                     story_count, piece_count, source_count, word_count,
-                    pieces_skipped, pieces_unsourced
+                    pieces_skipped, pieces_unsourced, pieces_with_lineage
                FROM papers ORDER BY published_on DESC, id DESC LIMIT 20`,
           );
           if (rows.length === 0) {
             console.log("No papers published yet.");
             break;
           }
-          console.log("  id  date         wrun  stories  pieces  sources   words  skipped  unsourced");
+          console.log("  id  date         wrun  stories  pieces  sources   words  skipped  unsourced  contd");
           for (const r of rows) {
             console.log(
               `  ${String(r.id).padStart(2)}  ${r.day}  ${String(r.writer_run_id).padStart(4)}  ` +
                 `${String(r.story_count).padStart(7)}  ${String(r.piece_count).padStart(6)}  ` +
                 `${String(r.source_count).padStart(7)}  ${String(r.word_count).padStart(6)}  ` +
-                `${String(r.pieces_skipped).padStart(7)}  ${String(r.pieces_unsourced).padStart(9)}`,
+                `${String(r.pieces_skipped).padStart(7)}  ${String(r.pieces_unsourced).padStart(9)}  ` +
+                `${String(r.pieces_with_lineage ?? 0).padStart(5)}`,
             );
           }
           break;
@@ -1345,7 +1346,7 @@ async function main() {
         const { rows: paperRows } = await pool.query(
           `SELECT id, to_char(published_on, 'YYYY-MM-DD') AS day, writer_run_id, editor_run_id,
                   story_count, piece_count, source_count, word_count,
-                  pieces_skipped, pieces_unsourced
+                  pieces_skipped, pieces_unsourced, pieces_with_lineage
              FROM papers WHERE id = $1`,
           [id],
         );
@@ -1373,14 +1374,24 @@ async function main() {
               `cannot follow those anywhere`,
           );
         }
+        // Zero on a day with obvious continuing situations means the
+        // similarity threshold is wrong, and nothing else would say so.
+        console.log(
+          `  ${paper.pieces_with_lineage ?? 0} piece(s) continue a story from a recent paper`,
+        );
         console.log("");
 
         const { rows: pieces } = await pool.query(
           `SELECT p.rank, p.section_rank, p.tier, p.ref, p.section_ref, p.section_role,
                   p.headline, p.body, p.word_count, p.source_count,
                   (SELECT COUNT(*) FROM paper_sources s WHERE s.paper_piece_id = p.id)
-                    AS resolved
-             FROM paper_pieces p WHERE p.paper_id = $1
+                    AS resolved,
+                  l.prior_ref, l.similarity,
+                  to_char(l.prior_published_on, 'MM-DD') AS prior_day,
+                  l.prior_headline
+             FROM paper_pieces p
+             LEFT JOIN paper_piece_lineage l ON l.paper_piece_id = p.id
+            WHERE p.paper_id = $1
             ORDER BY p.rank, p.section_rank`,
           [id],
         );
@@ -1400,6 +1411,15 @@ async function main() {
               `${String(p.word_count).padStart(4)}w  ${String(p.resolved).padStart(2)}/${String(p.source_count).padEnd(2)}${gap} ` +
               `${p.headline ?? "(line: " + p.body.slice(0, 50) + ")"}`,
           );
+          // The "previously" marker as the reader gets it, plus the similarity
+          // that produced it -- the threshold cannot be tuned without seeing
+          // which links a given value bought.
+          if (p.prior_ref) {
+            console.log(
+              `        \u21b3 prev ${p.prior_day} ${String(p.prior_ref).padEnd(8)} ` +
+                `${Number(p.similarity).toFixed(3)}  ${p.prior_headline ?? "(line)"}`,
+            );
+          }
         }
         console.log("");
         console.log(
@@ -1538,7 +1558,8 @@ Commands:
                            was spent between stages rather than inside them
   fetch [--days <n>]       Per-source article fetch outcomes from article_texts
   publisher                List published papers
-  publisher --id <n>       Show one paper's pieces and how many sources resolved
+  publisher --id <n>       Show one paper's pieces, how many sources resolved,
+                           and each piece's "previously" link with its similarity
                            (default 14 days): what a writer ends up with per
                            outlet, why we did not ask, and which sources have
                            never produced a usable article

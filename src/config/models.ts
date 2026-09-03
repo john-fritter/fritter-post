@@ -314,6 +314,17 @@ const PipelineGatesConfigSchema = z.object({
   }),
 });
 
+const PublisherLineageConfigSchema = z.object({
+  enabled: z.boolean(),
+  lookback_days: z.number().int().positive(),
+  similarity_threshold: z.number().min(-1).max(1),
+  top_k: z.number().int().positive(),
+});
+
+const PublisherConfigSchema = z.object({
+  lineage: PublisherLineageConfigSchema,
+});
+
 const PipelineConfigSchema = z.object({
   schedule: z.object({
     // "HH:MM", 24-hour. Validated here rather than in the timer generator so a
@@ -339,6 +350,7 @@ const ModelsConfigSchema = z.object({
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
   grouping: GroupingStageConfigSchema,
+  publisher: PublisherConfigSchema,
 });
 
 export type TranslationConfig = z.infer<typeof TranslationConfigSchema>;
@@ -359,6 +371,8 @@ export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
 export type GroupingSplitConfig = z.infer<typeof GroupingSplitConfigSchema>;
 export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
 export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
+export type PublisherLineageConfig = z.infer<typeof PublisherLineageConfigSchema>;
+export type PublisherConfig = z.infer<typeof PublisherConfigSchema>;
 export type PipelineGatesConfig = z.infer<typeof PipelineGatesConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;

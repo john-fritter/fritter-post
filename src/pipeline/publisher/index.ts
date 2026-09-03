@@ -24,6 +24,7 @@ import "dotenv/config";
 import { getPool } from "../../db/index.js";
 import { latestWriterRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig } from "../../config/models.js";
+import { buildPaperLineage } from "../lineage/index.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "../writers/materials.js";
 import {
   buildIndex,
@@ -53,6 +54,8 @@ export interface PaperSummary {
   piecesSkipped: number;
   piecesUnsourced: number;
   replaced: boolean;
+  /** Pieces carrying a "previously" marker into a recent paper. */
+  lineageLinked: number;
   /** Pieces in the paper this one replaced, or null if it replaced nothing. */
   replacedPieceCount: number | null;
 }
@@ -257,6 +260,26 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
     client.release();
   }
 
+  // Continuity, after attribution. Deliberately outside the transaction above:
+  // a paper with no "previously" markers is a complete paper, and a failure to
+  // find them must not roll back an edition that is otherwise ready to read.
+  let lineageLinked = 0;
+  try {
+    const lineage = await buildPaperLineage(paperId, publishedOn);
+    lineageLinked = lineage.linked;
+    if (!lineage.skipped) {
+      console.log(
+        `[publisher] lineage: ${lineage.linked} piece(s) continue a story from a ` +
+          `recent paper (${lineage.nearMisses} scored but below threshold)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[publisher] lineage pass failed, paper published without continuity markers: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   console.log(
     `[publisher] paper #${paperId} for ${publishedOn}${replaced ? " (replaced)" : ""}: ` +
       `${storyCount} stories, ${pieces.length} pieces, ${sourceTotal} source links, ` +
@@ -279,7 +302,7 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
   return {
     paperId, publishedOn, writerRunId, editorRunId, storyCount,
     pieceCount: pieces.length, sourceCount: sourceTotal, wordCount: wordTotal,
-    piecesSkipped, piecesUnsourced, replaced,
+    piecesSkipped, piecesUnsourced, replaced, lineageLinked,
     replacedPieceCount: replaced ? existingPieceCount : null,
   };
 }

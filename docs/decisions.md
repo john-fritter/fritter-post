@@ -20,6 +20,78 @@ Entry format:
 
 ---
 
+## 2026-09-03 — Cross-day story lineage: a continuity marker, not a dedup
+
+**Decision:** Add `paper_piece_lineage` (migration 043) and a lineage pass that
+runs inside the publisher after the paper is frozen. For each published piece it
+finds the piece in a recent paper that covered the same continuing situation, and
+records it. The reading view prints it under the headline as an unlinked
+"Previously — Aug 27: <headline>". Nothing suppresses anything.
+
+**Context:** This is the second of the three causes the 2026-09-03 audit found.
+The first — syndicated copies re-ingested under another masthead — was fixed
+deterministically in the preprocessor's cross-run title key. What remained were
+the two the audit was explicit must *not* be fixed by suppression: reworded
+follow-ups (Nvidia/Hugging Face on 8/27, 8/28 and 9/3, where the 9/3 piece was a
+six-source confirmation and genuinely new) and continuing situations (Nepal's
+rising toll, Iran's war, the USPS fight — a real new development every day).
+
+Both reduce to one missing capability the audit named directly: **the paper has
+no cross-edition story identity.** `T0` and `C27` are run-local, and nothing
+outside the publisher reads `papers` at all.
+
+**Rationale — the relation is "same situation", not "same story".** The expensive
+version of this feature adjudicates whether today's piece is a stale copy or a
+genuine advance, which is a judgment and would need an LLM pass. A *continuity
+marker* does not need that distinction: two consecutive days of Iran coverage are
+different developments, and "previously, Sept 2" is correct and useful about
+both. The distinction would only matter if something were being deleted. Nothing
+is. That collapses an LLM stage into a vector query and a pure selection
+function.
+
+**The data required no collection.** `item_embeddings` is keyed on
+`preprocessed_item_id` and is never swept — only `article_texts` has a retention
+delete — and `paper_sources.preprocessed_item_id` reaches every published piece's
+articles. The history has been accumulating since the project started; there is
+no backfill and no second embedding pass.
+
+**Not a tenth stage.** It has no independent input: it reads the paper just
+written and the papers before it. The publisher is already where a writer run
+becomes an artifact with attribution attached, and continuity belongs beside
+attribution. It runs outside the publisher's transaction and is caught — a paper
+with no markers is a complete paper, and a failure to find them must never roll
+back an edition that is ready to read.
+
+**The marker is text, never a link.** `/story/<ref>` resolves refs against the
+latest paper only, so a route to yesterday's piece does not exist. That turned
+out to agree with the reading view's own rule — colour means exactly one thing, a
+link that leaves for someone else's reporting — so the constraint and the design
+point the same way, and the line is set unlinked and uncoloured.
+
+**Alternatives considered.**
+- *Feed prior coverage to the writers instead*, so the prose foregrounds what
+  changed. Higher value and the obvious next step, but this project has been
+  burned five separate times by telling a model about its own plumbing and having
+  it relayed to the reader (the packet note, the source labels, the word-target
+  floor, the omission note, the source count). The rule learned three times over
+  is that the fix is not to tell it. Doing that before the lineage's precision is
+  measured would be the sixth. Deferred deliberately, not forgotten.
+- *Feed prior thread titles to the thread pass*, which is what would stop three
+  consecutive editions leading on "six months". Also deferred; the same
+  measurement gates it, and the audit's named case is a cluster, not a thread.
+- *An LLM adjudication pass* labelling each link "confirmed" / "new development".
+  Rejected for now: see the relation argument above.
+
+**Unvalidated:** `similarity_threshold: 0.80` is a starting point, not a measured
+value. Grouping's same-event edge cutoff is 0.66 and this is deliberately
+stricter, because the errors are asymmetric — a false link prints a wrong
+"previously" line where the reader sees it, a missed link leaves the paper as it
+already is. `top_k: 3` persists the near misses and `inspect publisher --id`
+prints every link with its similarity, which is what a sweep will read. Logged in
+`docs/open-items.md`.
+
+---
+
 ## 2026-09-03 — The cross-run title key is no longer scoped to the outlet
 
 **Decision:** In the preprocessor's cross-run dedup, key the normalized-title

@@ -6,6 +6,7 @@ import {
   sourceLabel,
   paragraphs,
   formatEditionDate,
+  formatMarkerDate,
   readingMinutes,
   replacementShortfall,
   type PublishablePiece,
@@ -279,6 +280,15 @@ function testEditionDateDoesNotDriftAcrossTheDateLine() {
   assert.equal(formatEditionDate("not-a-date"), "not-a-date");
 }
 
+function testMarkerDateDoesNotDriftAcrossTheDateLine() {
+  // The "previously" marker's short form, built in UTC from the parts for the
+  // same reason as the edition date: 2026-08-27 must read as August 27 and not
+  // as the evening of the 26th in Bend.
+  assert.equal(formatMarkerDate("2026-08-27"), "Aug 27");
+  assert.equal(formatMarkerDate("2026-01-01"), "Jan 1");
+  assert.equal(formatMarkerDate("not-a-date"), "not-a-date");
+}
+
 testStandaloneTakesEveryArticle();
 testSectionPieceTakesOnlyItsMember();
 testUnknownStoryYieldsNoSourcesRatherThanThrowing();
@@ -296,6 +306,7 @@ testSourceLabelReportsResolvedLinks();
 testParagraphSplitting();
 testReadingTimeIsWithheldOnShortPieces();
 testEditionDateDoesNotDriftAcrossTheDateLine();
+testMarkerDateDoesNotDriftAcrossTheDateLine();
 testASecondRunTheSameDayIsRefused();
 testCorrectingAMorningIsAllowed();
 testGrowthIsNeverRefused();

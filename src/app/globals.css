@@ -140,6 +140,22 @@ body {
   font-size: 1.28rem; font-weight: 500; line-height: 1.35; letter-spacing: -0.008em;
   color: var(--ink-soft); font-style: italic;
 }
+/* The "previously" marker: what this paper already said about this story.
+   Deliberately unlinked and uncoloured — colour on this page means exactly one
+   thing, a link that leaves for someone else's reporting, and this is the paper
+   talking about itself. Set below the headline, above the folio line, so the
+   reader sees the arc before the prose. */
+.art-prev {
+  margin: 0.7rem 0 0; font-size: 0.9rem; line-height: 1.4;
+  color: var(--ink-soft);
+}
+.art-prev-label {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-faint);
+  margin-right: 0.5rem;
+}
+
 .art-meta {
   font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase;
   color: var(--ink-faint); margin: -0.35rem 0 0; font-variant-numeric: tabular-nums;
