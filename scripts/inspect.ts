@@ -1386,7 +1386,7 @@ async function main() {
                   p.headline, p.body, p.word_count, p.source_count,
                   (SELECT COUNT(*) FROM paper_sources s WHERE s.paper_piece_id = p.id)
                     AS resolved,
-                  l.prior_ref, l.similarity,
+                  l.prior_ref, l.similarity, l.judge_reason,
                   to_char(l.prior_published_on, 'MM-DD') AS prior_day,
                   l.prior_headline
              FROM paper_pieces p
@@ -1419,6 +1419,8 @@ async function main() {
               `        \u21b3 prev ${p.prior_day} ${String(p.prior_ref).padEnd(8)} ` +
                 `${Number(p.similarity).toFixed(3)}  ${p.prior_headline ?? "(line)"}`,
             );
+            // The similarity is retrieval; this is the decision.
+            if (p.judge_reason) console.log(`               why: ${p.judge_reason}`);
           }
         }
         console.log("");

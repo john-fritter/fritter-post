@@ -181,6 +181,19 @@ publisher:
     # the floor. A paper with no continuity markers is a complete paper; a paper
     # with unjudged ones is the defect this pass exists to fix.
     adjudicate:
+      # Characters of each piece's published prose shown per pair. THE knob, and
+      # the reason the 2026-09-04 run accepted two wrong links: the judge was
+      # shown two headlines and nothing else, and "Ex-police officer charged
+      # with using Flock cameras to stalk girlfriend" does not say Oregon. The
+      # fact that separated it from the Georgia case was never in the prompt.
+      #
+      # This is grouping-pass-1's lesson, which spent months scoring singletons
+      # on bare headlines before `body_cap` was named as config. 300 characters
+      # is roughly the first paragraph — enough for the place and the actors,
+      # which is exactly what the two failures needed. Cost is ~2 x 300 chars
+      # per pair against ~90 pairs on the fullest day: about 15k extra input
+      # tokens on a call that used 5.6k.
+      body_cap: 300
       model: zai-org/glm-5.2
       provider: nanogpt
       temperature: 0.1

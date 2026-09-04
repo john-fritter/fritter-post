@@ -22,6 +22,7 @@
  */
 
 import { getPool } from "../../db/index.js";
+import { excerpt } from "../../lib/text.js";
 import { loadModelConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
@@ -47,11 +48,13 @@ interface CandidateRow {
   paper_piece_id: string;
   ref: string;
   headline: string | null;
+  body: string;
   prior_paper_id: number;
   prior_paper_piece_id: string;
   prior_published_on: string;
   prior_ref: string;
   prior_headline: string | null;
+  prior_body: string;
   similarity: number;
 }
 
@@ -91,13 +94,13 @@ export async function buildPaperLineage(
   const { rows } = await pool.query<CandidateRow>(
     `
     WITH today AS (
-      SELECT pp.id AS piece_id, pp.ref, pp.headline, ps.preprocessed_item_id AS item_id
+      SELECT pp.id AS piece_id, pp.ref, pp.headline, pp.body, ps.preprocessed_item_id AS item_id
       FROM paper_pieces pp
       JOIN paper_sources ps ON ps.paper_piece_id = pp.id
       WHERE pp.paper_id = $1 AND ps.preprocessed_item_id IS NOT NULL
     ),
     prior AS (
-      SELECT pp.id AS piece_id, pp.ref, pp.headline,
+      SELECT pp.id AS piece_id, pp.ref, pp.headline, pp.body,
              p.id AS paper_id, p.published_on,
              ps.preprocessed_item_id AS item_id
       FROM paper_pieces pp
@@ -109,17 +112,17 @@ export async function buildPaperLineage(
         AND ps.preprocessed_item_id IS NOT NULL
     ),
     pairs AS (
-      SELECT t.piece_id, t.ref, t.headline,
+      SELECT t.piece_id, t.ref, t.headline, t.body,
              pr.paper_id AS prior_paper_id, pr.piece_id AS prior_piece_id,
              pr.published_on AS prior_published_on, pr.ref AS prior_ref,
-             pr.headline AS prior_headline,
+             pr.headline AS prior_headline, pr.body AS prior_body,
              max(1 - (te.embedding <=> pe.embedding)) AS similarity
       FROM today t
       JOIN item_embeddings te ON te.preprocessed_item_id = t.item_id
       CROSS JOIN prior pr
       JOIN item_embeddings pe ON pe.preprocessed_item_id = pr.item_id
-      GROUP BY t.piece_id, t.ref, t.headline, pr.paper_id, pr.piece_id,
-               pr.published_on, pr.ref, pr.headline
+      GROUP BY t.piece_id, t.ref, t.headline, t.body, pr.paper_id, pr.piece_id,
+               pr.published_on, pr.ref, pr.headline, pr.body
     ),
     ranked AS (
       SELECT *, row_number() OVER (
@@ -130,11 +133,13 @@ export async function buildPaperLineage(
     SELECT piece_id::text            AS paper_piece_id,
            ref,
            headline,
+           body,
            prior_paper_id,
            prior_piece_id::text      AS prior_paper_piece_id,
            to_char(prior_published_on, 'YYYY-MM-DD') AS prior_published_on,
            prior_ref,
            prior_headline,
+           prior_body,
            similarity::float8        AS similarity
     FROM ranked
     WHERE rn <= $4
@@ -146,11 +151,13 @@ export async function buildPaperLineage(
     paperPieceId: r.paper_piece_id,
     ref: r.ref,
     headline: r.headline,
+    body: r.body,
     priorPaperId: r.prior_paper_id,
     priorPaperPieceId: r.prior_paper_piece_id,
     priorPublishedOn: r.prior_published_on,
     priorRef: r.prior_ref,
     priorHeadline: r.prior_headline,
+    priorBody: r.prior_body,
     similarity: r.similarity,
   }));
 
@@ -177,10 +184,12 @@ export async function buildPaperLineage(
             systemPrompt: buildLineageSystemPrompt(),
             userPrompt: buildLineageUserPrompt(
               pairs.map((c) => ({
-                todayHeadline: c.headline ?? "(section line, no headline)",
+                todayHeadline: c.headline ?? "(section line — the sentence follows)",
                 todayDate: publishedOn,
-                priorHeadline: c.priorHeadline ?? "(section line, no headline)",
+                todayBody: excerpt(c.body, cfg.adjudicate.body_cap),
+                priorHeadline: c.priorHeadline ?? "(section line — the sentence follows)",
                 priorDate: c.priorPublishedOn,
+                priorBody: excerpt(c.priorBody, cfg.adjudicate.body_cap),
               })),
             ),
             temperature: cfg.adjudicate.temperature,
@@ -195,7 +204,9 @@ export async function buildPaperLineage(
       );
       const confirmed = parseLineageVerdicts(result.text, pairs.length);
       links = selectLineageLinks(
-        pairs.filter((_, i) => confirmed.has(i)),
+        pairs
+          .map((c, i) => ({ ...c, judgeReason: confirmed.get(i) ?? null }))
+          .filter((_, i) => confirmed.has(i)),
         { threshold: cfg.candidate_floor },
       );
     } catch (err) {
@@ -219,11 +230,12 @@ export async function buildPaperLineage(
       await client.query(
         `INSERT INTO paper_piece_lineage
            (paper_id, paper_piece_id, prior_paper_id, prior_paper_piece_id,
-            prior_published_on, prior_ref, prior_headline, similarity)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            prior_published_on, prior_ref, prior_headline, similarity, judge_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           paperId, l.paperPieceId, l.priorPaperId, l.priorPaperPieceId,
           l.priorPublishedOn, l.priorRef, l.priorHeadline, l.similarity,
+          l.judgeReason ?? null,
         ],
       );
     }

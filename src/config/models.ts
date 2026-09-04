@@ -323,6 +323,10 @@ const PublisherLineageConfigSchema = z.object({
   candidate_floor: z.number().min(-1).max(1),
   top_k: z.number().int().positive(),
   adjudicate: StageConfigSchema.extend({
+    // Not optional, by the same rule as every other judgment stage: this is
+    // what decides how much the judge actually knows, and leaving it implicit
+    // is how it spent its first measurement judging on headlines alone.
+    body_cap: z.number().int().nonnegative(),
     retry_max_attempts: z.number().int().optional(),
     retry_base_ms: z.number().int().optional(),
   }),

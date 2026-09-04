@@ -12,11 +12,13 @@ function candidate(over: Partial<LineageCandidate> = {}): LineageCandidate {
     paperPieceId: "1",
     ref: "C71",
     headline: "Nvidia buys Hugging Face for $12.93 billion",
+    body: "Nvidia confirmed the purchase on Thursday.",
     priorPaperId: 2,
     priorPaperPieceId: "10",
     priorPublishedOn: "2026-08-27",
     priorRef: "C23",
     priorHeadline: "Nvidia moves to acquire Hugging Face for roughly $13 billion",
+    priorBody: "Business Insider reported the talks.",
     similarity: 0.9,
     ...over,
   };
@@ -105,6 +107,29 @@ function testOutputIsOrderedByTodaysRef() {
   assert.deepEqual(links.map((l) => l.ref), ["C21", "S70701"], "stable output order");
 }
 
+function testAPriorSectionLineNeverTakesTheSlot() {
+  // A prior line has no headline, so lineageLabel renders nothing for it. It
+  // used to win the one slot per piece anyway and silently discard a
+  // renderable second place, so the reader saw no marker where one existed.
+  const links = selectLineageLinks(
+    [
+      candidate({ priorRef: "S99", priorPaperPieceId: "10", priorHeadline: null, similarity: 0.95 }),
+      candidate({ priorRef: "C23", priorPaperPieceId: "11", similarity: 0.84 }),
+    ],
+    THRESHOLD,
+  );
+  assert.equal(links.length, 1, "the renderable candidate must still link");
+  assert.equal(links[0]!.priorRef, "C23", "an unrenderable prior must not take the slot");
+}
+
+function testAPriorWithABlankHeadlineIsAlsoSkipped() {
+  const links = selectLineageLinks(
+    [candidate({ priorHeadline: "   ", similarity: 0.95 })],
+    THRESHOLD,
+  );
+  assert.equal(links.length, 0, "whitespace is not a headline");
+}
+
 function testEmptyCandidatesProduceNoLinks() {
   assert.deepEqual(selectLineageLinks([], THRESHOLD), []);
 }
@@ -133,6 +158,8 @@ testTieBreaksTowardTheMoreRecentPrior();
 testTieBreaksDeterministicallyOnRefWhenDateAlsoTies();
 testTwoPiecesMayContinueTheSamePriorPiece();
 testOutputIsOrderedByTodaysRef();
+testAPriorSectionLineNeverTakesTheSlot();
+testAPriorWithABlankHeadlineIsAlsoSkipped();
 testEmptyCandidatesProduceNoLinks();
 testLabelCarriesDateAndHeadline();
 testLabelIsNullForAPriorSectionLine();

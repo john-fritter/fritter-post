@@ -87,32 +87,31 @@ starts looking wrong in a way nearness does not explain.
 
 ## Structural, no reader impact yet
 
-### 3b. The lineage candidate floor and the judge's borderline calls
+### 3b. The lineage judge's remaining borderline class, and the floor
 
-Measured once, on 2026-09-04, over seven republished papers: 900 pieces, 114
-links, all read by hand. That run is what moved the threshold to a
-`candidate_floor` with an LLM judge behind it (see `docs/decisions.md`), and it
-left two things open.
+Measured twice. The 2026-09-04 run with the judge in place removed both known
+false links, recovered all three continuations the old 0.80 threshold missed,
+and dropped the three old borderline pairs — then accepted two new wrong links
+that the body-text change (see `docs/decisions.md`) is the response to. **That
+change is untested.** The next measurement must show both the Ozon
+pickup-point pair and the Oregon/Georgia Flock pair rejected, while the three
+recovered continuations survive.
 
-**The floor is 0.72 and is a guess in the other direction now.** It was chosen
-to buy back the real continuations that 0.80 missed — the renewed Iran
-escalation at 0.7944, an OpenAI follow-up at 0.7443, a Nepal aftermath item at
-0.7469 — without flooding the judge. It has not been swept.
+**A broad-campaign class remains undecided**, and it is a policy question rather
+than a defect: a Belgorod strike on an Ozon warehouse against earlier strikes on
+Ozon warehouses elsewhere; separate Gaza strikes inside one ceasefire; Moscow
+and Sochi drone attacks against an earlier nationwide barrage. A reader could
+accept any of these as "the same campaign continuing". Decide it explicitly
+rather than letting the judge's temperature decide it run to run.
 
-**The judge's borderline behaviour is unknown.** The hand review found three
-broad-campaign links a reader might accept either way, the clearest being the
-Munich incendiary devices against the Leipzig airport drone at 0.8077. The
-prompt says a different instance of the same kind of event is NO; whether it
-reads a coordinated sabotage campaign as one situation is exactly what needs
-watching.
+**`candidate_floor` is 0.72 and remains unswept.** It was chosen to buy back the
+continuations 0.80 missed, and it did — all three came back. Whether it is the
+right value is still unmeasured.
 
-**The regression set already exists.** The 114 links carry hand verdicts — 109
-plausible, 3 borderline, 2 obviously wrong — in Gizmo's
-`lineage-link-review.csv` from 2026-09-04. The next measurement is: re-publish
-the same papers with the judge in place and check that both obviously-wrong
-links are gone, that the plausible ones survive, and that some of the misses
-below 0.80 now appear. Every judge call is in `generation_logs`, which is the
-audit trail.
+**The regression set is Gizmo's two reviews**, `lineage-link-review.csv`
+(2026-09-04, 114 links) and `new-sub80-review.csv` (2026-09-04, 61 sub-0.80
+links with verdicts). Every judge call is in `generation_logs` under
+`stage='lineage'`, and from migration 044 the reason is on the link row too.
 
 ### 3c. Continuity is recorded but only the reader sees it
 

@@ -39,6 +39,49 @@
 // how every other "is this the same story" question in this pipeline is
 // answered. Grouping asks "same event?". Threading asks "same continuing
 // situation, today?". This asks the same question threading asks, across days.
+//
+// THE SECOND MEASUREMENT (2026-09-04, seven papers, 158 links, all read by
+// hand) cleared the first bar and found a new one. Both original false links
+// were rejected, all three continuations the 0.80 threshold had missed came
+// back, and the three old borderline pairs went. Two NEW wrong links appeared:
+//
+//   - "Ozon will turn its pickup points into storage and sales hubs" accepted
+//     against "Ukrainian drones struck Ozon warehouses across Russia over six
+//     days". One company, a business story and a military one.
+//   - "Ex-police officer charged with using Flock cameras to stalk girlfriend"
+//     accepted against "Georgia officer used Flock surveillance cameras to
+//     track his ex and another cop". Different state, officer, victim, case.
+//
+// **The prompt already forbids both.** It says a shared institution is not a
+// situation, and that another instance of the same kind of event is NO. Adding
+// a third warning to a prompt that is already correct is the move this project
+// has watched fail: the thread pass names "immigration crackdown" as a worked
+// negative example and produced one anyway.
+//
+// The real defect is that the judge could not *apply* the rule it was given,
+// because it was shown two headlines and nothing else. "Ex-police officer
+// charged with using Flock cameras to stalk girlfriend" does not say Oregon.
+// The fact that separates it from the Georgia case was never in the prompt —
+// Gizmo had to open the source URLs to establish it. On those two lines alone
+// a careful human would also have said yes.
+//
+// So the judge now reads body text, which is this repository's oldest lever and
+// its most reliably underestimated one: grouping-pass-1 spent months scoring
+// singletons on bare headlines, and `body_cap` exists because "it is the knob
+// that decides how much a per-item judgment stage actually knows".
+//
+// It also fixes a failure nobody attributed correctly. Seven of the eleven
+// previously-good links the judge dropped had a **section line** on one side or
+// the other, and a line has no headline by design — so the prompt showed it the
+// literal string "(section line, no headline)" and asked it to judge that. It
+// had nothing to work with and correctly said no. A line has a body; now it
+// sends one.
+//
+// And the verdict carries a reason. The first measurement could say a pair was
+// accepted and never why, which Gizmo flagged as a limitation of the run. That
+// is migration 037's argument for the thread anchor, one stage later: naming
+// the criterion makes a bad call legible afterwards, and made the thread pass
+// apply its rule rather than recognise it.
 
 const LINEAGE_SYSTEM_PROMPT = `You are a newspaper editor deciding whether today's story is a continuation of one the paper already ran.
 
@@ -73,7 +116,9 @@ OUTPUT
 One line per pair, in the order given, and nothing else — no JSON, no markdown, no prose before or after.
 
 Each line:
-  number;;YES or NO
+  number;;YES or NO;;reason
+
+The reason is one short phrase, under fifteen words, naming what decides it — the shared situation for a YES, or what differs for a NO. "same acquisition, now confirmed". "different state and officer, same tool". Write it before you commit to the verdict, not after.
 
 Use every number exactly once.`;
 
@@ -84,17 +129,19 @@ export function buildLineageSystemPrompt(): string {
 export interface LineagePairBlock {
   todayHeadline: string;
   todayDate: string;
+  todayBody: string;
   priorHeadline: string;
   priorDate: string;
+  priorBody: string;
 }
 
 export function buildLineageUserPrompt(pairs: LineagePairBlock[]): string {
   const blocks = pairs.map((p, i) => {
-    return [
-      `${i + 1}.`,
-      `  TODAY (${p.todayDate}): ${p.todayHeadline}`,
-      `  EARLIER (${p.priorDate}): ${p.priorHeadline}`,
-    ].join("\n");
+    const lines = [`${i + 1}.`, `  TODAY (${p.todayDate}): ${p.todayHeadline}`];
+    if (p.todayBody) lines.push(`    ${p.todayBody}`);
+    lines.push(`  EARLIER (${p.priorDate}): ${p.priorHeadline}`);
+    if (p.priorBody) lines.push(`    ${p.priorBody}`);
+    return lines.join("\n");
   });
   return [
     "Pairs to judge:",
@@ -108,26 +155,34 @@ export function buildLineageUserPrompt(pairs: LineagePairBlock[]): string {
 }
 
 /**
- * Reads `n;;YES|NO` lines back into a set of confirmed pair indices (0-based).
+ * Reads `n;;YES|NO;;reason` lines back into the confirmed pairs and their reasons.
  *
- * Forgiving in the direction the writers' parser learned to be: a line that
- * carries a recognisable number and a recognisable verdict is read, whatever
- * else surrounds it. But **an unparseable or missing line is a NO**, not a
- * default-yes — this is the pass's fail-closed posture, and it is the opposite
- * of the writers' rule for the same reason the threshold was set high: an
- * unjudged link would print in the paper, where an unjudged brief merely goes
- * missing and gets re-asked.
+ * Forgiving in the direction the writers' parser learned to be: a line carrying
+ * a recognisable number and verdict is read whatever surrounds it, and a
+ * **missing reason costs the reason, not the verdict** — that is run #36's
+ * lesson, where a parser demanding three fields threw away forty complete
+ * answers across thirteen runs.
+ *
+ * But **an unparseable or missing line is a NO**, not a default-yes. That is the
+ * pass's fail-closed posture and the opposite of the writers' rule, for the
+ * reason the threshold was set toward precision: an unjudged link would print in
+ * the paper, where an unjudged brief merely goes missing and gets re-asked.
  */
-export function parseLineageVerdicts(text: string, pairCount: number): Set<number> {
-  const confirmed = new Set<number>();
+export function parseLineageVerdicts(
+  text: string,
+  pairCount: number,
+): Map<number, string | null> {
+  const confirmed = new Map<number, string | null>();
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
     if (!line) continue;
-    const m = line.match(/^\s*\**\s*(\d+)\s*\**\s*;;\s*\**\s*(YES|NO)\b/i);
+    const m = line.match(/^\s*\**\s*(\d+)\s*\**\s*;;\s*\**\s*(YES|NO)\b\s*\**\s*(?:;;\s*(.*))?$/i);
     if (!m) continue;
     const n = parseInt(m[1]!, 10);
     if (!Number.isFinite(n) || n < 1 || n > pairCount) continue;
-    if (m[2]!.toUpperCase() === "YES") confirmed.add(n - 1);
+    if (m[2]!.toUpperCase() !== "YES") continue;
+    const reason = (m[3] ?? "").replace(/\*+/g, "").trim();
+    confirmed.set(n - 1, reason.length > 0 ? reason : null);
   }
   return confirmed;
 }

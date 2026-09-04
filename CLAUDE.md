@@ -86,7 +86,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–043)
+├── migrations/                  # numbered SQL migrations (001–044)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -1072,7 +1072,39 @@ top match is a different instance can still keep its real predecessor at rank 2.
 **The judge fails closed**, which is the opposite of the writers' parser rule and
 deliberate: an unparseable or missing verdict is a NO, and a failed call records
 no links at all. A missing brief goes unseen and gets re-asked; an unjudged
-"previously" line prints in the paper.
+"previously" line prints in the paper. A *missing reason* costs only the reason,
+which is run #36's lesson in the one place it still applies.
+
+**The judge reads body text, and the second measurement is why.** The
+2026-09-04 run (seven papers, 158 links, all read by hand) rejected both
+original false links, recovered all three continuations 0.80 had missed, and
+dropped the three old borderline pairs — then accepted two new wrong ones: an
+Ozon business-expansion story against Ukrainian strikes on Ozon warehouses, and
+an Oregon Flock-stalking case against a Georgia one. **The prompt already
+forbids both** ("the same institution doing two unrelated things"; "another
+instance of the same kind of event"), so a third warning was the move that has
+already failed on the thread pass. The real defect was that the judge saw two
+headlines and nothing else: "Ex-police officer charged with using Flock cameras
+to stalk girlfriend" does not say Oregon, and the fact that separated it from
+Georgia was never in the prompt. `adjudicate.body_cap` (300) is
+grouping-pass-1's lesson arriving here — that cap "is the knob that decides how
+much a per-item judgment stage actually knows".
+
+**It also explains seven of the eleven good links the judge dropped.** They had
+a **section line** on one side, and a line has no headline by design, so the
+prompt showed the literal string "(section line, no headline)" and asked it to
+judge that. A line has a body; now it sends one.
+
+**A prior section line can no longer take the slot.** `lineageLabel` renders
+nothing for a prior with no headline, and one link per piece meant an
+unrenderable winner silently discarded a good second place — the reader saw no
+marker where one existed. Such candidates are skipped before selection.
+
+**The verdict carries a reason** (`judge_reason`, migration 044), because the
+first measurement could say a pair was accepted and never why. That is migration
+037's argument for the thread anchor one stage later: naming the criterion makes
+a bad call legible afterwards, and made the thread pass apply its rule rather
+than recognise it. `inspect publisher --id` prints it under the link.
 
 **The data was already there.** `item_embeddings` is keyed on
 `preprocessed_item_id`, upserted by every grouping run, and — unlike
@@ -1417,7 +1449,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **044**.
+number is ambiguous. The next migration is **045**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items

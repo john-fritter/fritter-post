@@ -20,6 +20,84 @@ Entry format:
 
 ---
 
+## 2026-09-04 — The judge was under-informed, not under-instructed
+
+**Decision:** Give the continuity judge body text (`adjudicate.body_cap`, 300
+chars per piece), make it state a reason with each verdict (persisted as
+`paper_piece_lineage.judge_reason`, migration 044), and stop letting a prior
+section line take a piece's one link slot. **Add no new negative examples to the
+prompt.**
+
+**Context:** The second measurement — seven papers, 158 links, every one read by
+hand — cleared the first bar and found a new one:
+
+| | result |
+|---|---|
+| both original false links | rejected |
+| three continuations 0.80 missed | all recovered |
+| three old borderline pairs | all gone |
+| 109 old plausible links | 97 survived exactly, 1 retargeted, 11 lost |
+| **new false links** | **2** |
+| noise (one paper, repeat run) | 37/37 links identical; 1 of 71 verdicts flipped |
+
+The two new ones: an Ozon pickup-point business story accepted against Ukrainian
+drone strikes on Ozon warehouses (0.7322), and an Oregon Flock-camera stalking
+case accepted against a Georgia one (0.7525).
+
+**Rationale — the prompt already forbids both.** It says a shared institution is
+not a situation, and that another instance of the same kind of event is NO. The
+obvious move is a third warning, and that is precisely the move this project has
+watched fail: the thread pass names "immigration crackdown" as a worked negative
+example and produced one anyway. A rule that is already correct does not get
+better by being repeated.
+
+**What actually went wrong is that the rule was unenforceable on the input.**
+The judge was shown two headlines and nothing else. "Ex-police officer charged
+with using Flock cameras to stalk girlfriend" **does not say Oregon** — the fact
+that distinguishes it from the Georgia case was never in the prompt, and Gizmo
+had to open the source URLs to establish it. On those two lines a careful human
+would also have said yes. The Ozon pair is weaker but the same shape: warehouses
+destroyed, then pickup points converted to storage, is a coherent consequence
+reading of the two headlines and wrong only on facts neither headline carried.
+
+So this is grouping-pass-1's oldest lesson arriving one stage later. That stage
+spent months scoring singletons on bare headlines, and `body_cap` exists in
+`models.yaml` because it "is the knob that decides how much a per-item judgment
+stage actually knows". The lineage judge had no such cap at all.
+
+**It also explains a failure nobody attributed correctly.** Seven of the eleven
+previously-good links the judge dropped had a **section line** on one side, and
+a line has no headline by design — so the prompt showed it the literal string
+"(section line, no headline)" and asked it to judge that. It had nothing to work
+with and correctly said no. A line has a body; now it sends one. That reading
+also revises the report's framing: those eleven are not evidence of
+over-rejection, they are mostly evidence of the same under-information.
+
+**A separate defect found while reading the same data:** a prior section line
+could *win* a piece's single link slot, render as nothing (`lineageLabel`
+returns null with no headline), and discard a renderable second-place candidate
+in the process. The reader saw no marker where one existed. Such candidates are
+now skipped before selection.
+
+**The reason is persisted because the measurement asked for it and could not
+have it.** The output contract was `number;;YES or NO`, so an accepted wrong
+pair and a correctly rejected one look identical afterwards; Gizmo named that as
+a limitation of the run. Migration 037 made the same argument for the thread
+anchor — a bad call has to be legible in the audit, and stating the criterion
+made that pass apply its rule rather than pattern-match it.
+
+**Deliberately not done:** adding the Ozon and Flock pairs as worked negative
+examples. If the body text is the fix, adding examples at the same time makes
+the next measurement unable to say which worked. If body text is *not* enough,
+the examples are the next thing to try and the regression set is ready.
+
+**Noise, measured:** one paper republished twice gave an identical 37-link set;
+one of 71 candidate verdicts flipped without changing a persisted link. Stable
+at the marker level, not at the verdict level — a borderline pair that flips
+between runs is undecided, not judged.
+
+---
+
 ## 2026-09-04 — The lineage relation needs a judge; a threshold cannot make the call
 
 **Decision:** Demote `publisher.lineage.similarity_threshold` (0.80) to

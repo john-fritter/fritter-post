@@ -15,14 +15,19 @@ export interface LineageCandidate {
   ref: string;
   /** Today's headline. Null for a section line. Shown to the judge. */
   headline: string | null;
+  /** Today's published prose, capped. What lets the judge see place and actors. */
+  body: string;
   priorPaperId: number;
   priorPaperPieceId: string;
   /** ISO date (YYYY-MM-DD) of the paper the prior piece was published in. */
   priorPublishedOn: string;
   priorRef: string;
   priorHeadline: string | null;
+  priorBody: string;
   /** Max cosine similarity between any article behind each piece. */
   similarity: number;
+  /** The judge's one-phrase reason. Null when it returned a bare verdict. */
+  judgeReason?: string | null;
 }
 
 export interface SelectOptions {
@@ -57,6 +62,12 @@ export function selectLineageLinks(
 
   for (const c of candidates) {
     if (c.similarity < opts.threshold) continue;
+    // A prior *section line* has no headline, so `lineageLabel` renders nothing
+    // for it — and a candidate that cannot become a marker must not take the
+    // slot. It used to: one link per piece means an unrenderable winner
+    // silently discarded a perfectly good second-place link, and the reader saw
+    // no marker at all where one existed.
+    if (!c.priorHeadline || !c.priorHeadline.trim()) continue;
     const held = best.get(c.paperPieceId);
     if (!held || beats(c, held)) best.set(c.paperPieceId, c);
   }
