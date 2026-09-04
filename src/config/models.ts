@@ -317,8 +317,15 @@ const PipelineGatesConfigSchema = z.object({
 const PublisherLineageConfigSchema = z.object({
   enabled: z.boolean(),
   lookback_days: z.number().int().positive(),
-  similarity_threshold: z.number().min(-1).max(1),
+  // A retrieval floor, not a decision -- see the note in models.yaml and the
+  // header of src/pipeline/lineage/prompt.ts for why a threshold alone was
+  // measured and found unable to make this call.
+  candidate_floor: z.number().min(-1).max(1),
   top_k: z.number().int().positive(),
+  adjudicate: StageConfigSchema.extend({
+    retry_max_attempts: z.number().int().optional(),
+    retry_base_ms: z.number().int().optional(),
+  }),
 });
 
 const PublisherConfigSchema = z.object({

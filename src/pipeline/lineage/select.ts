@@ -13,6 +13,8 @@ export interface LineageCandidate {
   /** Today's piece. */
   paperPieceId: string;
   ref: string;
+  /** Today's headline. Null for a section line. Shown to the judge. */
+  headline: string | null;
   priorPaperId: number;
   priorPaperPieceId: string;
   /** ISO date (YYYY-MM-DD) of the paper the prior piece was published in. */

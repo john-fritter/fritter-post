@@ -1,0 +1,133 @@
+// The cross-day continuity judge.
+//
+// WHY THIS EXISTS, AND WHY IT DID NOT AT FIRST. The lineage pass shipped as
+// retrieval alone: best embedding match above a threshold, no LLM. The argument
+// was that a *continuity marker* does not need to tell a resurfaced copy from a
+// genuine follow-up, because "previously, Sept 2" is correct about both, and
+// the distinction would only matter if something were being deleted.
+//
+// That argument was right about the axis it considered and blind to the one
+// that mattered. The 2026-09-04 measurement over seven republished papers —
+// 900 pieces, 114 links, every link read by hand — found the failures are not
+// stale-versus-advancing at all. They are **same kind of event, different
+// instance**:
+//
+//   - "Israeli strikes kill five Palestinians in Gaza City" linked to
+//     "Israeli airstrike kills three Palestinians in Jenin, a rare West Bank
+//     strike" at 0.8219. Different territory, different incident.
+//   - "Australian police arrest two alleged TeamPCP members" linked to
+//     "Hackers tricked SpaceX's AI coding assistant into helping breach seven
+//     companies" at 0.8080. Different actors, different breach, shared only the
+//     vocabulary of AI and cybersecurity.
+//
+// This project has met that failure before and already knows embeddings cannot
+// see it. It is why grouping has a **re-split** pass: "two gold mine collapses
+// on different continents are the opposite shape — tightly connected, because
+// they are the same kind of event in the same words." Cosine similarity
+// measures how alike two stories *read*, and two instances of one recurring
+// kind of event read almost identically.
+//
+// No threshold fixes that. The measured distribution has no valley: the largest
+// best-match below 0.80 was 0.7973 and the smallest above it 0.8020, a gap of
+// 0.0047 in a smooth tail. Both false links sat *above* the line, at 0.8080 and
+// 0.8219, while real continuations sat below it — the renewed Iran escalation
+// at 0.7944, an OpenAI follow-up at 0.7443. Moving the number trades one error
+// for the other and fixes neither.
+//
+// So retrieval now does what retrieval is good at — finding the handful of
+// prior pieces worth considering — and the judgment goes to the model, which is
+// how every other "is this the same story" question in this pipeline is
+// answered. Grouping asks "same event?". Threading asks "same continuing
+// situation, today?". This asks the same question threading asks, across days.
+
+const LINEAGE_SYSTEM_PROMPT = `You are a newspaper editor deciding whether today's story is a continuation of one the paper already ran.
+
+You will be given numbered pairs. Each pair is one story from today's paper and one story this paper published on an earlier date. For each pair, answer whether today's story is the NEXT DEVELOPMENT IN THE SAME SITUATION as the earlier one.
+
+THE TEST: would a reader who read the earlier story recognise today's as the same story continuing — the next thing that happened in it?
+
+SAME SITUATION — answer YES:
+- The same event advancing: a death toll rising, a rescue continuing, an investigation reporting, a deal moving from reported to confirmed.
+- The same dispute, case, or negotiation at a later stage: a ruling appealed, a bill amended, a lawsuit expanded to more plaintiffs.
+- The same continuing conflict or emergency in the same place: two consecutive days of one war's strikes on one front, one country's fire season, one city's fight over one project.
+- A consequence or aftermath of the earlier event: the science explaining the disaster, the funerals after it, the regulation that followed it.
+
+The stories do NOT have to describe the same incident, and today's story does NOT have to add news — a second report on one event still continues it. What matters is that it is the same situation moving.
+
+NOT THE SAME SITUATION — answer NO:
+- **Another instance of the same kind of event.** This is the failure that matters most and the one that looks most like a match. Two strikes in a conflict but in different territories, two arrests of different hacking groups, two mine collapses on different continents, two elections in different countries. They share vocabulary and share nothing else. If the actors, the place, or the specific incident differ and neither story is a consequence of the other, the answer is NO.
+- The same broad subject with no shared situation: two unrelated stories about immigration policy, about AI safety, about a country's politics. A subject is not a situation.
+- The same institution or person doing two unrelated things.
+
+Two real pairs this pass got WRONG before you were asked, both of which you should answer NO:
+- "Israeli strikes kill five Palestinians in Gaza City despite October ceasefire" and "Israeli airstrike kills three Palestinians in Jenin, a rare West Bank strike". One conflict, two territories, two separate incidents, neither a consequence of the other.
+- "Australian police arrest two alleged TeamPCP members behind supply-chain attacks" and "Hackers tricked SpaceX's AI coding assistant into helping breach seven companies". Different actors, different breach, no connection but the topic.
+
+And two you should answer YES:
+- "Nvidia buys Hugging Face for $12.93 billion" and "Nvidia moves to acquire Hugging Face for roughly $13 billion". One transaction, reported then confirmed.
+- "More than 1,270 dead in Nepal-Tibet floods as families perform funerals without bodies" and "Experts say survival window is closing for hundreds trapped in Nepal's hydropower tunnels". One disaster, later stage.
+
+When you genuinely cannot tell, answer NO. A wrong "previously" line is printed where the reader sees it; a missing one leaves the page as it already is.
+
+OUTPUT
+One line per pair, in the order given, and nothing else — no JSON, no markdown, no prose before or after.
+
+Each line:
+  number;;YES or NO
+
+Use every number exactly once.`;
+
+export function buildLineageSystemPrompt(): string {
+  return LINEAGE_SYSTEM_PROMPT;
+}
+
+export interface LineagePairBlock {
+  todayHeadline: string;
+  todayDate: string;
+  priorHeadline: string;
+  priorDate: string;
+}
+
+export function buildLineageUserPrompt(pairs: LineagePairBlock[]): string {
+  const blocks = pairs.map((p, i) => {
+    return [
+      `${i + 1}.`,
+      `  TODAY (${p.todayDate}): ${p.todayHeadline}`,
+      `  EARLIER (${p.priorDate}): ${p.priorHeadline}`,
+    ].join("\n");
+  });
+  return [
+    "Pairs to judge:",
+    "",
+    blocks.join("\n\n"),
+    "",
+    "---",
+    "",
+    "For each pair: is today's story the next development in the same situation?",
+  ].join("\n");
+}
+
+/**
+ * Reads `n;;YES|NO` lines back into a set of confirmed pair indices (0-based).
+ *
+ * Forgiving in the direction the writers' parser learned to be: a line that
+ * carries a recognisable number and a recognisable verdict is read, whatever
+ * else surrounds it. But **an unparseable or missing line is a NO**, not a
+ * default-yes — this is the pass's fail-closed posture, and it is the opposite
+ * of the writers' rule for the same reason the threshold was set high: an
+ * unjudged link would print in the paper, where an unjudged brief merely goes
+ * missing and gets re-asked.
+ */
+export function parseLineageVerdicts(text: string, pairCount: number): Set<number> {
+  const confirmed = new Set<number>();
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = line.match(/^\s*\**\s*(\d+)\s*\**\s*;;\s*\**\s*(YES|NO)\b/i);
+    if (!m) continue;
+    const n = parseInt(m[1]!, 10);
+    if (!Number.isFinite(n) || n < 1 || n > pairCount) continue;
+    if (m[2]!.toUpperCase() === "YES") confirmed.add(n - 1);
+  }
+  return confirmed;
+}

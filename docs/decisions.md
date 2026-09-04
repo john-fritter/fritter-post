@@ -20,6 +20,76 @@ Entry format:
 
 ---
 
+## 2026-09-04 — The lineage relation needs a judge; a threshold cannot make the call
+
+**Decision:** Demote `publisher.lineage.similarity_threshold` (0.80) to
+`candidate_floor` (0.72) and put an LLM adjudication call behind it. Retrieval
+now finds up to `top_k` prior pieces worth considering; one batched call per
+paper decides which, if any, is the same continuing situation. Every candidate
+is judged, not only each piece's nearest, so a piece whose top match is wrong
+can still keep its real predecessor at rank 2. A failed judge call records **no**
+links for that paper.
+
+**Supersedes** the "Alternatives considered" bullet in the 2026-09-03 lineage
+entry, which rejected an adjudication pass. That rejection was measured and was
+wrong.
+
+**Context:** Seven papers were republished on the box and all 114 resulting
+links were read by hand (900 pieces, 2,700 candidate rows).
+
+The rejection rested on this argument: a continuity marker does not need to tell
+a resurfaced copy from a genuine follow-up, because "previously, Sept 2" is
+correct about both, so the hard judgment is not needed. That argument is still
+true and it was answering the wrong question. **The failures are not
+stale-versus-advancing. They are same-kind-of-event, different instance:**
+
+- "Israeli strikes kill five Palestinians in Gaza City" linked to "Israeli
+  airstrike kills three Palestinians in Jenin, a rare West Bank strike", 0.8219.
+- "Australian police arrest two alleged TeamPCP members" linked to "Hackers
+  tricked SpaceX's AI coding assistant into helping breach seven companies",
+  0.8080.
+
+Plus three borderline broad-campaign links of the same shape.
+
+**This project already knew embeddings cannot see that distinction.** It is why
+grouping has a re-split pass: "two gold mine collapses on different continents
+are the opposite shape — tightly connected, because they are the same kind of
+event in the same words." Cosine measures how alike two stories *read*, and two
+instances of one recurring kind of event read almost identically. The lineage
+pass was built without applying a lesson this repository had already written
+down.
+
+**No threshold fixes it, and the distribution says so.** There is no valley: the
+largest best-match below 0.80 was 0.7973 and the smallest above it 0.8020 — a
+gap of 0.0047 in a smooth tail (buckets at 0.75/0.80/0.85 hold 66/59/29 pieces).
+Both false links sat *above* the line while real continuations sat below it: the
+renewed Iran escalation at 0.7944, an OpenAI follow-up at 0.7443, a Nepal
+aftermath item at 0.7469. Raising to 0.85 would have removed both false links
+and also 59 of the 114, including the ICE custody death (0.8256), the second
+birthright-citizenship ruling (0.8119) and the Venezuela deal sequence (0.8137).
+Moving the number trades one error for the other and fixes neither.
+
+**Rationale:** "Is this the same story?" is the question grouping asks about
+events and the thread pass asks about same-day situations, and both ask a model.
+This asks the thread pass's question across days, so it should be answered the
+same way. Lowering the floor to 0.72 buys back the misses that precision would
+otherwise have cost; the judge supplies the precision the threshold could not.
+
+**Cost:** roughly 35 pairs per paper, each two headlines. One call, no batching
+— chunking would add failure modes and amortise nothing.
+
+**Fail closed, which is the opposite of the writers' rule and deliberate.** An
+unparseable or missing verdict line is a NO, and a failed call yields no links at
+all. A missing brief goes unseen and gets re-asked; an unjudged "previously" line
+prints in the paper. A paper with no continuity markers is a complete paper.
+
+**Still unmeasured:** whether 0.72 is the right floor, and how the judge rules on
+the borderline broad-campaign cases (the Munich incendiaries against the Leipzig
+drone, 0.8077) where a reader might accept either answer. The 114 hand-reviewed
+links are the regression set for that.
+
+---
+
 ## 2026-09-03 — Cross-day story lineage: a continuity marker, not a dedup
 
 **Decision:** Add `paper_piece_lineage` (migration 043) and a lineage pass that

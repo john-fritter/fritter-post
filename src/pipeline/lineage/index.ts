@@ -23,18 +23,30 @@
 
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import { callLLM } from "../../llm/index.js";
+import { callWithBackoff } from "../../llm/backoff.js";
 import { selectLineageLinks, type LineageCandidate } from "./select.js";
+import {
+  buildLineageSystemPrompt,
+  buildLineageUserPrompt,
+  parseLineageVerdicts,
+} from "./prompt.js";
 
 export interface LineageResult {
   linked: number;
-  /** Pieces that had a candidate scored but none above the threshold. */
-  nearMisses: number;
+  /** Pairs the retrieval floor admitted and the judge was asked about. */
+  candidates: number;
+  /** Candidate pairs the judge rejected as not the same situation. */
+  rejected: number;
+  /** True when the judge could not be reached; no links are recorded. */
+  judgeFailed: boolean;
   skipped: boolean;
 }
 
 interface CandidateRow {
   paper_piece_id: string;
   ref: string;
+  headline: string | null;
   prior_paper_id: number;
   prior_paper_piece_id: string;
   prior_published_on: string;
@@ -58,7 +70,9 @@ export async function buildPaperLineage(
   publishedOn: string,
 ): Promise<LineageResult> {
   const cfg = loadModelConfig().publisher.lineage;
-  if (!cfg.enabled) return { linked: 0, nearMisses: 0, skipped: true };
+  if (!cfg.enabled) {
+    return { linked: 0, candidates: 0, rejected: 0, judgeFailed: false, skipped: true };
+  }
 
   const pool = getPool();
 
@@ -77,7 +91,7 @@ export async function buildPaperLineage(
   const { rows } = await pool.query<CandidateRow>(
     `
     WITH today AS (
-      SELECT pp.id AS piece_id, pp.ref, ps.preprocessed_item_id AS item_id
+      SELECT pp.id AS piece_id, pp.ref, pp.headline, ps.preprocessed_item_id AS item_id
       FROM paper_pieces pp
       JOIN paper_sources ps ON ps.paper_piece_id = pp.id
       WHERE pp.paper_id = $1 AND ps.preprocessed_item_id IS NOT NULL
@@ -95,7 +109,7 @@ export async function buildPaperLineage(
         AND ps.preprocessed_item_id IS NOT NULL
     ),
     pairs AS (
-      SELECT t.piece_id, t.ref,
+      SELECT t.piece_id, t.ref, t.headline,
              pr.paper_id AS prior_paper_id, pr.piece_id AS prior_piece_id,
              pr.published_on AS prior_published_on, pr.ref AS prior_ref,
              pr.headline AS prior_headline,
@@ -104,7 +118,7 @@ export async function buildPaperLineage(
       JOIN item_embeddings te ON te.preprocessed_item_id = t.item_id
       CROSS JOIN prior pr
       JOIN item_embeddings pe ON pe.preprocessed_item_id = pr.item_id
-      GROUP BY t.piece_id, t.ref, pr.paper_id, pr.piece_id,
+      GROUP BY t.piece_id, t.ref, t.headline, pr.paper_id, pr.piece_id,
                pr.published_on, pr.ref, pr.headline
     ),
     ranked AS (
@@ -115,6 +129,7 @@ export async function buildPaperLineage(
     )
     SELECT piece_id::text            AS paper_piece_id,
            ref,
+           headline,
            prior_paper_id,
            prior_piece_id::text      AS prior_paper_piece_id,
            to_char(prior_published_on, 'YYYY-MM-DD') AS prior_published_on,
@@ -130,6 +145,7 @@ export async function buildPaperLineage(
   const candidates: LineageCandidate[] = rows.map((r) => ({
     paperPieceId: r.paper_piece_id,
     ref: r.ref,
+    headline: r.headline,
     priorPaperId: r.prior_paper_id,
     priorPaperPieceId: r.prior_paper_piece_id,
     priorPublishedOn: r.prior_published_on,
@@ -138,13 +154,62 @@ export async function buildPaperLineage(
     similarity: r.similarity,
   }));
 
-  const links = selectLineageLinks(candidates, {
-    threshold: cfg.similarity_threshold,
-  });
+  // Retrieval is done. Everything above the floor now goes to the judge, and
+  // only what it confirms can become a link.
+  //
+  // Every candidate is judged, not just each piece's nearest: a piece whose
+  // top match is a different instance of the same kind of event can still keep
+  // its real predecessor at rank 2. That is the exact shape of the two false
+  // links the 2026-09-04 measurement found, so it is worth the tokens.
+  const pairs = candidates.filter((c) => c.similarity >= cfg.candidate_floor);
 
-  const linkedPieces = new Set(links.map((l) => l.paperPieceId));
-  const scoredPieces = new Set(candidates.map((c) => c.paperPieceId));
-  const nearMisses = [...scoredPieces].filter((id) => !linkedPieces.has(id)).length;
+  let links: LineageCandidate[] = [];
+  let judgeFailed = false;
+
+  if (pairs.length > 0) {
+    try {
+      const result = await callWithBackoff(
+        () =>
+          callLLM({
+            stage: "lineage",
+            stageRunId: paperId,
+            model: cfg.adjudicate.model,
+            systemPrompt: buildLineageSystemPrompt(),
+            userPrompt: buildLineageUserPrompt(
+              pairs.map((c) => ({
+                todayHeadline: c.headline ?? "(section line, no headline)",
+                todayDate: publishedOn,
+                priorHeadline: c.priorHeadline ?? "(section line, no headline)",
+                priorDate: c.priorPublishedOn,
+              })),
+            ),
+            temperature: cfg.adjudicate.temperature,
+            maxTokens: cfg.adjudicate.max_tokens,
+            reasoningEffort: cfg.adjudicate.reasoning_effort,
+            provider: cfg.adjudicate.provider,
+            timeoutMs: cfg.adjudicate.timeout_ms,
+            stream: cfg.adjudicate.stream,
+          }),
+        cfg.adjudicate,
+        "lineage",
+      );
+      const confirmed = parseLineageVerdicts(result.text, pairs.length);
+      links = selectLineageLinks(
+        pairs.filter((_, i) => confirmed.has(i)),
+        { threshold: cfg.candidate_floor },
+      );
+    } catch (err) {
+      // Fail closed. A paper with no continuity markers is a complete paper;
+      // a paper with unjudged ones is the defect this pass exists to fix.
+      judgeFailed = true;
+      console.warn(
+        `[lineage] judge call failed, no continuity markers recorded for this ` +
+          `paper: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  const rejected = pairs.length - links.length;
 
   const client = await pool.connect();
   try {
@@ -173,5 +238,11 @@ export async function buildPaperLineage(
     client.release();
   }
 
-  return { linked: links.length, nearMisses, skipped: false };
+  return {
+    linked: links.length,
+    candidates: pairs.length,
+    rejected,
+    judgeFailed,
+    skipped: false,
+  };
 }

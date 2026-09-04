@@ -1044,14 +1044,35 @@ suppressed; what was missing was any marker saying it was the same transaction
 advancing. Nepal, Iran and the USPS fight are the same shape — a real new
 development every day, reading like a rerun because nothing said otherwise.
 
-**The relation is "same situation", not "same story", and that is what makes it
-cheap.** Telling a resurfaced copy from a genuine follow-up is a hard judgment
-and would need an LLM. A continuity marker does not need it: two consecutive days
-of Iran coverage are different developments, and "previously, Sept 2" is correct
-and useful about both. The distinction would only matter if something were being
-deleted, and nothing here deletes anything — **no stage reads these rows to drop
-a story.** Continuity is the fix for a continuing story; deletion is the fix for
-a duplicate, and that one already happened in the preprocessor.
+**The relation is "same situation", and nothing here deletes anything** — no
+stage reads these rows to drop a story. Continuity is the fix for a continuing
+story; deletion is the fix for a duplicate, and that one already happened in the
+preprocessor.
+
+**It shipped as retrieval alone and that was measured wrong.** The argument was
+that a continuity marker need not tell a resurfaced copy from a genuine
+follow-up, since "previously, Sept 2" is correct about both — true, and it was
+answering the wrong question. Reading all 114 links from seven republished
+papers found the failures are **same kind of event, different instance**: a Gaza
+City strike linked to a Jenin one at 0.8219, a TeamPCP arrest linked to the
+SpaceX agent breach at 0.8080. **This repository already knew embeddings cannot
+see that** — it is why grouping has a re-split pass, for "two gold mine collapses
+on different continents… the same kind of event in the same words."
+
+**No threshold fixes it.** The best-match distribution has no valley: largest
+below 0.80 was 0.7973, smallest above 0.8020, a 0.0047 gap in a smooth tail.
+Both false links sat *above* the line while real continuations sat below it
+(renewed Iran escalation 0.7944, an OpenAI follow-up 0.7443). So
+`similarity_threshold` became `candidate_floor` (0.72) and the judgment moved to
+one batched LLM call per paper — the thread pass's question, asked across days,
+answered the way this pipeline answers every other "is this the same story".
+**Every candidate is judged, not just each piece's nearest**, so a piece whose
+top match is a different instance can still keep its real predecessor at rank 2.
+
+**The judge fails closed**, which is the opposite of the writers' parser rule and
+deliberate: an unparseable or missing verdict is a NO, and a failed call records
+no links at all. A missing brief goes unseen and gets re-asked; an unjudged
+"previously" line prints in the paper.
 
 **The data was already there.** `item_embeddings` is keyed on
 `preprocessed_item_id`, upserted by every grouping run, and — unlike
@@ -1073,13 +1094,14 @@ event by construction and a section's pieces are partitioned by member, so the
 strongest single pairing is the honest measure. A centroid over a thread's eleven
 members would dilute exactly the signal wanted.
 
-**`publisher.lineage.similarity_threshold` is the knob, and it has never been
-swept.** 0.80 against grouping's 0.66 edge cutoff, deliberately stricter because
-the errors are asymmetric: a false link prints a "previously" line about an
-unrelated story where the reader can see it, while a missed link leaves the paper
-exactly as it is today. `top_k: 3` keeps the near misses so an audit can say
-whether the value sits in the right place; `inspect publisher --id` prints every
-link with its similarity. See `docs/open-items.md`.
+**`publisher.lineage.candidate_floor` is the knob and is now a guess in the
+other direction** — 0.72, chosen to buy back the continuations 0.80 missed
+without flooding the judge, and not yet swept. The errors stay asymmetric: a
+false link prints where the reader sees it, a missed one leaves the page as it
+is. `inspect publisher --id` prints every link with its similarity, and every
+judge call is in `generation_logs` with its full prompt and verdicts. The 114
+hand-reviewed links from 2026-09-04 are the regression set. See
+`docs/open-items.md`.
 
 **The marker is text, never a link.** `/story/<ref>` resolves refs against the
 *latest* paper only, so a route to yesterday's piece does not exist — and the

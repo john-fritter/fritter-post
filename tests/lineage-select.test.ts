@@ -11,6 +11,7 @@ function candidate(over: Partial<LineageCandidate> = {}): LineageCandidate {
   return {
     paperPieceId: "1",
     ref: "C71",
+    headline: "Nvidia buys Hugging Face for $12.93 billion",
     priorPaperId: 2,
     priorPaperPieceId: "10",
     priorPublishedOn: "2026-08-27",

@@ -87,20 +87,32 @@ starts looking wrong in a way nearness does not explain.
 
 ## Structural, no reader impact yet
 
-### 3b. The lineage similarity threshold has never been swept
+### 3b. The lineage candidate floor and the judge's borderline calls
 
-`publisher.lineage.similarity_threshold` is 0.80 and that number is a guess.
-Grouping's same-event edge cutoff is 0.66 on the same embeddings, and continuity
-across days should be stricter, but nothing has measured where the line actually
-falls. The errors are asymmetric — a false link prints a "previously" line about
-an unrelated story where the reader can see it; a missed link leaves the paper as
-it already is — so the value is set toward precision on purpose.
+Measured once, on 2026-09-04, over seven republished papers: 900 pieces, 114
+links, all read by hand. That run is what moved the threshold to a
+`candidate_floor` with an LLM judge behind it (see `docs/decisions.md`), and it
+left two things open.
 
-**How to sweep it:** `inspect publisher --id <n>` prints every link with its
-similarity, and `top_k: 3` means the near misses were scored and are visible in
-the same query. Read the links a real paper produces rather than an aggregate,
-the way grouping's threshold was tuned. The first paper published with this pass
-is the first data point.
+**The floor is 0.72 and is a guess in the other direction now.** It was chosen
+to buy back the real continuations that 0.80 missed — the renewed Iran
+escalation at 0.7944, an OpenAI follow-up at 0.7443, a Nepal aftermath item at
+0.7469 — without flooding the judge. It has not been swept.
+
+**The judge's borderline behaviour is unknown.** The hand review found three
+broad-campaign links a reader might accept either way, the clearest being the
+Munich incendiary devices against the Leipzig airport drone at 0.8077. The
+prompt says a different instance of the same kind of event is NO; whether it
+reads a coordinated sabotage campaign as one situation is exactly what needs
+watching.
+
+**The regression set already exists.** The 114 links carry hand verdicts — 109
+plausible, 3 borderline, 2 obviously wrong — in Gizmo's
+`lineage-link-review.csv` from 2026-09-04. The next measurement is: re-publish
+the same papers with the judge in place and check that both obviously-wrong
+links are gone, that the plausible ones survive, and that some of the misses
+below 0.80 now appear. Every judge call is in `generation_logs`, which is the
+audit trail.
 
 ### 3c. Continuity is recorded but only the reader sees it
 

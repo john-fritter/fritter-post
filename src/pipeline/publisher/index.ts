@@ -270,8 +270,15 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
     if (!lineage.skipped) {
       console.log(
         `[publisher] lineage: ${lineage.linked} piece(s) continue a story from a ` +
-          `recent paper (${lineage.nearMisses} scored but below threshold)`,
+          `recent paper (${lineage.candidates} candidate pair(s) judged, ` +
+          `${lineage.rejected} rejected as a different situation)`,
       );
+      if (lineage.judgeFailed) {
+        console.warn(
+          `[publisher] lineage: the continuity judge could not be reached, so ` +
+            `this paper has no "previously" markers. The paper is otherwise complete.`,
+        );
+      }
     }
   } catch (err) {
     console.warn(
