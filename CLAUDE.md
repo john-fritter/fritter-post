@@ -1499,8 +1499,10 @@ number is ambiguous. The next migration is **044**.
 - `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
   piece with `resolved/ranked` source counts, so a paper the reader cannot follow
   anywhere is visible without opening it, plus each piece's `previously` link and
-  the similarity that produced it — the only way to tune
-  `publisher.lineage.similarity_threshold`
+  the similarity that produced it. That similarity is the retrieval score, not
+  the decision — the judge's verdicts are in `generation_logs` under
+  `stage='lineage'`, and tuning `publisher.lineage.candidate_floor` means
+  reading both
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 - `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;
