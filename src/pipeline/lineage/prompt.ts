@@ -82,6 +82,28 @@
 // is migration 037's argument for the thread anchor, one stage later: naming
 // the criterion makes a bad call legible afterwards, and made the thread pass
 // apply its rule rather than recognise it.
+//
+// THE THIRD MEASUREMENT (2026-09-05, body text in place) fixed the Ozon pair,
+// kept the two original rejections and all three recovered continuations, and
+// took the false-link rate from 1.75% to 1.27% to **0.60%** — one wrong link in
+// 167. The survivor is the Flock pair, and its reason is what makes it useful:
+//
+//     "same officer and stalking case, investigation then arrest"
+//
+// **The judge asserted a shared identity that neither text names.** Today's
+// piece is a 141-character brief reading "A former police officer was arrested
+// for using Flock surveillance cameras to stalk an ex-partner"; it never says
+// Oregon, and it never names him. The earlier one says "a Georgia police
+// officer". Neither names the man. Investigation-then-arrest is a natural
+// reading of those two sentences, and a careful human would make the same
+// mistake — **more body text cannot fix a fact the paper never printed.**
+//
+// So the constraint is on the reason rather than on the input: the shared thing
+// has to be *named in both texts*. That is the thread pass's anchor rule in its
+// strictest form — not "state your criterion" but "state it and point at where
+// it appears" — and it turns "same officer" from an assumption into a claim the
+// model has to check before it writes. Nothing new is sent; the reason field
+// was already there, doing less work than it could.
 
 const LINEAGE_SYSTEM_PROMPT = `You are a newspaper editor deciding whether today's story is a continuation of one the paper already ran.
 
@@ -119,6 +141,8 @@ Each line:
   number;;YES or NO;;reason
 
 The reason is one short phrase, under fifteen words, naming what decides it — the shared situation for a YES, or what differs for a NO. "same acquisition, now confirmed". "different state and officer, same tool". Write it before you commit to the verdict, not after.
+
+**For a YES, the thing you name must appear in BOTH texts.** Name the transaction, the place, the case, the disaster, the person — and check that both texts actually say it. If your reason would be "same officer" and neither text names the officer, or "same case" and neither text names the case, then you are assuming they are the same rather than reading that they are. **Say NO.** Two stories about an unnamed police officer, an unnamed company, or an unnamed lawsuit are not the same story just because the same kind of thing happened.
 
 Use every number exactly once.`;
 

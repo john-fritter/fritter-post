@@ -1106,6 +1106,16 @@ first measurement could say a pair was accepted and never why. That is migration
 a bad call legible afterwards, and made the thread pass apply its rule rather
 than recognise it. `inspect publisher --id` prints it under the link.
 
+**And a YES must name something both texts say.** Body text took the false-link
+rate from 1.75% to 0.60% — one in 167 — and the survivor showed the limit of
+sending more input: a 141-character brief that never says Oregon, linked to "a
+Georgia police officer", with the reason "same officer and stalking case". The
+judge asserted a shared identity neither text names, and no `body_cap` fixes a
+fact the paper never printed. So the constraint went on the reason instead:
+name the transaction, the place, the case, the person, and check both texts say
+it. The thread pass's anchor rule at its strictest — not "state your criterion"
+but "state it and point at where it appears".
+
 **The data was already there.** `item_embeddings` is keyed on
 `preprocessed_item_id`, upserted by every grouping run, and — unlike
 `article_texts` — never swept; `paper_sources.preprocessed_item_id` reaches every

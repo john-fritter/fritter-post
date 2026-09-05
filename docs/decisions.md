@@ -20,6 +20,64 @@ Entry format:
 
 ---
 
+## 2026-09-05 — A YES has to name something both texts say
+
+**Decision:** Constrain the judge's *reason* rather than its input: for a YES,
+the shared thing it names must appear in both texts, and if it would have to
+assume the identity rather than read it, the answer is NO. No new data is sent.
+
+**Context:** The third measurement, with body text in place:
+
+| | links | obviously wrong | rate |
+|---|---:|---:|---:|
+| threshold 0.80 | 114 | 2 | 1.75% |
+| judge, headlines only | 158 | 2 | 1.27% |
+| judge + body | **167** | **1** | **0.60%** |
+
+Body text fixed the Ozon pair, kept both original rejections and all three
+recovered continuations, and the four section-line links that could not render
+stayed out while two of the three that could return did.
+
+**The survivor is the Flock pair, and its reason is the finding:**
+
+> `same officer and stalking case, investigation then arrest`
+
+Today's piece is a 141-character **brief**: "A former police officer was arrested
+for using Flock surveillance cameras to stalk an ex-partner, accessing the system
+more than 2,000 times." It never says Oregon and never names him. The earlier
+piece says "a Georgia police officer" and also does not name him.
+Investigation-then-arrest is a natural reading of those two sentences, and a
+careful human given only them would make the same call.
+
+**So more body text cannot fix this one — the fact was never printed.** The
+piece is short because it is a brief, and a brief is 25–45 words by design.
+Raising `body_cap` sends nothing new because there is nothing more.
+
+**Rationale:** What the judge actually did was assert a shared identity that
+neither text supports. That is checkable without new input, so the constraint
+goes on the reason it already writes: name the transaction, the place, the case,
+the person — and confirm both texts say it. "Same officer" fails when neither
+text names an officer.
+
+This is the thread pass's anchor rule at its strictest. That pass emits an
+ANCHOR before its refs and found that naming the criterion made it *apply* the
+rule rather than pattern-match it (migration 037). This goes one step further:
+not "state your criterion" but "state it and point at where it appears".
+
+**Deliberately still not done:** adding the Flock pair as a worked negative
+example, and sending source outlet names (`oregonlive.com` against `wired.com`,
+which is what the reviewer used to tell them apart). The outlet is a weak signal
+on its own — the syndication cases this whole line of work started from are
+*different outlets carrying the same story* — and one instance is thin evidence
+for a mechanism. If the reason constraint does not hold, outlets are next.
+
+**On the bar:** "no new false links" was written when the comparison was a
+threshold producing two. One in 167 is the best measured state of this feature,
+and better than what it replaces on every axis. Holding the branch back on that
+bar would keep the worse version in production.
+
+---
+
 ## 2026-09-04 — The judge was under-informed, not under-instructed
 
 **Decision:** Give the continuity judge body text (`adjudicate.body_cap`, 300

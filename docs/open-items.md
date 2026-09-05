@@ -87,31 +87,44 @@ starts looking wrong in a way nearness does not explain.
 
 ## Structural, no reader impact yet
 
-### 3b. The lineage judge's remaining borderline class, and the floor
+### 3b. One lineage false link the paper's own text cannot resolve
 
-Measured twice. The 2026-09-04 run with the judge in place removed both known
-false links, recovered all three continuations the old 0.80 threshold missed,
-and dropped the three old borderline pairs — then accepted two new wrong links
-that the body-text change (see `docs/decisions.md`) is the response to. **That
-change is untested.** The next measurement must show both the Ozon
-pickup-point pair and the Oregon/Georgia Flock pair rejected, while the three
-recovered continuations survive.
+Measured three times. The judge with body text stands at **167 links, one
+obviously wrong (0.60%)**, against 1.75% for the threshold it replaced. The
+survivor:
 
-**A broad-campaign class remains undecided**, and it is a policy question rather
-than a defect: a Belgorod strike on an Ozon warehouse against earlier strikes on
-Ozon warehouses elsewhere; separate Gaza strikes inside one ceasefire; Moscow
-and Sochi drone attacks against an earlier nationwide barrage. A reader could
-accept any of these as "the same campaign continuing". Decide it explicitly
-rather than letting the judge's temperature decide it run to run.
+> 2026-09-04 `S72939` "Ex-police officer charged with using Flock cameras to
+> stalk girlfriend" linked to 2026-08-28 `S65838` "Georgia officer used Flock
+> surveillance cameras to track his ex and another cop", 0.7525.
+> Judge reason: *"same officer and stalking case, investigation then arrest"*.
 
-**`candidate_floor` is 0.72 and remains unswept.** It was chosen to buy back the
-continuations 0.80 missed, and it did — all three came back. Whether it is the
-right value is still unmeasured.
+**This one is not fixable with more body text.** Today's piece is a
+141-character brief that never says Oregon and never names the officer; the
+prior says "a Georgia police officer" and also names no one. The distinguishing
+fact was never printed. The 2026-09-05 change constrains the *reason* instead —
+a YES must name something both texts say — and **is untested**.
 
-**The regression set is Gizmo's two reviews**, `lineage-link-review.csv`
-(2026-09-04, 114 links) and `new-sub80-review.csv` (2026-09-04, 61 sub-0.80
-links with verdicts). Every judge call is in `generation_logs` under
-`stage='lineage'`, and from migration 044 the reason is on the link row too.
+**If that does not hold, the next thing to try is source outlet names**
+(`oregonlive.com` against `wired.com` is what the reviewer used). It is a weak
+signal alone, because the syndication cases this work started from are precisely
+different outlets carrying one story, so it needs its own measurement.
+
+**A broad-campaign class remains undecided and is a policy question, not a
+defect:** separate Gaza strikes inside one ceasefire, a Kyiv-region campaign
+across days, Tesla Cybercab against the Waymo camera-vs-lidar dispute, Flock
+expansion against Flock cancellations. Five such links in the last run. A reader
+could accept any of them as one situation continuing. Decide it explicitly rather
+than letting temperature decide it run to run.
+
+**Noise:** the repeat run gave 34 of 35 identical links (one appeared,
+`S70968 → S68485`) and one of 71 verdicts flipped. Stable at the marker level,
+not at the verdict level.
+
+**`candidate_floor` is 0.72 and still unswept.**
+
+**The regression set** is Gizmo's three reviews under
+`fritter-post-lineage-*` on the box, and from migration 044 every link carries
+the judge's reason.
 
 ### 3c. Continuity is recorded but only the reader sees it
 
