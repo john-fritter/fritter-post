@@ -164,7 +164,8 @@ container name. The Caddy configuration lives outside this repo.
 ## Project layout
 
 ```
-src/pipeline/   Nine-stage pipeline (collector → publisher) plus runner/
+src/pipeline/   Nine-stage pipeline (collector → publisher), plus runner/ and
+                lineage/ (the publisher's cross-day "previously" marker)
 src/llm/        OpenAI SDK wrapper with logging and budgets
 src/db/         Postgres connection pool
 src/app/        Next.js App Router — the reading view
