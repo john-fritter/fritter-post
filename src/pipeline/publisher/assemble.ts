@@ -234,6 +234,21 @@ export function formatEditionDate(iso: string): string {
 }
 
 /**
+ * The short date a "previously" marker carries — "Aug 27".
+ *
+ * Built in UTC from the parts for `formatEditionDate`'s reason: parsing the
+ * string into a local Date makes 2026-08-27 the evening of the 26th in Bend, and
+ * a continuity marker naming the wrong day is worse than no marker.
+ */
+export function formatMarkerDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
+  if (y === undefined || m === undefined || d === undefined || Number.isNaN(y)) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short", day: "numeric", timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+/**
  * Whether a re-publish would shrink the edition past the point of being a
  * correction, and by how much. Null means go ahead.
  *

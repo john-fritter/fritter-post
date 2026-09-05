@@ -87,6 +87,62 @@ starts looking wrong in a way nearness does not explain.
 
 ## Structural, no reader impact yet
 
+### 3b. One lineage false link the paper's own text cannot resolve
+
+Measured three times. The judge with body text stands at **167 links, one
+obviously wrong (0.60%)**, against 1.75% for the threshold it replaced. The
+survivor:
+
+> 2026-09-04 `S72939` "Ex-police officer charged with using Flock cameras to
+> stalk girlfriend" linked to 2026-08-28 `S65838` "Georgia officer used Flock
+> surveillance cameras to track his ex and another cop", 0.7525.
+> Judge reason: *"same officer and stalking case, investigation then arrest"*.
+
+**This one is not fixable with more body text.** Today's piece is a
+141-character brief that never says Oregon and never names the officer; the
+prior says "a Georgia police officer" and also names no one. The distinguishing
+fact was never printed. The 2026-09-05 change constrains the *reason* instead —
+a YES must name something both texts say — and **is untested**.
+
+**If that does not hold, the next thing to try is source outlet names**
+(`oregonlive.com` against `wired.com` is what the reviewer used). It is a weak
+signal alone, because the syndication cases this work started from are precisely
+different outlets carrying one story, so it needs its own measurement.
+
+**A broad-campaign class remains undecided and is a policy question, not a
+defect:** separate Gaza strikes inside one ceasefire, a Kyiv-region campaign
+across days, Tesla Cybercab against the Waymo camera-vs-lidar dispute, Flock
+expansion against Flock cancellations. Five such links in the last run. A reader
+could accept any of them as one situation continuing. Decide it explicitly rather
+than letting temperature decide it run to run.
+
+**Noise:** the repeat run gave 34 of 35 identical links (one appeared,
+`S70968 → S68485`) and one of 71 verdicts flipped. Stable at the marker level,
+not at the verdict level.
+
+**`candidate_floor` is 0.72 and still unswept.**
+
+**The regression set** is Gizmo's three reviews under
+`fritter-post-lineage-*` on the box, and from migration 044 every link carries
+the judge's reason.
+
+### 3c. Continuity is recorded but only the reader sees it
+
+The lineage pass writes `paper_piece_lineage` and the story page renders it. The
+two consumers that would fix the *headlines* rather than annotate them are not
+built:
+
+- **The writers** could foreground what changed instead of restating the
+  situation, which is what Nvidia/Hugging Face and the Leipzig drone story needed.
+- **The thread pass** could avoid regenerating an umbrella title three editions
+  running, which is what put "six months" on the Iran section on 8/27, 8/28 and
+  8/30.
+
+Both are deferred on purpose until the threshold above is measured, because both
+work by putting text about the paper into a prompt, and this project has five
+recorded instances of a model relaying exactly that to the reader. Precision
+first, then the prompt.
+
 ### 4. The outlet count is derived in two places
 
 `src/db/outlets.ts` is called from grouping-pass-1, which stores the count on
@@ -104,6 +160,35 @@ because the editor currently reaches the digest and not the pass-1 run.
 distinct outlets *within that member*, but two clusters in one thread that both
 contain AP still count AP twice. Correcting it means counting distinct outlets
 across every member's items, which the thread pass does not currently load.
+
+### 5b. `getParent` falls back to the source name, so a config rename orphans history
+
+`loadOutletMap` is built from `sources.yaml`, and `getParent` returns the source
+name itself for anything not in it. So the moment a source is renamed or removed,
+every historical `preprocessed_items` row carrying the old name stops resolving
+to its parent — silently.
+
+Found while reading the 2026-09-03 cross-run replay. `AP Top News` and
+`AP Politics` both declared `parent: "AP"` until commit `9ad8e72` (2026-08-26)
+replaced them with a single `AP News`. Their rows are still in the database and
+now resolve to two distinct outlets. It cost nothing here — the two affected rows
+are from feeds that cannot produce more — but the same fallback governs the
+cross-run URL key and `countDistinctOutlets`, so a future rename of a
+high-volume source would quietly un-group its recent history and inflate the
+editor's `ln(sources)` lift for a few days.
+
+**Fix:** either an `aliases:` list on a source, or a small persisted
+`source_name → parent` history. Neither is worth building until a rename is
+actually planned; the note exists so the next rename is done deliberately.
+
+### 5c. The under-30-character title population has never been measured
+
+The cross-run title key has a 30-character floor, and the 2026-09-03 replay
+observed a minimum matched length of 32. That is not evidence that nothing sits
+below 30 — the supplemental boundary query errored and was correctly left
+unrepaired, so the population is simply unmeasured. The risk direction is a miss,
+not a false positive, so it does not block anything. Worth one query next time
+someone is in that data.
 
 ### 6. `exclude_paths` on RSS has no user
 

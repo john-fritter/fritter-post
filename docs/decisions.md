@@ -20,6 +20,370 @@ Entry format:
 
 ---
 
+## 2026-09-05 — A YES has to name something both texts say
+
+**Decision:** Constrain the judge's *reason* rather than its input: for a YES,
+the shared thing it names must appear in both texts, and if it would have to
+assume the identity rather than read it, the answer is NO. No new data is sent.
+
+**Context:** The third measurement, with body text in place:
+
+| | links | obviously wrong | rate |
+|---|---:|---:|---:|
+| threshold 0.80 | 114 | 2 | 1.75% |
+| judge, headlines only | 158 | 2 | 1.27% |
+| judge + body | **167** | **1** | **0.60%** |
+
+Body text fixed the Ozon pair, kept both original rejections and all three
+recovered continuations, and the four section-line links that could not render
+stayed out while two of the three that could return did.
+
+**The survivor is the Flock pair, and its reason is the finding:**
+
+> `same officer and stalking case, investigation then arrest`
+
+Today's piece is a 141-character **brief**: "A former police officer was arrested
+for using Flock surveillance cameras to stalk an ex-partner, accessing the system
+more than 2,000 times." It never says Oregon and never names him. The earlier
+piece says "a Georgia police officer" and also does not name him.
+Investigation-then-arrest is a natural reading of those two sentences, and a
+careful human given only them would make the same call.
+
+**So more body text cannot fix this one — the fact was never printed.** The
+piece is short because it is a brief, and a brief is 25–45 words by design.
+Raising `body_cap` sends nothing new because there is nothing more.
+
+**Rationale:** What the judge actually did was assert a shared identity that
+neither text supports. That is checkable without new input, so the constraint
+goes on the reason it already writes: name the transaction, the place, the case,
+the person — and confirm both texts say it. "Same officer" fails when neither
+text names an officer.
+
+This is the thread pass's anchor rule at its strictest. That pass emits an
+ANCHOR before its refs and found that naming the criterion made it *apply* the
+rule rather than pattern-match it (migration 037). This goes one step further:
+not "state your criterion" but "state it and point at where it appears".
+
+**Deliberately still not done:** adding the Flock pair as a worked negative
+example, and sending source outlet names (`oregonlive.com` against `wired.com`,
+which is what the reviewer used to tell them apart). The outlet is a weak signal
+on its own — the syndication cases this whole line of work started from are
+*different outlets carrying the same story* — and one instance is thin evidence
+for a mechanism. If the reason constraint does not hold, outlets are next.
+
+**On the bar:** "no new false links" was written when the comparison was a
+threshold producing two. One in 167 is the best measured state of this feature,
+and better than what it replaces on every axis. Holding the branch back on that
+bar would keep the worse version in production.
+
+---
+
+## 2026-09-04 — The judge was under-informed, not under-instructed
+
+**Decision:** Give the continuity judge body text (`adjudicate.body_cap`, 300
+chars per piece), make it state a reason with each verdict (persisted as
+`paper_piece_lineage.judge_reason`, migration 044), and stop letting a prior
+section line take a piece's one link slot. **Add no new negative examples to the
+prompt.**
+
+**Context:** The second measurement — seven papers, 158 links, every one read by
+hand — cleared the first bar and found a new one:
+
+| | result |
+|---|---|
+| both original false links | rejected |
+| three continuations 0.80 missed | all recovered |
+| three old borderline pairs | all gone |
+| 109 old plausible links | 97 survived exactly, 1 retargeted, 11 lost |
+| **new false links** | **2** |
+| noise (one paper, repeat run) | 37/37 links identical; 1 of 71 verdicts flipped |
+
+The two new ones: an Ozon pickup-point business story accepted against Ukrainian
+drone strikes on Ozon warehouses (0.7322), and an Oregon Flock-camera stalking
+case accepted against a Georgia one (0.7525).
+
+**Rationale — the prompt already forbids both.** It says a shared institution is
+not a situation, and that another instance of the same kind of event is NO. The
+obvious move is a third warning, and that is precisely the move this project has
+watched fail: the thread pass names "immigration crackdown" as a worked negative
+example and produced one anyway. A rule that is already correct does not get
+better by being repeated.
+
+**What actually went wrong is that the rule was unenforceable on the input.**
+The judge was shown two headlines and nothing else. "Ex-police officer charged
+with using Flock cameras to stalk girlfriend" **does not say Oregon** — the fact
+that distinguishes it from the Georgia case was never in the prompt, and Gizmo
+had to open the source URLs to establish it. On those two lines a careful human
+would also have said yes. The Ozon pair is weaker but the same shape: warehouses
+destroyed, then pickup points converted to storage, is a coherent consequence
+reading of the two headlines and wrong only on facts neither headline carried.
+
+So this is grouping-pass-1's oldest lesson arriving one stage later. That stage
+spent months scoring singletons on bare headlines, and `body_cap` exists in
+`models.yaml` because it "is the knob that decides how much a per-item judgment
+stage actually knows". The lineage judge had no such cap at all.
+
+**It also explains a failure nobody attributed correctly.** Seven of the eleven
+previously-good links the judge dropped had a **section line** on one side, and
+a line has no headline by design — so the prompt showed it the literal string
+"(section line, no headline)" and asked it to judge that. It had nothing to work
+with and correctly said no. A line has a body; now it sends one. That reading
+also revises the report's framing: those eleven are not evidence of
+over-rejection, they are mostly evidence of the same under-information.
+
+**A separate defect found while reading the same data:** a prior section line
+could *win* a piece's single link slot, render as nothing (`lineageLabel`
+returns null with no headline), and discard a renderable second-place candidate
+in the process. The reader saw no marker where one existed. Such candidates are
+now skipped before selection.
+
+**The reason is persisted because the measurement asked for it and could not
+have it.** The output contract was `number;;YES or NO`, so an accepted wrong
+pair and a correctly rejected one look identical afterwards; Gizmo named that as
+a limitation of the run. Migration 037 made the same argument for the thread
+anchor — a bad call has to be legible in the audit, and stating the criterion
+made that pass apply its rule rather than pattern-match it.
+
+**Deliberately not done:** adding the Ozon and Flock pairs as worked negative
+examples. If the body text is the fix, adding examples at the same time makes
+the next measurement unable to say which worked. If body text is *not* enough,
+the examples are the next thing to try and the regression set is ready.
+
+**Noise, measured:** one paper republished twice gave an identical 37-link set;
+one of 71 candidate verdicts flipped without changing a persisted link. Stable
+at the marker level, not at the verdict level — a borderline pair that flips
+between runs is undecided, not judged.
+
+---
+
+## 2026-09-04 — The lineage relation needs a judge; a threshold cannot make the call
+
+**Decision:** Demote `publisher.lineage.similarity_threshold` (0.80) to
+`candidate_floor` (0.72) and put an LLM adjudication call behind it. Retrieval
+now finds up to `top_k` prior pieces worth considering; one batched call per
+paper decides which, if any, is the same continuing situation. Every candidate
+is judged, not only each piece's nearest, so a piece whose top match is wrong
+can still keep its real predecessor at rank 2. A failed judge call records **no**
+links for that paper.
+
+**Supersedes** the "Alternatives considered" bullet in the 2026-09-03 lineage
+entry, which rejected an adjudication pass. That rejection was measured and was
+wrong.
+
+**Context:** Seven papers were republished on the box and all 114 resulting
+links were read by hand (900 pieces, 2,700 candidate rows).
+
+The rejection rested on this argument: a continuity marker does not need to tell
+a resurfaced copy from a genuine follow-up, because "previously, Sept 2" is
+correct about both, so the hard judgment is not needed. That argument is still
+true and it was answering the wrong question. **The failures are not
+stale-versus-advancing. They are same-kind-of-event, different instance:**
+
+- "Israeli strikes kill five Palestinians in Gaza City" linked to "Israeli
+  airstrike kills three Palestinians in Jenin, a rare West Bank strike", 0.8219.
+- "Australian police arrest two alleged TeamPCP members" linked to "Hackers
+  tricked SpaceX's AI coding assistant into helping breach seven companies",
+  0.8080.
+
+Plus three borderline broad-campaign links of the same shape.
+
+**This project already knew embeddings cannot see that distinction.** It is why
+grouping has a re-split pass: "two gold mine collapses on different continents
+are the opposite shape — tightly connected, because they are the same kind of
+event in the same words." Cosine measures how alike two stories *read*, and two
+instances of one recurring kind of event read almost identically. The lineage
+pass was built without applying a lesson this repository had already written
+down.
+
+**No threshold fixes it, and the distribution says so.** There is no valley: the
+largest best-match below 0.80 was 0.7973 and the smallest above it 0.8020 — a
+gap of 0.0047 in a smooth tail (buckets at 0.75/0.80/0.85 hold 66/59/29 pieces).
+Both false links sat *above* the line while real continuations sat below it: the
+renewed Iran escalation at 0.7944, an OpenAI follow-up at 0.7443, a Nepal
+aftermath item at 0.7469. Raising to 0.85 would have removed both false links
+and also 59 of the 114, including the ICE custody death (0.8256), the second
+birthright-citizenship ruling (0.8119) and the Venezuela deal sequence (0.8137).
+Moving the number trades one error for the other and fixes neither.
+
+**Rationale:** "Is this the same story?" is the question grouping asks about
+events and the thread pass asks about same-day situations, and both ask a model.
+This asks the thread pass's question across days, so it should be answered the
+same way. Lowering the floor to 0.72 buys back the misses that precision would
+otherwise have cost; the judge supplies the precision the threshold could not.
+
+**Cost:** roughly 35 pairs per paper, each two headlines. One call, no batching
+— chunking would add failure modes and amortise nothing.
+
+**Fail closed, which is the opposite of the writers' rule and deliberate.** An
+unparseable or missing verdict line is a NO, and a failed call yields no links at
+all. A missing brief goes unseen and gets re-asked; an unjudged "previously" line
+prints in the paper. A paper with no continuity markers is a complete paper.
+
+**Still unmeasured:** whether 0.72 is the right floor, and how the judge rules on
+the borderline broad-campaign cases (the Munich incendiaries against the Leipzig
+drone, 0.8077) where a reader might accept either answer. The 114 hand-reviewed
+links are the regression set for that.
+
+---
+
+## 2026-09-03 — Cross-day story lineage: a continuity marker, not a dedup
+
+**Decision:** Add `paper_piece_lineage` (migration 043) and a lineage pass that
+runs inside the publisher after the paper is frozen. For each published piece it
+finds the piece in a recent paper that covered the same continuing situation, and
+records it. The reading view prints it under the headline as an unlinked
+"Previously — Aug 27: <headline>". Nothing suppresses anything.
+
+**Context:** This is the second of the three causes the 2026-09-03 audit found.
+The first — syndicated copies re-ingested under another masthead — was fixed
+deterministically in the preprocessor's cross-run title key. What remained were
+the two the audit was explicit must *not* be fixed by suppression: reworded
+follow-ups (Nvidia/Hugging Face on 8/27, 8/28 and 9/3, where the 9/3 piece was a
+six-source confirmation and genuinely new) and continuing situations (Nepal's
+rising toll, Iran's war, the USPS fight — a real new development every day).
+
+Both reduce to one missing capability the audit named directly: **the paper has
+no cross-edition story identity.** `T0` and `C27` are run-local, and nothing
+outside the publisher reads `papers` at all.
+
+**Rationale — the relation is "same situation", not "same story".** The expensive
+version of this feature adjudicates whether today's piece is a stale copy or a
+genuine advance, which is a judgment and would need an LLM pass. A *continuity
+marker* does not need that distinction: two consecutive days of Iran coverage are
+different developments, and "previously, Sept 2" is correct and useful about
+both. The distinction would only matter if something were being deleted. Nothing
+is. That collapses an LLM stage into a vector query and a pure selection
+function.
+
+**The data required no collection.** `item_embeddings` is keyed on
+`preprocessed_item_id` and is never swept — only `article_texts` has a retention
+delete — and `paper_sources.preprocessed_item_id` reaches every published piece's
+articles. The history has been accumulating since the project started; there is
+no backfill and no second embedding pass.
+
+**Not a tenth stage.** It has no independent input: it reads the paper just
+written and the papers before it. The publisher is already where a writer run
+becomes an artifact with attribution attached, and continuity belongs beside
+attribution. It runs outside the publisher's transaction and is caught — a paper
+with no markers is a complete paper, and a failure to find them must never roll
+back an edition that is ready to read.
+
+**The marker is text, never a link.** `/story/<ref>` resolves refs against the
+latest paper only, so a route to yesterday's piece does not exist. That turned
+out to agree with the reading view's own rule — colour means exactly one thing, a
+link that leaves for someone else's reporting — so the constraint and the design
+point the same way, and the line is set unlinked and uncoloured.
+
+**Alternatives considered.**
+- *Feed prior coverage to the writers instead*, so the prose foregrounds what
+  changed. Higher value and the obvious next step, but this project has been
+  burned five separate times by telling a model about its own plumbing and having
+  it relayed to the reader (the packet note, the source labels, the word-target
+  floor, the omission note, the source count). The rule learned three times over
+  is that the fix is not to tell it. Doing that before the lineage's precision is
+  measured would be the sixth. Deferred deliberately, not forgotten.
+- *Feed prior thread titles to the thread pass*, which is what would stop three
+  consecutive editions leading on "six months". Also deferred; the same
+  measurement gates it, and the audit's named case is a cluster, not a thread.
+- *An LLM adjudication pass* labelling each link "confirmed" / "new development".
+  Rejected for now: see the relation argument above.
+
+**Unvalidated:** `similarity_threshold: 0.80` is a starting point, not a measured
+value. Grouping's same-event edge cutoff is 0.66 and this is deliberately
+stricter, because the errors are asymmetric — a false link prints a wrong
+"previously" line where the reader sees it, a missed link leaves the paper as it
+already is. `top_k: 3` persists the near misses and `inspect publisher --id`
+prints every link with its similarity, which is what a sweep will read. Logged in
+`docs/open-items.md`.
+
+---
+
+## 2026-09-03 — The cross-run title key is no longer scoped to the outlet
+
+**Decision:** In the preprocessor's cross-run dedup, key the normalized-title
+match on the bare title rather than on `parent::title`. The 30-character floor
+stays. URL keys stay scoped to the source and its parent. The within-run parent
+dedup is untouched.
+
+**Context:** A read-only audit of the six editions published 2026-08-27 through
+2026-09-03 found the reader's "same story every day" complaint had three
+distinct causes: syndicated copies re-ingested under another masthead, genuine
+continuing situations whose headlines keep naming the umbrella instead of the
+day's development, and a few topic-bundle threads.
+
+The first cause turned out to be entirely deterministic and already inside our
+reach. All nine of the audit's confirmed cross-edition repeats were **exact**
+normalized-title matches, all fell **inside** the existing five-day lookback,
+and all arrived the second time from a **different parent**: NPR → OPB four
+times (the Iran six-month analysis, Leipzig, the OpenAI lawsuits, the ICE
+detainee death), Oregon Capital Chronicle → OPB and → The Bend Bulletin, The
+Guardian US → Grist, Wired → Ars Technica. The lookback window was never the
+binding constraint. The key's scope was.
+
+`parent::title` asks "did *this outlet* already run this headline". Syndication
+answers no every time, by definition — a wire story reaching a member station is
+a different masthead carrying identical words.
+
+**Rationale:** This is the cheapest correct fix available for the largest
+confirmed share of the problem: no LLM, no new table, no new stage, and no new
+cross-day abstraction. It is also the fix that does *not* touch the two causes
+that must not be fixed by suppression — a continuing situation needs continuity,
+not deletion, and that work is separate.
+
+Scope was widened on the cross-run key only. The within-run parent dedup stays
+outlet-scoped on purpose: two outlets carrying one story on one day is
+prominence, which is what the editor's `ln(sources)` lift reads and what a
+cluster exists to show. The same headline five days later is not pickup.
+
+The 30-character floor is what keeps the now-unscoped key safe. Below it, a
+shared headline between outlets is a coincidence of brevity ("Markets close
+higher"); at 30-plus normalized characters an exact match between two
+newsrooms inside five days is syndication.
+
+Suppressing the later copy is right even where the story is genuinely still
+moving. The audit's Leipzig cluster also carried Meduza and BBC reporting on
+9/3, so it survives losing the day-old OPB copy and gets written from what is
+new rather than anchored on what already ran.
+
+URL keys were deliberately left alone. No case in the audit turned on a URL, and
+this project's dedup rules accrete from audit evidence rather than from
+symmetry.
+
+**Validation:** Deterministic, so no noise control is needed — but the
+preprocessor cannot be re-run to measure it (cross-run dedup makes a same-day
+re-run near-empty by design, and it writes rows). `preprocessed_items` is never
+swept — only `article_texts` has a retention delete — so the whole history is
+still in the database and the change was measured by replaying the new key over
+past runs in read-only SQL. Measured on the box, 45-day window, 20 clean runs:
+
+- **35 exact normalized-title collisions**, of which **33 are cross-parent** and
+  the two remaining are `AP Top News`/`AP Politics`, two feeds that no longer
+  exist (commit `9ad8e72`, 2026-08-26, replaced both with a single `AP News`).
+- **1 to 5 per run**, never more. The audit's nine confirmed published repeats
+  sit inside this, as they must: the replay counts every re-ingested copy and
+  the audit counted only the ones that reached print.
+- Dominated by exactly the routes predicted: **NPR → OPB 10**, Oregon Capital
+  Chronicle → The Bend Bulletin **7**, Oregon Capital Chronicle → OPB **3**,
+  Wired → Ars Technica **2**. The other ten routes contribute one each.
+- **No false positives** in a manual read of all 35 pairs.
+- Title lengths 32–99, median 79 — nothing near the 30-character floor.
+- Largest per-outlet impact **2.7%** (OPB), against a 25% concern threshold.
+- 25 of 35 pairs are one day apart, 31 of 35 within two, none at five. The
+  five-day lookback is generous rather than load-bearing.
+
+**The first replay was measured wrong and the error is worth keeping.** It ran
+over all runs and returned four-digit counts for seven of them, which tripped the
+brief's own stop gate. Those seven were all `cross_run_dedup_skipped = true` —
+`--skip-cross-run-dedup` testing runs, which exist precisely to **re-admit what
+earlier runs took**. Their rows never met the filter, so counting them as
+candidates measures the testing artifact. The tell was the distribution: bimodal,
+1025–2059 against 1–5, with nothing in between, and two runs landing on exactly
+1522. A rule that is genuinely too loose degrades smoothly; it does not leave a
+200× gap. Any future replay over `preprocessed_items` must exclude
+`cross_run_dedup_skipped` runs from both sides of the join.
+
+---
+
 ## 2026-08-22 — The writers stage is done; the parsers were the real defect
 
 **Decision:** Stop rewriting the paper to tune the writers stage. Remaining

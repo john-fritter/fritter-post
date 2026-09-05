@@ -78,6 +78,7 @@ fritter-post/
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # materials + fetch + assembler + the writer calls
 │   │   ├── publisher/           # freezes a writer run into the day's paper
+│   │   ├── lineage/             # cross-day continuity: the "previously" marker
 │   │   └── runner/              # the daily run: stage order + gates + lineage
 │   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
 │   ├── db/                      # postgres connection, query helpers
@@ -85,7 +86,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–042)
+├── migrations/                  # numbered SQL migrations (001–044)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -1023,6 +1024,143 @@ Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
 `readingMinutes`, `replacementShortfall`) are unit-tested in
 `tests/publisher-assemble.test.ts`.
 
+### lineage
+
+**Cross-day story continuity — the "previously" marker.** Runs inside the
+publisher, after the paper is frozen. Writes `paper_piece_lineage` (migration
+043) and `papers.pieces_with_lineage`.
+
+**It is not a stage, because it has no independent input.** It reads the paper
+that was just written and the papers before it, and the publisher is already the
+place that turns a writer run into an artifact with attribution attached.
+Continuity belongs beside attribution; the pipeline stays at nine stages.
+
+**The defect it closes.** The 2026-09-03 repeated-headline audit found the paper
+has **no cross-edition story identity** — `T0` and `C27` are run-local, and
+nothing outside the publisher reads `papers`. Nvidia/Hugging Face is the case
+that names it: a report on 8/27, a further report on 8/28, a six-source
+confirmation on 9/3. The 9/3 piece was legitimately new and must not be
+suppressed; what was missing was any marker saying it was the same transaction
+advancing. Nepal, Iran and the USPS fight are the same shape — a real new
+development every day, reading like a rerun because nothing said otherwise.
+
+**The relation is "same situation", and nothing here deletes anything** — no
+stage reads these rows to drop a story. Continuity is the fix for a continuing
+story; deletion is the fix for a duplicate, and that one already happened in the
+preprocessor.
+
+**It shipped as retrieval alone and that was measured wrong.** The argument was
+that a continuity marker need not tell a resurfaced copy from a genuine
+follow-up, since "previously, Sept 2" is correct about both — true, and it was
+answering the wrong question. Reading all 114 links from seven republished
+papers found the failures are **same kind of event, different instance**: a Gaza
+City strike linked to a Jenin one at 0.8219, a TeamPCP arrest linked to the
+SpaceX agent breach at 0.8080. **This repository already knew embeddings cannot
+see that** — it is why grouping has a re-split pass, for "two gold mine collapses
+on different continents… the same kind of event in the same words."
+
+**No threshold fixes it.** The best-match distribution has no valley: largest
+below 0.80 was 0.7973, smallest above 0.8020, a 0.0047 gap in a smooth tail.
+Both false links sat *above* the line while real continuations sat below it
+(renewed Iran escalation 0.7944, an OpenAI follow-up 0.7443). So
+`similarity_threshold` became `candidate_floor` (0.72) and the judgment moved to
+one batched LLM call per paper — the thread pass's question, asked across days,
+answered the way this pipeline answers every other "is this the same story".
+**Every candidate is judged, not just each piece's nearest**, so a piece whose
+top match is a different instance can still keep its real predecessor at rank 2.
+
+**The judge fails closed**, which is the opposite of the writers' parser rule and
+deliberate: an unparseable or missing verdict is a NO, and a failed call records
+no links at all. A missing brief goes unseen and gets re-asked; an unjudged
+"previously" line prints in the paper. A *missing reason* costs only the reason,
+which is run #36's lesson in the one place it still applies.
+
+**The judge reads body text, and the second measurement is why.** The
+2026-09-04 run (seven papers, 158 links, all read by hand) rejected both
+original false links, recovered all three continuations 0.80 had missed, and
+dropped the three old borderline pairs — then accepted two new wrong ones: an
+Ozon business-expansion story against Ukrainian strikes on Ozon warehouses, and
+an Oregon Flock-stalking case against a Georgia one. **The prompt already
+forbids both** ("the same institution doing two unrelated things"; "another
+instance of the same kind of event"), so a third warning was the move that has
+already failed on the thread pass. The real defect was that the judge saw two
+headlines and nothing else: "Ex-police officer charged with using Flock cameras
+to stalk girlfriend" does not say Oregon, and the fact that separated it from
+Georgia was never in the prompt. `adjudicate.body_cap` (300) is
+grouping-pass-1's lesson arriving here — that cap "is the knob that decides how
+much a per-item judgment stage actually knows".
+
+**It also explains seven of the eleven good links the judge dropped.** They had
+a **section line** on one side, and a line has no headline by design, so the
+prompt showed the literal string "(section line, no headline)" and asked it to
+judge that. A line has a body; now it sends one.
+
+**A prior section line can no longer take the slot.** `lineageLabel` renders
+nothing for a prior with no headline, and one link per piece meant an
+unrenderable winner silently discarded a good second place — the reader saw no
+marker where one existed. Such candidates are skipped before selection.
+
+**The verdict carries a reason** (`judge_reason`, migration 044), because the
+first measurement could say a pair was accepted and never why. That is migration
+037's argument for the thread anchor one stage later: naming the criterion makes
+a bad call legible afterwards, and made the thread pass apply its rule rather
+than recognise it. `inspect publisher --id` prints it under the link.
+
+**And a YES must name something both texts say.** Body text took the false-link
+rate from 1.75% to 0.60% — one in 167 — and the survivor showed the limit of
+sending more input: a 141-character brief that never says Oregon, linked to "a
+Georgia police officer", with the reason "same officer and stalking case". The
+judge asserted a shared identity neither text names, and no `body_cap` fixes a
+fact the paper never printed. So the constraint went on the reason instead:
+name the transaction, the place, the case, the person, and check both texts say
+it. The thread pass's anchor rule at its strictest — not "state your criterion"
+but "state it and point at where it appears".
+
+**The data was already there.** `item_embeddings` is keyed on
+`preprocessed_item_id`, upserted by every grouping run, and — unlike
+`article_texts` — never swept; `paper_sources.preprocessed_item_id` reaches every
+published piece's articles. So "did we cover this before" is a vector query over
+rows that have accumulated since the project started. No backfill, no new
+embedding pass.
+
+**The vector maths stays in Postgres and the policy stays in `select.ts`.**
+pgvector computes 4096-dimension cosine next to the data; what crosses into Node
+is a small scored candidate list. `selectLineageLinks` then applies the rules,
+and they are unit-tested: one link per piece (enforced again by a unique index),
+ties broken toward the **more recent** prior piece — a story running four days
+straight should say what the paper said last, not what it said first — and a
+deterministic ref tie-break so a re-run inserts identically.
+
+**Similarity is max-pairwise, not centroid.** A cluster's items are the same
+event by construction and a section's pieces are partitioned by member, so the
+strongest single pairing is the honest measure. A centroid over a thread's eleven
+members would dilute exactly the signal wanted.
+
+**`publisher.lineage.candidate_floor` is the knob and is now a guess in the
+other direction** — 0.72, chosen to buy back the continuations 0.80 missed
+without flooding the judge, and not yet swept. The errors stay asymmetric: a
+false link prints where the reader sees it, a missed one leaves the page as it
+is. `inspect publisher --id` prints every link with its similarity, and every
+judge call is in `generation_logs` with its full prompt and verdicts. The 114
+hand-reviewed links from 2026-09-04 are the regression set. See
+`docs/open-items.md`.
+
+**The marker is text, never a link.** `/story/<ref>` resolves refs against the
+*latest* paper only, so a route to yesterday's piece does not exist — and the
+reading view's rule is that colour means exactly one thing, a link that leaves
+for someone else's reporting. A "previously" line is the paper talking about
+itself, so it is set unlinked and uncoloured under the headline. A prior *section
+line* has no headline of its own and is dropped rather than rendered: a pointer
+to a pointer is not worth a row.
+
+**It runs outside the publisher's transaction and never fails a paper.** A paper
+with no continuity markers is a complete paper; a failure here is caught, warned,
+and the edition still publishes. Re-publishing a date recomputes rather than
+accumulating. The FKs into the prior paper are `ON DELETE SET NULL` with the date
+and headline copied beside them — the `paper_sources` rule, for the same reason:
+correcting an earlier edition must not silently erase what today's paper said
+about it.
+
 ### the runner
 
 **One entrypoint, and the gates are the point.** `npm run pipeline` calls the
@@ -1321,7 +1459,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **043**.
+number is ambiguous. The next migration is **045**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1402,7 +1540,11 @@ number is ambiguous. The next migration is **043**.
   actual history is, as against the cooldown list a single run happened to see
 - `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
   piece with `resolved/ranked` source counts, so a paper the reader cannot follow
-  anywhere is visible without opening it
+  anywhere is visible without opening it, plus each piece's `previously` link and
+  the similarity that produced it. That similarity is the retrieval score, not
+  the decision — the judge's verdicts are in `generation_logs` under
+  `stage='lineage'`, and tuning `publisher.lineage.candidate_floor` means
+  reading both
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 - `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;

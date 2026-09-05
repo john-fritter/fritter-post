@@ -151,6 +151,19 @@ failed writer piece is skipped and counted, and a piece whose lineage will not
 resolve is published without links and counted separately. Neither costs the
 edition.
 
+**One judgment does live here, and it is about yesterday rather than today.**
+After the paper is frozen, a continuity pass asks whether each piece continues a
+story a recent edition already ran, and records the answer as the "previously"
+marker the reader sees under the headline. It is not a tenth stage because it
+has no independent input — it reads the paper just written and the papers before
+it — and continuity belongs beside attribution, which is the other thing this
+stage adds that the pipeline never had.
+
+**It never suppresses a story.** A repeated *story* is a duplicate and is
+deleted upstream in the preprocessor; a repeated *situation* is a story still
+moving, and the fix for that is to say so. Nothing downstream reads these rows
+to drop anything.
+
 ---
 
 ## Storage

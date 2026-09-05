@@ -141,6 +141,69 @@ pipeline:
       # one it destroyed. `--force` is the deliberate path.
       min_replacement_fraction: 0.75
 
+# Publisher tuning. The publisher is deterministic (no LLM); this block is the
+# cross-day lineage pass it runs after freezing the paper.
+publisher:
+  # Cross-day story lineage -- the "previously" marker. Finds, for each piece of
+  # today's paper, the piece in a recent paper that covered the same continuing
+  # situation. It never suppresses anything: a continuing story is fixed by
+  # continuity, and a duplicate is fixed upstream in the preprocessor.
+  lineage:
+    enabled: true
+    # How far back to look for prior coverage. Seven days because the audit's
+    # Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3, and a six-day window
+    # would have missed the confirmation that most needed the marker.
+    lookback_days: 7
+    # RETRIEVAL FLOOR, not a decision. Embedding cosine only decides which few
+    # prior pieces are worth asking about; the adjudicate pass below decides
+    # whether any of them is really the same situation.
+    #
+    # It was 0.80 and was doing the deciding, which the 2026-09-04 measurement
+    # over 900 pieces showed cannot work: the best-match distribution has no
+    # valley at all (largest below 0.7973, smallest above 0.8020, a 0.0047 gap
+    # in a smooth tail), and both of the two false links sat ABOVE the line at
+    # 0.8080 and 0.8219 while real continuations sat below it -- the renewed
+    # Iran escalation at 0.7944, an OpenAI follow-up at 0.7443. Moving a
+    # threshold trades one error for the other.
+    #
+    # 0.72 buys back the misses. It admits roughly 35 candidates per paper
+    # against 900 pieces, which is one small batched call.
+    candidate_floor: 0.72
+    # Prior pieces offered per piece. All of them are judged, and the best
+    # CONFIRMED one wins -- so a piece whose nearest match is a different
+    # instance of the same kind of event can still keep its real predecessor.
+    top_k: 3
+    # The judge. One call per paper over every candidate pair, which is why
+    # there is no batch_size or concurrency here: ~35 pairs of two headlines
+    # fit in one call, and chunking would only add failure modes.
+    #
+    # A failed call yields NO links for that paper rather than falling back to
+    # the floor. A paper with no continuity markers is a complete paper; a paper
+    # with unjudged ones is the defect this pass exists to fix.
+    adjudicate:
+      # Characters of each piece's published prose shown per pair. THE knob, and
+      # the reason the 2026-09-04 run accepted two wrong links: the judge was
+      # shown two headlines and nothing else, and "Ex-police officer charged
+      # with using Flock cameras to stalk girlfriend" does not say Oregon. The
+      # fact that separated it from the Georgia case was never in the prompt.
+      #
+      # This is grouping-pass-1's lesson, which spent months scoring singletons
+      # on bare headlines before `body_cap` was named as config. 300 characters
+      # is roughly the first paragraph — enough for the place and the actors,
+      # which is exactly what the two failures needed. Cost is ~2 x 300 chars
+      # per pair against ~90 pairs on the fullest day: about 15k extra input
+      # tokens on a call that used 5.6k.
+      body_cap: 300
+      model: zai-org/glm-5.2
+      provider: nanogpt
+      temperature: 0.1
+      max_tokens: 4096
+      reasoning_effort: "none"
+      stream: true
+      timeout_ms: 120000
+      retry_max_attempts: 5
+      retry_base_ms: 2000
+
 # Preprocessor tuning. The preprocessor is deterministic (no LLM), but its
 # recency window and dedup lookback are configuration, not magic numbers.
 preprocessor:
