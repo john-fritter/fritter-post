@@ -37,7 +37,8 @@ The paper is produced by a daily cron running nine stages.
    ↓
 4. Grouping (embedding-based clustering — same event?)
    ↓
-5. Grouping-pass-1 (bio-aware scoring, LLM)
+5. Grouping-pass-1 (bio-aware scoring, LLM; then the rerun check withholds
+   news the paper already printed)
    ↓
 6. Thread (same ongoing situation?, LLM)
    ↓
@@ -95,6 +96,8 @@ Mostly software, with two cheap bounded LLM passes (attach, describe). The prima
 Scores every grouping output row — clusters and singletons on the same 0–100 scale — for relevance to this reader. Clusters are scored on their describe-pass title and summary; singletons on title plus body excerpt. Source count is deliberately withheld from the scorer: this judgment is purely about reader relevance, and prominence is applied later by the editor's formula.
 
 Sorts by score and takes the top `grouping.pile_target` rows as the editor pile.
+
+Before the pile is assembled, the **rerun check** compares the top rows with what the last seven editions printed and withholds any row that is news the reader has already been given, so the next row takes its slot. A continuing story that has moved on is kept and gets a "previously" line; a day-late restatement from another outlet is not printed at all. It errs toward keeping: a wrongly dropped story is one the reader never sees.
 
 ### Stage 6: Thread (same ongoing situation?)
 

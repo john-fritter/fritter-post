@@ -1432,6 +1432,51 @@ async function main() {
         break;
       }
 
+      case "reruns": {
+        // The rerun check drops stories before the reader can see them, so this
+        // is the only place a wrong drop is visible. Every judged pair is kept,
+        // dropped or not; --all shows the keeps as well.
+        const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
+        if (id === undefined) {
+          const { rows } = await pool.query(
+            `SELECT id, grouping_pass1_run_id, candidates_in, pairs_judged, rows_dropped,
+                    calls, failed_calls, to_char(started_at, 'YYYY-MM-DD HH24:MI') AS started
+               FROM rerun_runs ORDER BY id DESC LIMIT 20`,
+          );
+          if (rows.length === 0) {
+            console.log("No rerun runs yet. The check runs inside grouping-pass1.");
+            break;
+          }
+          console.log("  id  started           pass1  checked  pairs  dropped  calls  failed");
+          for (const r of rows) {
+            console.log(
+              `  ${String(r.id).padStart(2)}  ${r.started}  ${String(r.grouping_pass1_run_id).padStart(5)}  ` +
+                `${String(r.candidates_in ?? "—").padStart(7)}  ${String(r.pairs_judged ?? "—").padStart(5)}  ` +
+                `${String(r.rows_dropped ?? "—").padStart(7)}  ${String(r.calls ?? "—").padStart(5)}  ` +
+                `${String(r.failed_calls ?? "—").padStart(6)}`,
+            );
+          }
+          break;
+        }
+        const all = flags["all"] === "true";
+        const { rows } = await pool.query(
+          `SELECT row_key, row_title, to_char(prior_published_on, 'YYYY-MM-DD') AS prior_on,
+                  prior_headline, similarity, verdict, reason
+             FROM rerun_verdicts
+            WHERE rerun_run_id = $1 AND ($2::boolean OR verdict = 'rerun')
+            ORDER BY (verdict = 'rerun') DESC, similarity DESC`,
+          [id, all],
+        );
+        console.log(`Rerun run #${id}: ${all ? "every judged pair" : "rows withheld as reruns"}\n`);
+        for (const r of rows) {
+          console.log(`  ${String(r.verdict ?? "unjudged").toUpperCase().padEnd(11)} ${r.row_key}  ${r.row_title}`);
+          console.log(`              printed ${r.prior_on}: ${r.prior_headline ?? "(section line)"}  [${Number(r.similarity).toFixed(4)}]`);
+          if (r.reason) console.log(`              ${r.reason}`);
+        }
+        if (rows.length === 0) console.log("  (none)");
+        break;
+      }
+
       case "pipeline": {
         const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
 
@@ -1570,6 +1615,10 @@ Commands:
                            Print the full assembled prompt for one story
   writers                  List recent writer runs
   writers --id <n>         Show every written piece; add --full for bodies
+  reruns                   List recent rerun checks: rows checked, withheld, failed calls
+  reruns --id <n> [--all]  Show the rows withheld as reruns of printed news, with
+                           the printed piece and the judge's reason; --all adds
+                           every kept pair too
   pipeline                 List recent daily pipeline runs and how each ended
   pipeline --id <n>        Show one run's lineage, per-stage gates and metrics
 

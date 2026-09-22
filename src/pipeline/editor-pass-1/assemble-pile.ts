@@ -88,6 +88,8 @@ async function loadThreads(threadRunId: number): Promise<ThreadInfo[]> {
 export async function assembleGroupingPile(
   groupingPass1RunId: number,
   threadRunId?: number,
+  /** Rows the rerun check withheld: news the paper has already printed. */
+  withheld: Set<string> = new Set(),
 ): Promise<GroupingPileSummary> {
   const pool = getPool();
 
@@ -120,7 +122,15 @@ export async function assembleGroupingPile(
     for (const key of t.memberKeys) absorbed.add(key);
   }
 
-  const unthreaded = resultRows.filter((r) => !absorbed.has(resultKey(r)));
+  // A withheld row leaves the pile the way an absorbed one does, and for the
+  // same reason: the reader must not be handed the same news twice. The next
+  // row takes its slot.
+  const unthreaded = resultRows.filter(
+    (r) => !absorbed.has(resultKey(r)) && !withheld.has(resultKey(r)),
+  );
+  if (withheld.size > 0) {
+    console.log(`[pile] ${withheld.size} row(s) withheld as reruns of printed news`);
+  }
 
   // 3. Rank threads and un-threaded rows together on the pass-1 score, then
   //    apply the pile target. A thread carries max(member score), so it sorts

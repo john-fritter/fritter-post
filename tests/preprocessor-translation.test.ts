@@ -20,6 +20,7 @@ const MOCK_CONFIG: TranslationConfig = {
   concurrency: 1,
   retry_max_attempts: 1, // 1 attempt = no retries (tests that need retries override this)
   retry_base_ms: 10,     // tiny delay so 429-retry tests don't slow the suite
+  abort_after_consecutive_failures: 10,
 };
 
 const MOCK_RUN_ID = 0;
@@ -355,6 +356,75 @@ async function testItemFailingAloneStillFallsBack() {
   assert.equal(fields.get("raw-2")?.failed, true);
 }
 
+// --- Breaker ---
+//
+// Sep 15-21: the translation key stopped authenticating, every call failed in
+// under a second, and split-on-failure plus 429 backoff turned ~60 batches into
+// 4,875 failed calls and six hours of preprocess a day. No paper for a week.
+
+async function testAuthErrorTripsAtOnceAndStopsCalling() {
+  // Sep 15-21's first error family. One call, then nothing more is asked.
+  let calls = 0;
+  const callBatchLLM: BatchLLMCallFn = async () => {
+    calls++;
+    throw new Error("401 Invalid session");
+  };
+  const config: TranslationConfig = { ...MOCK_CONFIG, translation_batch_size: 4, retry_max_attempts: 5 };
+  const { fields, stats } = await batchTranslateItems(
+    nonEnglishItems(40), config, MOCK_RUN_ID, callBatchLLM,
+  );
+  assert.equal(calls, 1, `an auth failure must not be retried or split, saw ${calls} calls`);
+  assert.ok(stats.breakerTripped?.startsWith("authentication failure"), String(stats.breakerTripped));
+  assert.equal(stats.fallbacks, 40, "every item still comes back, on its original text");
+  assert.equal(fields.get("raw-40")?.failed, true);
+  assert.ok(stats.skippedByBreaker > 0);
+}
+
+async function testAuthLockout429IsNotRetriedAsCongestion() {
+  // The second family: a 429 that is a credential lockout, not a busy provider.
+  let calls = 0;
+  const callBatchLLM: BatchLLMCallFn = async () => {
+    calls++;
+    throw new Error("429 authentication temporarily rate-limited after repeated invalid credentials");
+  };
+  const config: TranslationConfig = { ...MOCK_CONFIG, retry_max_attempts: 5 };
+  const { stats } = await batchTranslateItems(nonEnglishItems(4), config, MOCK_RUN_ID, callBatchLLM);
+  assert.equal(calls, 1, `lockout 429 must not go through backoff, saw ${calls} calls`);
+  assert.notEqual(stats.breakerTripped, null);
+}
+
+async function testConsecutiveFailuresTripTheBreaker() {
+  // A provider that fails every call for a non-auth reason. Without the breaker
+  // a batch of 10 costs 19 calls; with it the stage stops at the threshold.
+  let calls = 0;
+  const callBatchLLM: BatchLLMCallFn = async () => {
+    calls++;
+    throw new Error("Request timed out.");
+  };
+  const config: TranslationConfig = { ...MOCK_CONFIG, abort_after_consecutive_failures: 3 };
+  const { stats } = await batchTranslateItems(nonEnglishItems(50), config, MOCK_RUN_ID, callBatchLLM);
+  assert.equal(calls, 3, `expected the breaker to stop at 3 calls, saw ${calls}`);
+  assert.equal(stats.fallbacks, 50);
+  assert.ok(stats.breakerTripped?.includes("3 consecutive"), String(stats.breakerTripped));
+}
+
+async function testASuccessResetsTheCount() {
+  // One slow payload among good ones is a payload problem, not an outage: the
+  // existing split recovery must still run and the breaker must stay shut.
+  const callBatchLLM: BatchLLMCallFn = async (batch) => {
+    if (batch.length > 1) throw new Error("Request timed out.");
+    return jsonlFor(batch);
+  };
+  // Batches of 2 fail once each, and each failure is followed by successes, so
+  // the count never reaches 2 even though two calls fail in total.
+  const config: TranslationConfig = {
+    ...MOCK_CONFIG, translation_batch_size: 2, abort_after_consecutive_failures: 2,
+  };
+  const { stats } = await batchTranslateItems(nonEnglishItems(4), config, MOCK_RUN_ID, callBatchLLM);
+  assert.equal(stats.breakerTripped, null);
+  assert.equal(stats.translated, 4);
+}
+
 // --- Run all tests ---
 
 testIsEnglishReturnsTrueForEng();
@@ -377,6 +447,10 @@ async function main() {
   await testTimeoutSplitsInsteadOfDumpingTheBatch();
   await testSplitRecursesToSingleItems();
   await testItemFailingAloneStillFallsBack();
+  await testAuthErrorTripsAtOnceAndStopsCalling();
+  await testAuthLockout429IsNotRetriedAsCongestion();
+  await testConsecutiveFailuresTripTheBreaker();
+  await testASuccessResetsTheCount();
   console.log("preprocessor translation tests passed");
 }
 

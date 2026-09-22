@@ -2,7 +2,7 @@ import { franc } from "franc-min";
 import pLimit from "p-limit";
 import type { TranslationConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
-import { callWithBackoff } from "../../llm/backoff.js";
+import { callWithBackoff, isAuthError } from "../../llm/backoff.js";
 
 const TRANSLATE_SYSTEM_PROMPT =
   "You are a translation engine. Translate the title and body of each item to English.\n\n" +
@@ -70,6 +70,56 @@ export interface TranslationStats {
    *  whether the provider is timing out or the model is dropping ids. */
   callSplits: number;
   fallbacks: number;
+  /** Set when the breaker stopped the stage asking; the reason names why. */
+  breakerTripped: string | null;
+  /** Items that fell back without being asked, because the breaker had tripped. */
+  skippedByBreaker: number;
+}
+
+/**
+ * Stops the stage asking a provider that is not answering.
+ *
+ * Split-on-failure is right for one slow payload and ruinous for a dead
+ * provider: a batch of 10 that fails every call costs 19 calls, and
+ * callWithBackoff re-asks each 429 up to five times first. Sep 15-21 was
+ * exactly that. The translation key stopped authenticating ("401 Invalid
+ * session", then "429 authentication temporarily rate-limited after repeated
+ * invalid credentials"), every one of 4,875 attempts failed in under a second,
+ * and preprocess ran 316-391 minutes each day -- long past the runner's
+ * 90-minute deadline, so seven days in a row made no paper at all. The
+ * failures were fast; it was the count that took six hours.
+ *
+ * The writers learned this on run #4 and carry the same rule: per-call
+ * recovery cannot see that the provider is down, because each call only sees
+ * itself. Consecutive rather than a rate, for the writers' reason. An
+ * authentication error trips it at once -- a credential that is wrong for one
+ * payload is wrong for all of them, and re-asking is what earned the lockout.
+ *
+ * Tripping costs translation, not the paper: every remaining item falls back
+ * to its original text, which is the stage's existing failure mode, and the
+ * runner's preprocessor gate warns on it.
+ */
+export class TranslationBreaker {
+  private consecutive = 0;
+  tripped: string | null = null;
+
+  constructor(private readonly threshold: number) {}
+
+  success(): void {
+    this.consecutive = 0;
+  }
+
+  failure(message: string): void {
+    if (this.tripped !== null) return;
+    if (isAuthError(message)) {
+      this.tripped = `authentication failure: ${message.slice(0, 120)}`;
+      return;
+    }
+    this.consecutive++;
+    if (this.consecutive >= this.threshold) {
+      this.tripped = `${this.consecutive} consecutive failed calls, last: ${message.slice(0, 120)}`;
+    }
+  }
 }
 
 /** Injectable for testing — raw LLM call, before backoff wrapping. */
@@ -158,8 +208,18 @@ async function translateBatchWithSplit(
   runId: number,
   callBatchLLM: BatchLLMCallFn,
   stats: TranslationStats,
+  breaker: TranslationBreaker,
 ): Promise<Map<string, EnglishFields>> {
   const results = new Map<string, EnglishFields>();
+
+  if (breaker.tripped !== null) {
+    for (const item of batch) {
+      results.set(item.id, { english_title: item.title, english_body: item.body, failed: true });
+    }
+    stats.fallbacks += batch.length;
+    stats.skippedByBreaker += batch.length;
+    return results;
+  }
 
   // Halves the given items and recurses. Shared by the call-failure and
   // missing-id paths, which want identical recovery behaviour.
@@ -177,6 +237,7 @@ async function translateBatchWithSplit(
         runId,
         callBatchLLM,
         stats,
+        breaker,
       );
       for (const [id, fields] of halfResults) into.set(id, fields);
     }
@@ -189,7 +250,9 @@ async function translateBatchWithSplit(
       { retry_max_attempts: config.retry_max_attempts, retry_base_ms: config.retry_base_ms },
       "translation",
     );
+    breaker.success();
   } catch (err) {
+    breaker.failure(err instanceof Error ? err.message : String(err));
     // The call failed after backoff — in practice a timeout, since 429/503 are
     // already retried above. A timeout means this payload was too slow, so
     // re-sending it unchanged would likely time out again. Split instead, the
@@ -246,7 +309,7 @@ async function translateBatchWithSplit(
   if (missingItems.length === 1) {
     stats.splitRetries++;
     const retryResult = await translateBatchWithSplit(
-      [missingItems[0]!], config, runId, callBatchLLM, stats,
+      [missingItems[0]!], config, runId, callBatchLLM, stats, breaker,
     );
     for (const [id, fields] of retryResult) results.set(id, fields);
   } else {
@@ -291,6 +354,8 @@ export async function batchTranslateItems(
     splitRetries: 0,
     callSplits: 0,
     fallbacks: 0,
+    breakerTripped: null,
+    skippedByBreaker: 0,
   };
   const allFields = new Map<string, EnglishFields>();
 
@@ -335,11 +400,15 @@ export async function batchTranslateItems(
 
   // Process batches concurrently (p-limit).
   const limit = pLimit(config.concurrency);
+  const breaker = new TranslationBreaker(config.abort_after_consecutive_failures);
   const batchResults = await Promise.all(
     batches.map((batch) =>
-      limit(async () => translateBatchWithSplit(batch, config, runId, callBatchLLM, stats)),
+      limit(async () =>
+        translateBatchWithSplit(batch, config, runId, callBatchLLM, stats, breaker),
+      ),
     ),
   );
+  stats.breakerTripped = breaker.tripped;
 
   for (const batchResult of batchResults) {
     for (const [id, fields] of batchResult) {

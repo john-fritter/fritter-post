@@ -2,6 +2,7 @@ import "dotenv/config";
 import { runGroupingPass1 } from "../src/pipeline/editor-pass-1/index.js";
 import { assembleGroupingPile } from "../src/pipeline/editor-pass-1/assemble-pile.js";
 import { runThreading } from "../src/pipeline/thread/index.js";
+import { runRerunCheck } from "../src/pipeline/rerun/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
@@ -33,16 +34,20 @@ async function main() {
   // Thread pass runs between scoring and pile assembly: it needs the scores to
   // pick candidates, and the pile needs its results so a threaded row does not
   // also appear on its own.
+  // The rerun check first: news the paper has already printed is neither a
+  // thread member nor a pile row.
+  const rerun = await runRerunCheck({ groupingPass1RunId: run.id });
+
   const { thread: threadConfig } = loadModelConfig();
   let threadRunId: number | undefined;
   if (threadConfig.enabled) {
-    const threadRun = await runThreading({ groupingPass1RunId: run.id });
+    const threadRun = await runThreading({ groupingPass1RunId: run.id, exclude: rerun.dropped });
     threadRunId = threadRun.threadRunId;
   } else {
     console.log("[thread] disabled — pile will contain un-threaded rows");
   }
 
-  const pile = await assembleGroupingPile(run.id, threadRunId);
+  const pile = await assembleGroupingPile(run.id, threadRunId, rerun.dropped);
   console.log(
     `[grouping-pass-1] pile #${pile.pileId}: ` +
       `${pile.threadsInPile} threads + ${pile.clustersInPile} clusters + ` +

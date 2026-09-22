@@ -73,6 +73,10 @@ pipeline:
       min_items_inserted: 1
     preprocessor:
       min_items_kept: 1
+      # Warn when more than this share of non-English items kept their original
+      # text. Sep 10-14 logged zero translation errors, so a quarter is an event,
+      # not the steady state. A tripped translation breaker always warns.
+      warn_translation_fallback_fraction: 0.25
     prefilter:
       min_items_kept: 1
       # The prefilter is a relevance floor, not a shredder. Cutting nearly
@@ -100,6 +104,14 @@ pipeline:
       # which is the right failure -- but run #50 lost its single call and put
       # three separate wildfire rows in the top ten. Worth saying out loud.
       warn_failed_calls: 1
+    rerun:
+      # A failed judge call keeps its rows -- the paper is as it would have been
+      # before this check existed -- but a run that silently stopped checking
+      # should say so.
+      warn_failed_calls: 1
+      # A day that drops more than this share of what it checked is more likely
+      # a judge gone wrong than a slow news cycle.
+      warn_dropped_fraction: 0.2
     editor:
       min_items_ranked: 1
       # Ties fall back to ref order, which is alphabetical, at a boundary that
@@ -150,10 +162,18 @@ publisher:
   # continuity, and a duplicate is fixed upstream in the preprocessor.
   lineage:
     enabled: true
-    # How far back to look for prior coverage. Seven days because the audit's
-    # Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3, and a six-day window
-    # would have missed the confirmation that most needed the marker.
-    lookback_days: 7
+    # How far back to look for prior coverage, counted in EDITIONS, not days.
+    # Seven because the audit's Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3,
+    # and a six-day window would have missed the confirmation that most needed
+    # the marker.
+    #
+    # It was `lookback_days: 7`, which is the same thing only while the paper
+    # comes out every day. It did not from Sep 15 to 21, and paper #42 (Sep 22)
+    # published with ZERO markers -- its last predecessor was eight days back,
+    # one outside the window -- on a front page led by the Ukraine refinery
+    # strikes and the Hormuz blockade, both running in every paper before the
+    # gap. What the reader last read is the last edition, however long ago.
+    lookback_editions: 7
     # RETRIEVAL FLOOR, not a decision. Embedding cosine only decides which few
     # prior pieces are worth asking about; the adjudicate pass below decides
     # whether any of them is really the same situation.
@@ -255,6 +275,12 @@ preprocessor:
     # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
     retry_max_attempts: 5
     retry_base_ms: 2000
+    # Stop asking after this many consecutive failed calls; an authentication
+    # error stops it at once. Everything not yet translated falls back to its
+    # original text. Sep 15-21: a key that stopped authenticating, 4,875 failed
+    # calls through split-on-failure, preprocess at 5-6.5 hours, seven days
+    # with no paper. Ten is well clear of a bad minute and well short of that.
+    abort_after_consecutive_failures: 10
 
 # Bio-aware relevance floor between the preprocessor and the clusterer — a
 # separate, later judgment from `filter` (garbage vs. reader-relevance; see
@@ -302,6 +328,45 @@ prefilter:
 #
 # A thread is a first-class row the editor ranks: relevance = max(member score),
 # sources = sum(member source counts), so the editor formula applies unchanged.
+
+# The rerun check -- runs inside grouping-pass1, after scoring and before
+# threading. Asks of each top-scoring row: is this news the paper already
+# printed? A row the judge calls a RERUN is withheld from threading and the
+# pile, and the next row takes its slot. See src/pipeline/rerun/.
+#
+# Why: the Sep 5-22 audit found about 60 of 257 continuity links were the same
+# news printed again from a later outlet -- AfD's result on Sep 7, 8 and 10, LG
+# TVs Sep 7, 8 and 9, Australia's feed law Sep 6, 7 and 8 -- each under a
+# "previously" line. None shared a URL, item or title with its predecessor, so
+# cross-run dedup could never see them. The lineage judge accepted them on
+# purpose: its question is "same situation?", and a restatement is one.
+rerun:
+  enabled: true
+  # Rows below this never reach the pile (pile_target 150, and threads absorb
+  # rows), so there is nothing to protect there.
+  candidate_target: 250
+  # The lineage pass's window, for the same reason: what the reader last read is
+  # the last editions, however long ago.
+  lookback_editions: 7
+  # Retrieval floor. A rerun of the same event reads alike, so it clears this
+  # easily; the floor only has to keep the judge's input small. The lineage
+  # measurement found real same-situation pairs as low as 0.74.
+  candidate_floor: 0.74
+  top_k: 2
+  # Deciding "is there anything new" needs the facts on both sides, not the
+  # first paragraph: a standard piece runs ~1,200 characters.
+  body_cap: 1200
+  batch_size: 20
+  concurrency: 4
+  model: zai-org/glm-5.2
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 4096
+  reasoning_effort: "none"
+  stream: true
+  timeout_ms: 180000
+  retry_max_attempts: 5
+  retry_base_ms: 2000
 thread:
   enabled: true
   # Top-scored rows offered to the pass. A thread's members are spread across

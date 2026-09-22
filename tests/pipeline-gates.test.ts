@@ -101,8 +101,43 @@ function testCollectorAbortsOnNothingNew() {
 
 // --- preprocessor ---
 
+/** A normal day: Sep 10-14 logged zero translation errors. */
+const TRANSLATED = { translationNonEnglish: 270, translationFallbacks: 0, translationBreaker: null };
+
+function testPreprocessorWarnsWhenTranslationStoppedAsking() {
+  // Sep 15-21, as it should have gone: the key was dead, the breaker tripped,
+  // and the run carries on to make a paper with a warning instead of spending
+  // six hours and making none.
+  const r = gatePreprocessor(
+    {
+      rawItemsConsidered: 1100, itemsKept: 900,
+      translationNonEnglish: 268, translationFallbacks: 268,
+      translationBreaker: "authentication failure: 401 Invalid session",
+    },
+    GATES.preprocessor,
+  );
+  assert.equal(r.verdict, "warn");
+  assert.match(r.reasons.join(" "), /401 Invalid session/);
+}
+
+function testPreprocessorWarnsOnHeavyTranslationLoss() {
+  const r = gatePreprocessor(
+    { rawItemsConsidered: 1100, itemsKept: 900, translationNonEnglish: 270, translationFallbacks: 120, translationBreaker: null },
+    GATES.preprocessor,
+  );
+  assert.equal(r.verdict, "warn");
+}
+
+function testPreprocessorIsQuietOnAFewFallbacks() {
+  const r = gatePreprocessor(
+    { rawItemsConsidered: 1100, itemsKept: 900, translationNonEnglish: 270, translationFallbacks: 3, translationBreaker: null },
+    GATES.preprocessor,
+  );
+  assert.equal(r.verdict, "ok");
+}
+
 function testPreprocessorAbortsOnEmptyWindow() {
-  const r = gatePreprocessor({ rawItemsConsidered: 0, itemsKept: 0 }, GATES.preprocessor);
+  const r = gatePreprocessor({ rawItemsConsidered: 0, itemsKept: 0, ...TRANSLATED }, GATES.preprocessor);
   assert.equal(r.verdict, "abort");
 }
 
@@ -110,7 +145,7 @@ function testPreprocessorAbortsWhenCrossRunDedupTookEverything() {
   // The expected shape of a same-day re-run, and still an abort: there is no
   // paper in an empty kept set. The reason says so, since this is the one an
   // operator will hit by hand.
-  const r = gatePreprocessor({ rawItemsConsidered: 800, itemsKept: 0 }, GATES.preprocessor);
+  const r = gatePreprocessor({ rawItemsConsidered: 800, itemsKept: 0, ...TRANSLATED }, GATES.preprocessor);
   assert.equal(r.verdict, "abort");
   assert.match(r.reasons.join(" "), /cross-run dedup/);
 }
@@ -521,7 +556,7 @@ function testRunOneIsNotDegraded() {
       { sourcesAttempted: 111, sourcesSucceeded: 109, itemsFetched: 2791, itemsInserted: 1043 },
       GATES.collector,
     ),
-    gatePreprocessor({ rawItemsConsidered: 1039, itemsKept: 1009 }, GATES.preprocessor),
+    gatePreprocessor({ rawItemsConsidered: 1039, itemsKept: 1009, ...TRANSLATED }, GATES.preprocessor),
     gatePrefilter({ itemsIn: 950, itemsKept: 604, itemsCut: 346 }, GATES.prefilter),
     gateGrouping(
       {
@@ -590,6 +625,9 @@ testCollectorAbortsWhenMostFeedsFail();
 testCollectorAbortsOnNothingNew();
 testPreprocessorAbortsOnEmptyWindow();
 testPreprocessorAbortsWhenCrossRunDedupTookEverything();
+testPreprocessorWarnsWhenTranslationStoppedAsking();
+testPreprocessorWarnsOnHeavyTranslationLoss();
+testPreprocessorIsQuietOnAFewFallbacks();
 testPrefilterNormalCutRatePasses();
 testPrefilterAbortsWhenItShreds();
 testGroupingCleanRunPasses();

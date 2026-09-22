@@ -149,6 +149,7 @@ export async function loadThreadCandidates(
   groupingPass1RunId: number,
   candidateTarget: number,
   summaryCap: number,
+  exclude: Set<string> = new Set(),
 ): Promise<ThreadCandidate[]> {
   const pool = getPool();
 
@@ -191,11 +192,16 @@ export async function loadThreadCandidates(
      WHERE r.run_id = $1
      ORDER BY r.score DESC, r.id ASC
      LIMIT $2`,
-    [groupingPass1RunId, candidateTarget],
+    // Over-fetch by what is excluded, so a withheld rerun does not shrink the set.
+    [groupingPass1RunId, candidateTarget + exclude.size],
   );
 
   const candidates: ThreadCandidate[] = [];
   for (const row of rows) {
+    if (candidates.length >= candidateTarget) break;
+    const key =
+      row.item_type === "cluster" ? `C${row.cluster_index}` : `S${row.preprocessed_item_id}`;
+    if (exclude.has(key)) continue;
     if (row.item_type === "cluster") {
       const detail = clusterByIndex.get(row.cluster_index!);
       if (!detail) {
@@ -246,6 +252,8 @@ export interface ThreadRunSummary {
 export interface RunThreadingOptions {
   groupingPass1RunId: number;
   modelOverride?: string;
+  /** Rows the rerun check withheld. A rerun is not a member of anything. */
+  exclude?: Set<string>;
 }
 
 /**
@@ -273,6 +281,7 @@ export async function runThreading(
     groupingPass1RunId,
     config.candidate_target,
     config.summary_cap,
+    options.exclude,
   );
 
   const { rows: runRows } = await pool.query<{ id: number }>(

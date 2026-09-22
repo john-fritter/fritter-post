@@ -129,6 +129,9 @@ export function gateCollector(
 export interface PreprocessorMetrics {
   rawItemsConsidered: number;
   itemsKept: number;
+  translationNonEnglish: number;
+  translationFallbacks: number;
+  translationBreaker: string | null;
 }
 
 export function gatePreprocessor(
@@ -150,6 +153,28 @@ export function gatePreprocessor(
       reason:
         `${m.itemsKept} item(s) kept from ${m.rawItemsConsidered} considered — ` +
         `if this is a same-day re-run, cross-run dedup has already taken them`,
+    },
+    {
+      // Warn, not abort: an untranslated item still clusters within its own
+      // language and still reaches the writers, so the paper is worse rather
+      // than impossible. Sep 15-21 made no paper at all for want of this
+      // distinction -- a dead translation key held preprocess for six hours
+      // and the deadline stopped every run before prefilter.
+      when: m.translationBreaker !== null,
+      verdict: "warn",
+      reason:
+        `translation stopped asking (${m.translationBreaker}) — ` +
+        `${m.translationFallbacks} of ${m.translationNonEnglish} non-English item(s) kept their original text`,
+    },
+    {
+      when:
+        m.translationBreaker === null &&
+        fraction(m.translationFallbacks, m.translationNonEnglish) >
+          cfg.warn_translation_fallback_fraction,
+      verdict: "warn",
+      reason:
+        `${m.translationFallbacks} of ${m.translationNonEnglish} non-English item(s) ` +
+        `fell back to original-language text`,
     },
   ]);
 }
@@ -295,6 +320,36 @@ export function gateThread(m: ThreadMetrics, cfg: PipelineGatesConfig["thread"])
       reason:
         `${m.failedCalls} thread call(s) failed — related rows will compete as separate ` +
         `stories, which is how one situation takes several slots at the top of the paper`,
+    },
+  ]);
+}
+
+export interface RerunMetrics {
+  candidatesIn: number;
+  rowsDropped: number;
+  failedCalls: number;
+}
+
+export function gateRerun(m: RerunMetrics, cfg: PipelineGatesConfig["rerun"]): GateResult {
+  const dropped = fraction(m.rowsDropped, m.candidatesIn);
+  return evaluate([
+    {
+      // Fail open: the unjudged rows stay, and the paper is what it was before
+      // the check existed -- which includes the reruns it exists to remove.
+      when: m.failedCalls >= cfg.warn_failed_calls,
+      verdict: "warn",
+      reason:
+        `${m.failedCalls} rerun judge call(s) failed — their rows were kept unjudged, ` +
+        `so news the paper already printed may run again`,
+    },
+    {
+      // A dropped story is invisible to the reader, so an over-eager judge is
+      // the failure nobody would otherwise see.
+      when: dropped > cfg.warn_dropped_fraction,
+      verdict: "warn",
+      reason:
+        `${m.rowsDropped} of ${m.candidatesIn} rows withheld as reruns (${pct(dropped)}) — ` +
+        `check the verdicts before trusting this edition's story selection`,
     },
   ]);
 }

@@ -21,6 +21,7 @@ import { runGrouping } from "../grouping/index.js";
 import { runGroupingPass1 } from "../editor-pass-1/index.js";
 import { assembleGroupingPile } from "../editor-pass-1/assemble-pile.js";
 import { runThreading } from "../thread/index.js";
+import { runRerunCheck } from "../rerun/index.js";
 import { runEditor } from "../editor/index.js";
 import { runArticleFetch } from "../writers/fetch-text.js";
 import { runWriters, repairWriterRun } from "../writers/index.js";
@@ -36,6 +37,7 @@ import {
   gatePrefilter,
   gatePreprocessor,
   gatePublisher,
+  gateRerun,
   gateThread,
   gateWriters,
   type GateResult,
@@ -233,6 +235,9 @@ export const STAGES: Stage[] = [
         itemsDroppedDuplicate: r.itemsDroppedDuplicate,
         itemsDroppedCrossRun: r.itemsDroppedCrossRun,
         crossRunDedupSkipped: r.crossRunDedupSkipped,
+        translationNonEnglish: r.translationNonEnglish,
+        translationFallbacks: r.translationFallbacks,
+        translationBreaker: r.translationBreaker,
       };
       return {
         stageRunId: r.id,
@@ -351,11 +356,27 @@ export const STAGES: Stage[] = [
       );
       const unscored = parseInt(unscoredRows[0]?.n ?? "0", 10);
 
+      // The rerun check runs before threading, so news the paper has already
+      // printed is neither a thread member nor a pile row.
+      const rerun = await runRerunCheck({ groupingPass1RunId: r.id });
+      const rerunMetrics = {
+        rerunEnabled: rerun.rerunRunId !== null,
+        rerunRunId: rerun.rerunRunId,
+        rerunCandidatesIn: rerun.candidatesIn,
+        rerunPairsJudged: rerun.pairsJudged,
+        rerunRowsDropped: rerun.dropped.size,
+        rerunFailedCalls: rerun.failedCalls,
+      };
+      const rerunGate = gateRerun(
+        { candidatesIn: rerun.candidatesIn, rowsDropped: rerun.dropped.size, failedCalls: rerun.failedCalls },
+        cfg.rerun,
+      );
+
       let threadRunId: number | null = null;
       let threadGate: GateResult = { verdict: "ok", reasons: [] };
       let threadMetrics: Record<string, unknown> = { threadEnabled: false };
       if (config.thread.enabled) {
-        const t = await runThreading({ groupingPass1RunId: r.id });
+        const t = await runThreading({ groupingPass1RunId: r.id, exclude: rerun.dropped });
         threadRunId = t.threadRunId;
         threadMetrics = {
           threadEnabled: true,
@@ -374,7 +395,7 @@ export const STAGES: Stage[] = [
         );
       }
 
-      const pile = await assembleGroupingPile(r.id, threadRunId ?? undefined);
+      const pile = await assembleGroupingPile(r.id, threadRunId ?? undefined, rerun.dropped);
       const pileItems = pile.threadsInPile + pile.clustersInPile + pile.singletonsInPile;
 
       const pass1Metrics = { itemsIn: r.itemsIn, unscored, pileItems };
@@ -382,6 +403,7 @@ export const STAGES: Stage[] = [
         stageRunId: r.id,
         metrics: {
           ...pass1Metrics,
+          ...rerunMetrics,
           ...threadMetrics,
           pileId: pile.pileId,
           threadsInPile: pile.threadsInPile,
@@ -389,7 +411,7 @@ export const STAGES: Stage[] = [
           singletonsInPile: pile.singletonsInPile,
           scoreCutoff: pile.scoreCutoff,
         },
-        gate: merge(gateGroupingPass1(pass1Metrics, cfg.grouping_pass1), threadGate),
+        gate: merge(gateGroupingPass1(pass1Metrics, cfg.grouping_pass1), rerunGate, threadGate),
         lineage: {
           groupingPass1RunId: r.id,
           threadRunId,

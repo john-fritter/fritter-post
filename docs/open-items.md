@@ -143,6 +143,39 @@ work by putting text about the paper into a prompt, and this project has five
 recorded instances of a model relaying exactly that to the reader. Precision
 first, then the prompt.
 
+### 3d. The rerun check: one retrieval miss and one prompt shape to watch
+
+Backtested 2026-09-22 over seven days (see CLAUDE.md, *rerun*): 93 drops, none of
+eight must-keep developments withheld. Two things are not settled:
+
+- **Retrieval missed a known rerun.** Imelda Marcos's acquittal (Inquirer Sep 9,
+  The Diplomat Sep 11) was never offered to the judge. Either the row was below
+  `candidate_target` or its best similarity was under `candidate_floor` (0.74).
+  **Fix when it recurs:** read the pair's similarity before touching the floor;
+  one miss is not a sweep.
+- **Two-fact candidates.** Sep 9's C86 (Houthi strikes *and* Saudi-backed
+  airstrikes) and Sep 8's C16 (Zelensky's account of the envoys' visit) were
+  judged RERUN against pieces that led on the other half. The prompt's "single
+  most important fact" rule is the likely cause. Left as measured; if a live run
+  drops a story that had a new second fact, change the rule to "every fact" and
+  re-run the backtest as-of the same days.
+
+### 3e. Nothing tells the reader the paper did not come out
+
+Sep 15–21 produced no paper and nothing said so for seven days; the site kept
+showing Sep 14. The breaker removes that particular cause, but the next outage
+will be something else. A status line on the index ("No edition today — the run
+stopped at prefilter") is the smallest fix that stays inside "a newspaper, not a
+dashboard". Wants a decision.
+
+### 3f. systemd's hard kill is unverified
+
+`TimeoutStartSec` is 150 minutes and the Sep 15–21 runs lasted 316–391 minutes,
+still recording their own deadline abort. The journal had no entries to say
+whether systemd fired. Killing `docker compose exec` probably leaves the
+in-container process running. Check the next time a run overruns, or test it
+deliberately with a short timeout on a copy of the unit.
+
 ### 4. The outlet count is derived in two places
 
 `src/db/outlets.ts` is called from grouping-pass-1, which stores the count on
@@ -223,8 +256,13 @@ touching again.
 Run #3 fired **no gate at all** — the first run to do so, and the retune's real
 vindication.
 
-What is still a guess is everything none of the three runs exercised, because
-all three were good days: `max_cut_fraction` (0.95 against 36.4%, 32.3%, 33.5%),
+**Sep 12–21 were the first bad runs.** The embedding 400 failed grouping (a
+throw, not a gate — now fixed at the source), and the deadline aborted seven
+runs before prefilter. The deadline did what it says; the defect was upstream
+(translation, now broken out of by the breaker). The preprocessor gate gained a
+translation warning from this.
+
+What is still a guess is everything none of the good runs exercised: `max_cut_fraction` (0.95 against 36.4%, 32.3%, 33.5%),
 `max_unscored_fraction` and `abort_unscored_fraction` (0 unscored every run),
 `min_written_fraction` (150/150 every run), the collector's abort floor of 0.5
 (98.2%, 99.1%, 98.2% succeeded), and the publisher's
