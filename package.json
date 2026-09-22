@@ -24,7 +24,8 @@
     "publish": "tsx scripts/publish.ts",
     "pipeline": "tsx scripts/pipeline.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts",
-    "probe-source": "tsx scripts/probe-source.ts"
+    "probe-source": "tsx scripts/probe-source.ts",
+    "rerun-check": "tsx scripts/rerun-check.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

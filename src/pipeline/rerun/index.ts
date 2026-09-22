@@ -61,6 +61,12 @@ function localDay(): string {
  */
 export async function runRerunCheck(options: {
   groupingPass1RunId: number;
+  /**
+   * The paper day to check as of (YYYY-MM-DD); only papers before it count as
+   * printed. Defaults to today in the reader's timezone. Set for a backtest over
+   * an old run, which would otherwise be judged against the papers made from it.
+   */
+  asOf?: string;
 }): Promise<RerunRunSummary> {
   const pool = getPool();
   const cfg = loadModelConfig().rerun;
@@ -100,7 +106,7 @@ export async function runRerunCheck(options: {
     [groupingPass1RunId, cfg.model, candidates.length],
   );
   const rerunRunId = runRows[0]!.id;
-  const today = localDay();
+  const today = options.asOf ?? localDay();
 
   const { rows: pairRows } = await pool.query<{
     row_key: string;
