@@ -425,8 +425,22 @@ unreadable one all keep the row; the prompt says "when unsure, DEVELOPMENT";
 and only a stated `RERUN` drops anything. Every judged pair is persisted,
 dropped or not, because this table is the only place a wrong drop can be seen.
 The gate warns on a failed call and on a day that drops more than
-`warn_dropped_fraction` of what it checked. **Not yet measured on the box** —
-the Sep 5–22 links are the regression set.
+`warn_dropped_fraction` of what it checked.
+
+**Backtested 2026-09-22** with `npm run rerun-check -- --as-of` over Sep 7–14's
+pass-1 runs (seven days, 250 rows each): 8, 17, 17, 17, 15, 1 and 9 rows
+withheld, 93 RERUN verdicts, 0 failed calls, ~25–45 s per day. Every expected
+rerun that retrieval offered was withheld or kept as a real DEVELOPMENT (AfD's
+Kremlin-messaging angle, DeepSeek's new benchmarks), and **none of eight
+must-keep developments was withheld** — Romualdez's arrest, five tankers after
+three, the Missouri map blocked, Oregon approving the $123M it had weighed, LG's
+denial. One expected rerun was never offered (Imelda Marcos's acquittal, Sep 9
+then 11): a retrieval miss, not a judge miss. Borderline calls to watch: Sep 9's
+C86 ("Houthis escalate… and Saudi-backed forces report airstrikes on Yemen") and
+Sep 8's C16 (Zelensky's account of the envoys' visit) were judged RERUN against
+pieces that led on the other half of the story. A candidate with two facts, one
+printed and one not, is the shape the prompt's "single most important fact" rule
+could get wrong.
 
 ### thread
 **Groups related clusters and singletons into one ongoing situation.** Runs

@@ -5945,3 +5945,10 @@ headline announced that its source was not about Ukraine).
 of 316–391 minutes, and the journal had no entries to say why; killing
 `docker compose exec` may leave the in-container process running. With the
 breaker the case should not recur, but the hard kill is unverified.
+
+**Backtest, same day.** Gizmo deployed the branch (af6109f), applied 045 and ran
+the rerun check as-of Sep 7, 8, 9, 10, 11, 13 and 14: 93 RERUN verdicts, 0
+failed calls, no must-keep development withheld, one expected rerun not
+retrieved (Imelda Marcos). Production now runs the branch. The prompt is left as
+measured; two borderline two-fact candidates (Sep 9 C86, Sep 8 C16) are noted in
+CLAUDE.md as the shape to watch in live runs.
