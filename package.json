@@ -24,6 +24,7 @@
     "publish": "tsx scripts/publish.ts",
     "pipeline": "tsx scripts/pipeline.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts",
+    "translation-experiment": "tsx scripts/translation-experiment.ts",
     "probe-source": "tsx scripts/probe-source.ts",
     "rerun-check": "tsx scripts/rerun-check.ts"
   },
