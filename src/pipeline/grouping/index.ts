@@ -8,6 +8,7 @@ import type {
   GroupingSplitConfig,
 } from "../../config/models.js";
 import { embed, callLLM } from "../../llm/index.js";
+import { embedTexts } from "./embed-text.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { getClusteringItems, formatItemBlocks } from "../preprocessor/assembler.js";
 import type { PreprocessedItemRow } from "../preprocessor/assembler.js";
@@ -1395,20 +1396,26 @@ export async function runGrouping(
     const batchSize = embConfig.batch_size;
     let embeddedCount = 0;
     for (let offset = 0; offset < items.length; offset += batchSize) {
-      const batch = items.slice(offset, offset + batchSize);
-
       // Build body and title embed texts from english_* columns so all clustering
       // happens in one English embedding space. Fallback to original title/body
-      // for rows that pre-date the migration (english_title IS NULL).
-      const bodyTexts = batch.map((item) => {
-        const title = item.english_title ?? item.title;
-        const body = (item.english_body ?? item.body_text)?.replace(/\s+/g, " ").trim() ?? "";
-        return body.length > 0 ? `${title}\n${body.slice(0, bodyCap)}` : title;
-      });
-      const titleTexts = batch.map((item) => item.english_title ?? item.title);
+      // for rows that pre-date the migration (english_title IS NULL). An item
+      // with nothing to embed is left out of the request rather than sent as ""
+      // -- see embed-text.ts for the Sep 12 run that one empty title cost.
+      const batch: typeof items = [];
+      const texts: Array<{ body: string; title: string }> = [];
+      for (const item of items.slice(offset, offset + batchSize)) {
+        const t = embedTexts(item, bodyCap);
+        if (t === null) {
+          console.warn(`[grouping] item ${item.id} has no title or body to embed — left as a singleton`);
+          continue;
+        }
+        batch.push(item);
+        texts.push(t);
+      }
+      if (batch.length === 0) continue;
 
       // Interleave [body0, title0, body1, title1, ...] so one API call covers both.
-      const interleavedTexts = batch.flatMap((_, i) => [bodyTexts[i]!, titleTexts[i]!]);
+      const interleavedTexts = texts.flatMap((t) => [t.body, t.title]);
 
       const vectors = await embed(interleavedTexts, {
         stage: "grouping",
