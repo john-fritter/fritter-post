@@ -233,6 +233,9 @@ export const STAGES: Stage[] = [
         itemsDroppedDuplicate: r.itemsDroppedDuplicate,
         itemsDroppedCrossRun: r.itemsDroppedCrossRun,
         crossRunDedupSkipped: r.crossRunDedupSkipped,
+        translationNonEnglish: r.translationNonEnglish,
+        translationFallbacks: r.translationFallbacks,
+        translationBreaker: r.translationBreaker,
       };
       return {
         stageRunId: r.id,

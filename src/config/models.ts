@@ -17,6 +17,8 @@ const TranslationConfigSchema = z.object({
   concurrency: z.number().int(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
+  // Stop asking after this many consecutive failed calls. See TranslationBreaker.
+  abort_after_consecutive_failures: z.number().int().positive(),
 });
 
 // Deterministic preprocessor tuning (recency window + dedup lookback) plus
@@ -280,6 +282,7 @@ const PipelineGatesConfigSchema = z.object({
   }),
   preprocessor: z.object({
     min_items_kept: z.number().int().nonnegative(),
+    warn_translation_fallback_fraction: z.number().min(0).max(1),
   }),
   prefilter: z.object({
     min_items_kept: z.number().int().nonnegative(),

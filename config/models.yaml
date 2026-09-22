@@ -73,6 +73,10 @@ pipeline:
       min_items_inserted: 1
     preprocessor:
       min_items_kept: 1
+      # Warn when more than this share of non-English items kept their original
+      # text. Sep 10-14 logged zero translation errors, so a quarter is an event,
+      # not the steady state. A tripped translation breaker always warns.
+      warn_translation_fallback_fraction: 0.25
     prefilter:
       min_items_kept: 1
       # The prefilter is a relevance floor, not a shredder. Cutting nearly
@@ -263,6 +267,12 @@ preprocessor:
     # 429/503 backoff for translation calls. 5 attempts, 2s base, max 64s cap.
     retry_max_attempts: 5
     retry_base_ms: 2000
+    # Stop asking after this many consecutive failed calls; an authentication
+    # error stops it at once. Everything not yet translated falls back to its
+    # original text. Sep 15-21: a key that stopped authenticating, 4,875 failed
+    # calls through split-on-failure, preprocess at 5-6.5 hours, seven days
+    # with no paper. Ten is well clear of a bad minute and well short of that.
+    abort_after_consecutive_failures: 10
 
 # Bio-aware relevance floor between the preprocessor and the clusterer — a
 # separate, later judgment from `filter` (garbage vs. reader-relevance; see

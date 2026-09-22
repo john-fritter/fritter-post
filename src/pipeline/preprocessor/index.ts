@@ -22,6 +22,12 @@ export interface PreprocessorRun {
   itemsDroppedCrossRun: number;
   crossRunDedupSkipped: boolean;
   notes: string | null;
+  /** Non-English items sent for translation, and how many fell back to their
+   *  original text. In-memory only; the runner persists them as gate metrics. */
+  translationNonEnglish: number;
+  translationFallbacks: number;
+  /** Why translation stopped asking, or null if it never did. */
+  translationBreaker: string | null;
 }
 
 interface RawItemRow {
@@ -295,6 +301,12 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
         ).toFixed(1)}% loss`,
       );
     }
+    if (translationStats.breakerTripped !== null) {
+      console.warn(
+        `[preprocessor] WARNING: translation stopped asking — ${translationStats.breakerTripped}. ` +
+        `${translationStats.skippedByBreaker} item(s) kept their original text without a call`,
+      );
+    }
     if (translationStats.fallbacks > 0) {
       console.warn(
         `[preprocessor] WARNING: ${translationStats.fallbacks} item(s) fell back to ` +
@@ -404,6 +416,9 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
       itemsDroppedCrossRun: r.items_dropped_cross_run,
       crossRunDedupSkipped: r.cross_run_dedup_skipped,
       notes: r.notes,
+      translationNonEnglish: translationStats.nonEnglish,
+      translationFallbacks: translationStats.fallbacks,
+      translationBreaker: translationStats.breakerTripped,
     };
   } catch (err) {
     // Mark the run as failed if we haven't already.

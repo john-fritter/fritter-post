@@ -129,6 +129,9 @@ export function gateCollector(
 export interface PreprocessorMetrics {
   rawItemsConsidered: number;
   itemsKept: number;
+  translationNonEnglish: number;
+  translationFallbacks: number;
+  translationBreaker: string | null;
 }
 
 export function gatePreprocessor(
@@ -150,6 +153,28 @@ export function gatePreprocessor(
       reason:
         `${m.itemsKept} item(s) kept from ${m.rawItemsConsidered} considered — ` +
         `if this is a same-day re-run, cross-run dedup has already taken them`,
+    },
+    {
+      // Warn, not abort: an untranslated item still clusters within its own
+      // language and still reaches the writers, so the paper is worse rather
+      // than impossible. Sep 15-21 made no paper at all for want of this
+      // distinction -- a dead translation key held preprocess for six hours
+      // and the deadline stopped every run before prefilter.
+      when: m.translationBreaker !== null,
+      verdict: "warn",
+      reason:
+        `translation stopped asking (${m.translationBreaker}) — ` +
+        `${m.translationFallbacks} of ${m.translationNonEnglish} non-English item(s) kept their original text`,
+    },
+    {
+      when:
+        m.translationBreaker === null &&
+        fraction(m.translationFallbacks, m.translationNonEnglish) >
+          cfg.warn_translation_fallback_fraction,
+      verdict: "warn",
+      reason:
+        `${m.translationFallbacks} of ${m.translationNonEnglish} non-English item(s) ` +
+        `fell back to original-language text`,
     },
   ]);
 }

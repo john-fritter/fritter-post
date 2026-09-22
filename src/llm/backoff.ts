@@ -66,7 +66,25 @@ function isBudgetExhausted(msg: string): boolean {
   return /empty response after consuming its entire \d+-token budget/i.test(msg);
 }
 
+/**
+ * A credential the provider will not accept. Never retried: no wait, split or
+ * smaller payload changes the answer, and re-asking is what turns a bad key into
+ * a lockout. The 429 form is the provider's own lockout for repeated bad
+ * credentials ("authentication temporarily rate-limited"), which the rate-limit
+ * check above would otherwise read as ordinary congestion and retry five times.
+ * Sep 15-21's translation outage was all of these.
+ */
+export function isAuthError(msg: string): boolean {
+  return (
+    /\b(401|403)\b/.test(msg) ||
+    /invalid (session|api key|credentials?|token)/i.test(msg) ||
+    /\bunauthori[sz]ed\b/i.test(msg) ||
+    /\bauthentication\b/i.test(msg)
+  );
+}
+
 function isRetryable(msg: string): boolean {
+  if (isAuthError(msg)) return false;
   return isRateLimitError(msg) || isTransientTransportError(msg) || isBudgetExhausted(msg);
 }
 
