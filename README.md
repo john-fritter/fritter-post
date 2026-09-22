@@ -165,7 +165,8 @@ container name. The Caddy configuration lives outside this repo.
 
 ```
 src/pipeline/   Nine-stage pipeline (collector → publisher), plus runner/ and
-                lineage/ (the publisher's cross-day "previously" marker)
+                lineage/ (the publisher's cross-day "previously" marker) and
+                rerun/ (withholds news already printed, before the pile)
 src/llm/        OpenAI SDK wrapper with logging and budgets
 src/db/         Postgres connection pool
 src/app/        Next.js App Router — the reading view
@@ -180,8 +181,11 @@ All nine stages are built and the pipeline runs itself on a daily timer:
 
 ```
 collector → preprocessor → prefilter → grouping → grouping-pass-1
-          → thread → editor → writers → publisher
+          → (rerun) → thread → editor → writers → publisher
 ```
+
+`rerun` is a pass inside grouping-pass-1: it withholds news the paper has
+already printed, judged against the last seven editions (`inspect reruns`).
 
 `docs/concept.md` has the vision and what each stage is for; `CLAUDE.md` has the
 operational detail and the reasoning behind specific behaviours;
