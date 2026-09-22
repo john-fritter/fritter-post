@@ -104,6 +104,14 @@ pipeline:
       # which is the right failure -- but run #50 lost its single call and put
       # three separate wildfire rows in the top ten. Worth saying out loud.
       warn_failed_calls: 1
+    rerun:
+      # A failed judge call keeps its rows -- the paper is as it would have been
+      # before this check existed -- but a run that silently stopped checking
+      # should say so.
+      warn_failed_calls: 1
+      # A day that drops more than this share of what it checked is more likely
+      # a judge gone wrong than a slow news cycle.
+      warn_dropped_fraction: 0.2
     editor:
       min_items_ranked: 1
       # Ties fall back to ref order, which is alphabetical, at a boundary that
@@ -320,6 +328,45 @@ prefilter:
 #
 # A thread is a first-class row the editor ranks: relevance = max(member score),
 # sources = sum(member source counts), so the editor formula applies unchanged.
+
+# The rerun check -- runs inside grouping-pass1, after scoring and before
+# threading. Asks of each top-scoring row: is this news the paper already
+# printed? A row the judge calls a RERUN is withheld from threading and the
+# pile, and the next row takes its slot. See src/pipeline/rerun/.
+#
+# Why: the Sep 5-22 audit found about 60 of 257 continuity links were the same
+# news printed again from a later outlet -- AfD's result on Sep 7, 8 and 10, LG
+# TVs Sep 7, 8 and 9, Australia's feed law Sep 6, 7 and 8 -- each under a
+# "previously" line. None shared a URL, item or title with its predecessor, so
+# cross-run dedup could never see them. The lineage judge accepted them on
+# purpose: its question is "same situation?", and a restatement is one.
+rerun:
+  enabled: true
+  # Rows below this never reach the pile (pile_target 150, and threads absorb
+  # rows), so there is nothing to protect there.
+  candidate_target: 250
+  # The lineage pass's window, for the same reason: what the reader last read is
+  # the last editions, however long ago.
+  lookback_editions: 7
+  # Retrieval floor. A rerun of the same event reads alike, so it clears this
+  # easily; the floor only has to keep the judge's input small. The lineage
+  # measurement found real same-situation pairs as low as 0.74.
+  candidate_floor: 0.74
+  top_k: 2
+  # Deciding "is there anything new" needs the facts on both sides, not the
+  # first paragraph: a standard piece runs ~1,200 characters.
+  body_cap: 1200
+  batch_size: 20
+  concurrency: 4
+  model: zai-org/glm-5.2
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 4096
+  reasoning_effort: "none"
+  stream: true
+  timeout_ms: 180000
+  retry_max_attempts: 5
+  retry_base_ms: 2000
 thread:
   enabled: true
   # Top-scored rows offered to the pass. A thread's members are spread across

@@ -394,6 +394,47 @@ function materialLevelOf(chars: number, cfg: WritersTierPacketConfig): MaterialL
 }
 
 /**
+ * Does a fetched page look like the article its feed item described?
+ *
+ * Sep 8's rank 2 was a Ukraine section led by a feature headlined "Source
+ * material for Ukraine section does not contain reporting on the conflict".
+ * Its one source was a La Nación feed item titled as live Ukraine war coverage
+ * whose link went to a real-estate story; the fetch returned 3,912 clean
+ * characters of Argentine rents and food prices, beat the 327-character feed
+ * body on length, and became the packet. The writer rightly refused to invent
+ * a war story and published the refusal. Nothing between the feed and the
+ * writer ever compared the page with the headline.
+ *
+ * So the test is the headline's own distinctive words: a real article repeats
+ * most of them, and a different article repeats almost none. Deliberately
+ * loose -- only a page that shares under a fifth of them fails, and a title
+ * with fewer than three such words is never judged -- because a false failure
+ * costs the fetched text and a false pass costs what it always did. Compared
+ * against the original-language title, since the page is in that language.
+ * Exported for tests.
+ */
+const TITLE_WORD_MIN_CHARS = 5;
+const TITLE_WORDS_MIN = 3;
+const TITLE_MATCH_FLOOR = 0.2;
+
+function foldWords(text: string): string[] {
+  return text
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length >= TITLE_WORD_MIN_CHARS);
+}
+
+export function pageMatchesTitle(title: string, pageText: string): boolean {
+  const titleWords = [...new Set(foldWords(title))];
+  if (titleWords.length < TITLE_WORDS_MIN) return true;
+  const page = new Set(foldWords(pageText));
+  const found = titleWords.filter((w) => page.has(w)).length;
+  return found / titleWords.length >= TITLE_MATCH_FLOOR;
+}
+
+/**
  * Builds one story's packet. `textsById` supplies fetched text where the
  * fetcher got any; anything missing falls back to the feed body, which is why
  * a blocked host degrades the piece rather than emptying it.
@@ -426,7 +467,12 @@ export function assembleWriterPacket(
     // down to 286 — worse than the teaser it replaced, and worse in a way the
     // raw comparison could not see.
     const feed = stripBoilerplate(article.feedText);
-    const fetchedText = fetched ? stripBoilerplate(fetched.text) : null;
+    // A page that is not the article the feed described is not material for
+    // this story, however long it is. See `pageMatchesTitle`.
+    const fetchedText =
+      fetched && pageMatchesTitle(article.originalTitle, fetched.text)
+        ? stripBoilerplate(fetched.text)
+        : null;
     const useFetched = fetchedText !== null && fetchedText.text.length > feed.text.length;
     const stripped = useFetched ? fetchedText : feed;
     const origin = useFetched ? fetched!.origin : ("feed" as const);

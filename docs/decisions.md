@@ -5899,3 +5899,49 @@ returned `replacedPieceCount: 150`, so the guard does not block a legitimate
 correction — which is the failure mode that mattered more than the refusal,
 since the refusal is unit-tested and a false refusal would block a real repair.
 The destructive path was deliberately not simulated on production.
+
+## 2026-09-22 — Reruns are withheld, and two outages that each cost a paper
+
+**Context:** The first audit after the continuity work (papers #33–#42, Sep
+5–22) and Gizmo's follow-up. The papers themselves were sound — 150 of 150
+pieces written every day, none unsourced. What was wrong was around them: eight
+days with no paper, and the same news printed two or three days running.
+
+**Decision 1 — withhold reruns before the pile.** About one in four of the 257
+"previously" links was a restatement, not a development: AfD's result three
+times, LG TVs three times, Australia's feed law three times, JLR's 4,000 cuts
+twice. None shared a URL, item or title with its predecessor and 114 shared no
+outlet, so no preprocessor key could catch them. The 2026-09-03 decision that
+"nothing here deletes anything" rested on the duplicate having already been
+removed upstream; that was true of duplicate articles and false of duplicate
+news. A new pass inside grouping-pass-1 judges each top row against the last
+seven editions (RERUN / DEVELOPMENT / NEW) and withholds reruns from threading
+and the pile. The reader chose dropping over demoting to a brief or only
+briefing the writer.
+
+**It fails open**, the opposite of the lineage judge, because the errors are
+reversed: a wrong "previously" line prints where the reader sees it, while a
+wrongly dropped story is never seen at all. Every judged pair is stored so the
+drops can be audited (`inspect reruns`). Unmeasured on the box.
+
+**Decision 2 — translation gets a breaker.** Sep 15–21: a translation key that
+stopped authenticating, 4,875 failed calls through split-on-failure and 429
+backoff, preprocess at 5–6.5 hours, and the 90-minute deadline stopping every
+run before prefilter. Seven days, no paper. The writers learned on run #4 that
+per-call recovery cannot see a dead provider; translation now has the same
+consecutive-failure breaker, auth errors trip it at once and are never retried
+anywhere, and the gate warns. Untranslated items still make a paper.
+
+**Decision 3 — nothing sent to the embedding provider is empty.** Sep 12: one
+KTVZ item with an empty title failed a 200-text batch and the run with it.
+
+**Smaller:** the lineage lookback counts editions rather than days (paper #42
+had zero markers because its predecessor was eight days back), and a fetched
+page that shares almost none of its headline's words is not used (Sep 8's
+La Nación link to a real-estate story, published as a Ukraine feature whose
+headline announced that its source was not about Ukraine).
+
+**Open:** the systemd `TimeoutStartSec` of 150 minutes did not visibly stop runs
+of 316–391 minutes, and the journal had no entries to say why; killing
+`docker compose exec` may leave the in-container process running. With the
+breaker the case should not recur, but the hard kill is unverified.

@@ -324,6 +324,36 @@ export function gateThread(m: ThreadMetrics, cfg: PipelineGatesConfig["thread"])
   ]);
 }
 
+export interface RerunMetrics {
+  candidatesIn: number;
+  rowsDropped: number;
+  failedCalls: number;
+}
+
+export function gateRerun(m: RerunMetrics, cfg: PipelineGatesConfig["rerun"]): GateResult {
+  const dropped = fraction(m.rowsDropped, m.candidatesIn);
+  return evaluate([
+    {
+      // Fail open: the unjudged rows stay, and the paper is what it was before
+      // the check existed -- which includes the reruns it exists to remove.
+      when: m.failedCalls >= cfg.warn_failed_calls,
+      verdict: "warn",
+      reason:
+        `${m.failedCalls} rerun judge call(s) failed — their rows were kept unjudged, ` +
+        `so news the paper already printed may run again`,
+    },
+    {
+      // A dropped story is invisible to the reader, so an over-eager judge is
+      // the failure nobody would otherwise see.
+      when: dropped > cfg.warn_dropped_fraction,
+      verdict: "warn",
+      reason:
+        `${m.rowsDropped} of ${m.candidatesIn} rows withheld as reruns (${pct(dropped)}) — ` +
+        `check the verdicts before trusting this edition's story selection`,
+    },
+  ]);
+}
+
 export interface EditorMetrics {
   itemsIn: number;
   itemsFeature: number;

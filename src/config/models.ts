@@ -301,6 +301,12 @@ const PipelineGatesConfigSchema = z.object({
   thread: z.object({
     warn_failed_calls: z.number().int().nonnegative(),
   }),
+  rerun: z.object({
+    warn_failed_calls: z.number().int().nonnegative(),
+    // A day that drops more than this share of what it checked is more likely a
+    // judge gone wrong than a news cycle gone quiet.
+    warn_dropped_fraction: z.number().min(0).max(1),
+  }),
   editor: z.object({
     min_items_ranked: z.number().int().nonnegative(),
     warn_tie_break_failed_calls: z.number().int().nonnegative(),
@@ -335,6 +341,27 @@ const PublisherLineageConfigSchema = z.object({
   }),
 });
 
+// The rerun check. See src/pipeline/rerun/.
+const RerunConfigSchema = StageConfigSchema.extend({
+  enabled: z.boolean(),
+  // Top-scoring grouping-pass-1 rows checked. Rows below this never reach the
+  // pile, so there is nothing to protect there.
+  candidate_target: z.number().int().positive(),
+  // Prior editions searched, counted in papers rather than days.
+  lookback_editions: z.number().int().positive(),
+  // Retrieval floor: which prior pieces are worth asking about. Not a decision.
+  candidate_floor: z.number().min(-1).max(1),
+  // Prior pieces offered per row.
+  top_k: z.number().int().positive(),
+  // Characters of today's summary and of the prior piece shown per pair.
+  body_cap: z.number().int().nonnegative(),
+  // Pairs per judge call, and calls in flight.
+  batch_size: z.number().int().positive(),
+  concurrency: z.number().int().positive(),
+  retry_max_attempts: z.number().int().optional(),
+  retry_base_ms: z.number().int().optional(),
+});
+
 const PublisherConfigSchema = z.object({
   lineage: PublisherLineageConfigSchema,
 });
@@ -360,6 +387,7 @@ const ModelsConfigSchema = z.object({
   prefilter: BatchStageConfigSchema,
   editor: EditorStageConfigSchema,
   thread: ThreadStageConfigSchema,
+  rerun: RerunConfigSchema,
   writers: WritersStageConfigSchema,
   editor_pass_1: EditorPass1StageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
@@ -375,6 +403,7 @@ export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema
 export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
+export type RerunConfig = z.infer<typeof RerunConfigSchema>;
 export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
 export type WritersTierPacketConfig = z.infer<typeof WritersTierPacketConfigSchema>;
 export type WritersPacketConfig = z.infer<typeof WritersPacketConfigSchema>;

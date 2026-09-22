@@ -74,6 +74,7 @@ fritter-post/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
+│   │   ├── rerun/               # withholds news the paper already printed
 │   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # materials + fetch + assembler + the writer calls
@@ -86,7 +87,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–044)
+├── migrations/                  # numbered SQL migrations (001–045)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -105,8 +106,10 @@ grouping proved out; see `docs/decisions.md`.)
 
 ```
 collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-           →  thread  →  editor  →  writers  →  publisher
+           →  rerun  →  thread  →  editor  →  writers  →  publisher
 ```
+
+(`rerun` and `thread` are passes inside the grouping-pass-1 stage, not stages.)
 
 ### collector
 Hits every configured source, writes raw items to `raw_items`. Failure-tolerant
@@ -191,6 +194,19 @@ referrer, not a redirect. Google News is deliberately left alone — its
 `/rss/articles/CBMi…` token is an opaque identifier with no URL in it, so those
 items stay headline-only by construction.
 
+**Translation stops asking when the provider stops answering.** Sep 15–21
+made no paper. The translation key stopped authenticating (`401 Invalid
+session`, then the provider's own lockout `429 … after repeated invalid
+credentials`), every call failed in under a second, and split-on-failure plus
+429 backoff turned ~60 batches into 634–758 failed calls a day: preprocess ran
+5–6.5 hours and the runner's deadline stopped every run before prefilter. The
+failures were fast; the count took six hours. Translation now carries the
+writers' consecutive-failure breaker (`translation.abort_after_consecutive_
+failures`), an authentication error trips it at once, and `callWithBackoff`
+never retries an auth error (`isAuthError`). Untranslated items keep their
+original text — the stage's existing failure mode — and the preprocessor gate
+warns. A worse paper beats no paper.
+
 **Aggregator title suffixes are stripped.** Google News RSS appends the
 publisher's domain to every headline, and run #112 published nine of them
 ("… who had been in custody - apnews.com"). `title.ts` removes a trailing
@@ -223,6 +239,11 @@ steps:
 1. **Embed** — each item's title + body excerpt (capped at `body_cap` chars)
    is embedded via `qwen/qwen3-embedding-8b` (OpenRouter, 4096 dims) and
    stored in `item_embeddings` (upserted, so re-runs are cheap).
+   **Neither embedded text may be empty** (`embed-text.ts`): the provider
+   rejects `""` and one rejected input fails the whole batch call, which fails
+   the run. Sep 12 made no paper that way — one KTVZ item with an empty title.
+   A missing title borrows the body's opening; an item with neither is left out
+   and becomes a singleton.
 2. **Candidate groups** — pure software: cosine-similarity graph with
    `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
    union-find connected components. Groups of size ≥ 2 become candidate
@@ -372,6 +393,40 @@ Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
 descending, takes the top `grouping.pile_target` (config: 150), and writes to
 `editor_piles` + `editor_pile_items`. Rows absorbed into a thread are withheld:
 a threaded row must not also appear on its own.
+
+### rerun
+**Withholds news the paper has already printed.** Runs inside grouping-pass-1,
+after scoring and before threading. `src/pipeline/rerun/`. Writes `rerun_runs` /
+`rerun_verdicts` (migration 045); read them with `inspect reruns`.
+
+**The defect.** The Sep 5–22 audit read all 257 "previously" links across nine
+editions and about one in four was the same news printed again because a later
+outlet reported it: AfD's 43.8% result ran Sep 7, 8 and 10; LG TVs recording
+audio Sep 7, 8 and 9; Australia's algorithmic-feed law Sep 6, 7 and 8. **None of
+the 257 shared a URL, preprocessed item or normalized title** with its
+predecessor, and 114 did not share an outlet, so cross-run dedup could never see
+them — the preprocessor knows duplicate *articles*, not duplicate *news*. The
+lineage judge accepted them on purpose: its question is "same situation?", and a
+restatement is one.
+
+**How.** Retrieval is lineage's: max pairwise cosine between the articles behind
+each of the top `rerun.candidate_target` rows and the articles behind every
+piece in the last `lookback_editions` papers, `top_k` per row above
+`candidate_floor`. Then a batched judge answers each pair `RERUN` (nothing of
+substance the printed piece did not already say), `DEVELOPMENT` (something has
+happened since) or `NEW` (a different story), with a reason naming the fact. A
+row with any `RERUN` pair is withheld from threading and the pile, so the next
+row takes its slot rather than leaving a hole.
+
+**It fails open — the opposite of the lineage judge — and deliberately.** A
+wrongly dropped story is invisible: the reader never learns it existed. A missed
+rerun is the paper as it already was. So a failed call, a missing line and an
+unreadable one all keep the row; the prompt says "when unsure, DEVELOPMENT";
+and only a stated `RERUN` drops anything. Every judged pair is persisted,
+dropped or not, because this table is the only place a wrong drop can be seen.
+The gate warns on a failed call and on a day that drops more than
+`warn_dropped_fraction` of what it checked. **Not yet measured on the box** —
+the Sep 5–22 links are the regression set.
 
 ### thread
 **Groups related clusters and singletons into one ongoing situation.** Runs
@@ -583,6 +638,14 @@ them raw picks the text that loses more of itself to stripping: run #28's four
 cascadepbs.org sources each had a 574-character extraction beat a ~390-character
 feed body and then strip down to 286, worse than the teaser it replaced and worse
 in a way the raw comparison could not see.
+
+**A fetched page must be the article the feed described** (`pageMatchesTitle`).
+Sep 8's rank 2 was a Ukraine section led by a feature headlined "Source material
+for Ukraine section does not contain reporting on the conflict": its La Nación
+item was titled as live war coverage and linked to a real-estate story, whose
+3,912 clean characters beat the 327-character feed body on length. A page that
+shares under a fifth of the headline's distinctive words (titles with fewer than
+three are never judged) is not used, and the feed body stands.
 
 **A long feed body is not a complete one.** `feed_chars_floor` reads a character
 count and calls it a finished article. La Nación publishes ~1,800-character
@@ -1046,8 +1109,12 @@ development every day, reading like a rerun because nothing said otherwise.
 
 **The relation is "same situation", and nothing here deletes anything** — no
 stage reads these rows to drop a story. Continuity is the fix for a continuing
-story; deletion is the fix for a duplicate, and that one already happened in the
-preprocessor.
+story; deletion is the fix for a duplicate. This section used to say the
+duplicate "already happened in the preprocessor", and the Sep 5–22 audit showed
+that was only true of duplicate *articles*: a day-late restatement from another
+outlet sailed through and got a "previously" line. Those are now withheld
+before the pile by the **rerun** pass, which asks the question this judge
+deliberately does not.
 
 **It shipped as retrieval alone and that was measured wrong.** The argument was
 that a continuity marker need not tell a resurfaced copy from a genuine
@@ -1464,7 +1531,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **045**.
+number is ambiguous. The next migration is **046**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1552,6 +1619,10 @@ number is ambiguous. The next migration is **045**.
   reading both
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
+- `npm run inspect -- reruns [--id <n>] [--all]` — rerun checks; `--id` lists the
+  rows withheld as reruns with the printed piece and the judge's reason, `--all`
+  every kept pair too. A dropped story never reaches the paper, so this is the
+  only place a wrong drop shows
 - `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;
   `--id` shows one run's lineage, per-stage gate verdicts with their reasons,
   and the metrics each gate read. This is where "why is the paper short" is
