@@ -82,7 +82,9 @@ export async function buildPaperLineage(
   // One statement, because the alternative is shipping every vector twice.
   //
   //   today  — this paper's pieces and the items behind them
-  //   prior  — the same for papers inside the lookback, strictly earlier
+  //   prior  — the same for the last `lookback_editions` papers, strictly
+  //            earlier. Editions, not days: after a gap in publication the
+  //            last paper the reader saw is still the one to point back to
   //   pairs  — max cosine between ANY article of one and ANY article of the
   //            other. Max rather than centroid: a cluster's items are the same
   //            event by construction and a section's pieces are partitioned by
@@ -106,9 +108,12 @@ export async function buildPaperLineage(
       FROM paper_pieces pp
       JOIN papers p ON p.id = pp.paper_id
       JOIN paper_sources ps ON ps.paper_piece_id = pp.id
-      WHERE p.id <> $1
-        AND p.published_on <  $2::date
-        AND p.published_on >= $2::date - $3::int
+      WHERE p.id IN (
+              SELECT id FROM papers
+              WHERE id <> $1 AND published_on < $2::date
+              ORDER BY published_on DESC
+              LIMIT $3
+            )
         AND ps.preprocessed_item_id IS NOT NULL
     ),
     pairs AS (
@@ -144,7 +149,7 @@ export async function buildPaperLineage(
     FROM ranked
     WHERE rn <= $4
     `,
-    [paperId, publishedOn, cfg.lookback_days, cfg.top_k],
+    [paperId, publishedOn, cfg.lookback_editions, cfg.top_k],
   );
 
   const candidates: LineageCandidate[] = rows.map((r) => ({

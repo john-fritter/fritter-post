@@ -316,7 +316,7 @@ const PipelineGatesConfigSchema = z.object({
 
 const PublisherLineageConfigSchema = z.object({
   enabled: z.boolean(),
-  lookback_days: z.number().int().positive(),
+  lookback_editions: z.number().int().positive(),
   // A retrieval floor, not a decision -- see the note in models.yaml and the
   // header of src/pipeline/lineage/prompt.ts for why a threshold alone was
   // measured and found unable to make this call.

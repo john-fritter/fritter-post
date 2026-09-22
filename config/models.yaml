@@ -150,10 +150,18 @@ publisher:
   # continuity, and a duplicate is fixed upstream in the preprocessor.
   lineage:
     enabled: true
-    # How far back to look for prior coverage. Seven days because the audit's
-    # Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3, and a six-day window
-    # would have missed the confirmation that most needed the marker.
-    lookback_days: 7
+    # How far back to look for prior coverage, counted in EDITIONS, not days.
+    # Seven because the audit's Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3,
+    # and a six-day window would have missed the confirmation that most needed
+    # the marker.
+    #
+    # It was `lookback_days: 7`, which is the same thing only while the paper
+    # comes out every day. It did not from Sep 15 to 21, and paper #42 (Sep 22)
+    # published with ZERO markers -- its last predecessor was eight days back,
+    # one outside the window -- on a front page led by the Ukraine refinery
+    # strikes and the Hormuz blockade, both running in every paper before the
+    # gap. What the reader last read is the last edition, however long ago.
+    lookback_editions: 7
     # RETRIEVAL FLOOR, not a decision. Embedding cosine only decides which few
     # prior pieces are worth asking about; the adjudicate pass below decides
     # whether any of them is really the same situation.

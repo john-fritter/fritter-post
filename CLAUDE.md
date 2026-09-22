@@ -1153,6 +1153,11 @@ itself, so it is set unlinked and uncoloured under the headline. A prior *sectio
 line* has no headline of its own and is dropped rather than rendered: a pointer
 to a pointer is not worth a row.
 
+**The lookback is counted in editions, not days** (`lookback_editions`). Seven
+calendar days was the same thing only while the paper came out daily; after the
+Sep 15–21 outage paper #42 published with zero markers, because its last
+predecessor was eight days back. What the reader last read is the last edition.
+
 **It runs outside the publisher's transaction and never fails a paper.** A paper
 with no continuity markers is a complete paper; a failure here is caught, warned,
 and the edition still publishes. Re-publishing a date recomputes rather than
