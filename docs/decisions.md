@@ -6023,3 +6023,65 @@ So there is no case for the swap. The ranking is the same within noise, the
 calibration is different, and the local-news regression is the one direction
 this scorer cannot afford. 5.3 also costs slightly more (24.3k output tokens
 against 19–22k; 34 s average against 26–30 s). The writers were not tested.
+
+## 2026-09-23 — The writers move to DeepSeek V4.1 Flash, chosen blind
+
+**The first writer bake-off.** Eight writer runs (64–71) covered the same 30
+pieces of editor run 143: six features, eight standards, and briefs and section
+lines, including thread sections. Only the model changed; every run used the
+same flags (`--reasoning-effort low --max-tokens 16000`). The export was blind
+(`writer-bakeoff-export --blind`). Each piece was read against its exact packet
+and ranked before `key.md` was opened. The per-piece notes are the evidence.
+
+| writer | model | pieces with an unsupported fact, frame, quote or attribution | best in piece | out tok | wall s |
+|---|---|---|---|---|---|
+| F | deepseek/deepseek-v4.1-flash | **1** | **13** | 24,724 | 74 |
+| E | qwen/qwen3.8-27b | 3 | 1 | 56,662 | 449 |
+| A | z-ai/glm-5.3 | 2 | 3 | 7,100 | 45 |
+| B | moonshotai/kimi-k2.6 | 3 | 1 | 111,240 | 271 |
+| G | z-ai/glm-5.2 (noise control) | 5 | 2 | 15,804 | 105 |
+| C | z-ai/glm-5.2 (production) | 6 | 0 | 12,877 | 65 |
+| D | z-ai/glm-5.3-flash | 8 | 1 | 16,491 | 196 |
+| H | deepseek/deepseek-v4-pro | 6 (11 errors) | 0 | 30,328 | 141 |
+
+All 240 pieces were written, with 0 failed calls. GLM 5.3 ranks third despite
+two error pieces because one of them was the worst single fabrication in the
+set: its ICE-shooting feature ended "The agency did not respond to questions
+about why…", but the paper had asked nobody anything.
+
+**The noise control held, and it validates the judging.** Before unblinding,
+the verdict had already identified C and G as the two GLM 5.2 runs: rank 18 was
+word-for-word identical, and rank 25 altered the same Newsom quote in the same
+way. Scored separately, the two were rated 6th and 5th. The rater's noise is a
+place or so; F's margin is five places.
+
+**Prose was not the discriminator; attribution was.** All eight write competent
+newspaper English, and the briefs were close to interchangeable. The errors that
+separated them were the ones `docs/voice.md` names:
+- superlatives migrating to a new speaker (Meduza's own "most massive attack on
+  Moscow" credited to Reuters, Sobyanin or Ukraine);
+- an outlet's framing put in a subject's mouth (five of eight turned the
+  Guardian's "which has destabilised the region" into Burnham's words);
+- a collective quote pinned on one named refugee;
+- an absence reported as a finding ("DHS has not released the footage");
+- the machine section title leaking in as fact ("U.S. naval blockade", and "Trump
+  called off airstrikes, according to reports").
+
+**Two surprises.** DeepSeek V4 Pro was the *worst* writer and its Flash sibling
+the best. Pro states contested accounts in the paper's own voice ("an ICE agent
+rammed his car"), made Thomas Massie a senator, and wrote that Grassley "broke
+with the Iran war". Kimi K2.6 wrote well, and spent 111k output tokens and 271 s
+on 30 pieces doing it. Qwen3.8 27B came second on accuracy and was the slowest
+by far (449 s), which at 150 pieces is the difference between minutes and most
+of an hour.
+
+**Cost and fit.** Flash used about twice GLM 5.2's output tokens and took 74 s
+against 65–105 s. It accepted `reasoning_effort: "low"`, and its largest single
+call (2,637 tokens) sits well inside the production `max_tokens` of 8000, so
+only the model id changes.
+
+**Limits.** This was one day and one editor run, judged by one reader of the
+sources. The verdict rests on the features and standards. The first live papers
+on Flash should be audited the same way (sources against prose), with GLM 5.2
+one config line away. Flash's twice-GLM output tokens are the thing to watch
+for budget exhaustion on the brief batches.

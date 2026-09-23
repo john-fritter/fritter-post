@@ -444,14 +444,17 @@ editor:
     retry_max_attempts: 5
     retry_base_ms: 2000
 
-# Writers stage. The writer call itself is not built yet — the model id below is
-# still a placeholder — but the fetch sub-stage that feeds it is.
+# Writers stage: the fetch sub-stage, the packet assembler and the writer calls.
 writers:
-  # GLM for prose, as concept.md called for, and the same family the judgment
-  # stages run on. Non-thinking: writing 400 words from twelve sources in front
-  # of you is composition, not inference, and run #40's lesson was that a
-  # thinking model can spend its whole budget reasoning and emit nothing.
-  model: zai-org/glm-5.2
+  # Chosen by a blind bake-off on 2026-09-23 (editor run 143, 30 pieces, eight
+  # writers, each read against its sources before the key was opened; see
+  # docs/decisions.md). DeepSeek V4.1 Flash put an unsupported fact, frame or
+  # attribution in 1 of 30 pieces; the two GLM 5.2 runs (this stage's previous
+  # model) put one in 6 and 5. The bake-off was not decided by prose quality,
+  # where all eight were close. It was decided by attribution: who said what.
+  # Non-thinking use, as before: run #40's lesson was that a thinking model can
+  # spend its whole budget reasoning and emit nothing.
+  model: deepseek/deepseek-v4.1-flash
   provider: nanogpt
   # Higher than every other stage. The judgment stages want repeatability; this
   # one wants prose that does not read like a form letter.

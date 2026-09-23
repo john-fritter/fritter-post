@@ -188,7 +188,7 @@ Current thinking on assignments (subject to revision once we see how each stage 
 - **Grouping:** embedding model (`qwen/qwen3-embedding-8b`) for clustering, plus a cheap LLM (GLM) for the attach and describe passes
 - **Prefilter and grouping-pass-1:** GLM — bio-aware judgment at batch scale; these carry the editorial weight that was once imagined for the editor
 - **Editor:** no primary model — the ranking is a deterministic formula. GLM handles only the tie-break calls
-- **Writers:** GLM — strong prose quality, comfortable in the editorial register
+- **Writers:** DeepSeek V4.1 Flash — chosen over GLM 5.2 by a blind bake-off on attribution accuracy (`docs/decisions.md`, 2026-09-23)
 
 All tunable. Per-stage parameters in config include model, token budgets, step limits for agentic loops, temperature, retry behavior.
 
