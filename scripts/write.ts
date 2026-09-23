@@ -7,6 +7,12 @@
  *   npm run write -- --editor-run 112 --tier feature --limit 3
  *   npm run write -- --repair 3
  *
+ * Model comparison (writes a writer run and nothing else; never publish it):
+ *   npm run write -- --editor-run 112 --ranks 1-6,20,40 \
+ *     --model <id> [--provider nanogpt] [--reasoning-effort low|omit] [--max-tokens 16000]
+ *
+ * --reasoning-effort omit sends no reasoning_effort at all, for a model that
+ * rejects the field.
  * --tier and --limit exist for a cautious first run: three features cost three
  * calls and show whether the prose is worth 150 of them.
  */
@@ -33,6 +39,19 @@ function parseArgs(argv: string[]) {
   return flags;
 }
 
+/** "1-6,20,40" -> [1,2,3,4,5,6,20,40]. */
+function parseRanks(spec: string): number[] {
+  const ranks: number[] = [];
+  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) throw new Error(`--ranks: cannot read "${part}"`);
+    const lo = parseInt(m[1]!, 10);
+    const hi = m[2] !== undefined ? parseInt(m[2], 10) : lo;
+    for (let r = lo; r <= hi; r++) ranks.push(r);
+  }
+  return ranks;
+}
+
 async function main() {
   const flags = parseArgs(process.argv);
 
@@ -51,10 +70,26 @@ async function main() {
     process.exit(1);
   }
 
+  const overrides =
+    flags["model"] || flags["provider"] || flags["reasoning-effort"] || flags["max-tokens"]
+      ? {
+          ...(flags["model"] ? { model: flags["model"] } : {}),
+          ...(flags["provider"]
+            ? { provider: flags["provider"] as "ollama-cloud" | "nanogpt" | "openrouter" }
+            : {}),
+          ...(flags["reasoning-effort"]
+            ? { reasoningEffort: flags["reasoning-effort"] === "omit" ? null : flags["reasoning-effort"] }
+            : {}),
+          ...(flags["max-tokens"] ? { maxTokens: parseInt(flags["max-tokens"], 10) } : {}),
+        }
+      : undefined;
+
   const summary = await runWriters({
     ...(editorRunId !== undefined ? { editorRunId } : {}),
     ...(flags["tier"] ? { tier: flags["tier"] } : {}),
     ...(flags["limit"] ? { limit: parseInt(flags["limit"], 10) } : {}),
+    ...(flags["ranks"] ? { ranks: parseRanks(flags["ranks"]) } : {}),
+    ...(overrides ? { overrides } : {}),
   });
 
   console.log(JSON.stringify(summary, null, 2));
