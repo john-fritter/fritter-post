@@ -5987,3 +5987,39 @@ used the translation script, which forces `"none"`, so it proved nothing about
 **Noticed:** the language detector sends English Hacker News items whose body
 is only "Comments" to translation as fra/por. They come back unchanged and cost
 a slot in a batch. It is not worth a rule yet.
+
+**Phase 2, same day: GLM-5.3 scores lower and ranks the same, and the scorer
+stays on 5.2.** This time the comparison went through grouping-pass-1 itself, at
+its own `reasoning_effort: "medium"`. Grouping run #75 was scored three times:
+A = #62 (the daily run, 5.2), B = #64 (5.2 again, the noise control) and C = #63
+(`z-ai/glm-5.3:thinking`). All three used the same system-prompt hash, and C had
+0 unscored rows, 0 errors and 0 budget exhaustion.
+
+| pair | rank corr | mean abs diff | top-15 overlap | top-75 overlap |
+|---|---|---|---|---|
+| A–B (noise) | 0.910 | 5.1 | 13 | 61 |
+| A–C | 0.901 | 8.8 | 8 | 62 |
+| B–C | 0.903 | 8.4 | 10 | 62 |
+
+The ranking barely moves: rank correlation and top-75 overlap sit at the noise
+level. The level does move. C's mean is 38.2 against 45.4 and 46.0, and most of
+the drop is on the consequence axis. Nothing downstream reads an absolute score
+(the pile is top-N, the editor adds `W·ln(sources)` to every row alike, and the
+thread and rerun candidate sets are top-N), so the shift on its own changes
+nothing.
+
+The 15 largest disagreements show what the shift is. 5.3 reads "did anything
+happen" more strictly. Some of that is sharper: a policy expert defending
+Medicaid cuts is "commentary on already-passed cuts", where 5.2 scored the cuts
+themselves; horse-race polling and trend pieces fall 20–28 points. Some of it
+runs against the bio. Oregon's governor debate (56 → 32) and competitiveness
+report (59 → 38) fell further than anything else of their kind, and nearness is
+the thing this reader weights hardest. Zelensky meeting the CIA director days
+after his first Moscow trip fell 73 → 46 on "contents unknown". C's top 15 also
+lost the Hormuz blockade, record diesel and the Moscow refinery. Its reasons are
+crisper than 5.2's, but that is not the same as a better paper.
+
+So there is no case for the swap. The ranking is the same within noise, the
+calibration is different, and the local-news regression is the one direction
+this scorer cannot afford. 5.3 also costs slightly more (24.3k output tokens
+against 19–22k; 34 s average against 26–30 s). The writers were not tested.
