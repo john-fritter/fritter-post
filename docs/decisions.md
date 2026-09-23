@@ -5952,3 +5952,38 @@ failed calls, no must-keep development withheld, one expected rerun not
 retrieved (Imelda Marcos). Production now runs the branch. The prompt is left as
 measured; two borderline two-fact candidates (Sep 9 C86, Sep 8 C16) are noted in
 CLAUDE.md as the shape to watch in live runs.
+
+## 2026-09-23 — Model evaluation, phase 1: translation stays, and GLM-5.3 cannot stop thinking
+
+**Translation stays on `Qwen/Qwen3.6-35B-A3B`.** `npm run translation-experiment`
+(new) re-translated 40 of preprocessor run #74's 253 non-English items with
+each candidate through the production path. Where Qwen3.8 answered, its
+translations read the same as the incumbent's. It was worse at the batch
+contract, though. The incumbent needed 1 split-retry and 38.6 s. `qwen3.8-27b`
+dropped ids so often that it needed 36 split-retries, took 239.5 s and left 6
+of 40 untranslated. `qwen3.8-flash` needed 38 split-retries, took 912.7 s, left
+5 untranslated and wrote 137,497 output tokens for 40 items: it reasons with
+reasoning off. No catalog prices were available. Qwen 4 had no nanogpt ID yet.
+
+The question answered along the way: translation is not only for embeddings.
+Prefilter, scoring, the thread pass, the tie-break and the writers' feed text
+all read `english_*`, so a multilingual embedding model (jina v5 was the
+candidate, and it would have needed a fourth provider) would remove one reason
+for the stage, not the stage.
+
+**GLM-5.3 refuses `reasoning_effort: "none"`.** Every call to `z-ai/glm-5.3`,
+`z-ai/glm-5.3:thinking` and `z-ai/glm-5.3-flash` at that setting returned `400
+GLM 5.3 always thinks and does not support disabling reasoning.` Note the new
+`z-ai/` prefix; 5.2 is `zai-org/`. So 5.3 is not a drop-in for the six GLM
+call sites that run at `"none"`: prefilter, rerun, the lineage judge, and
+grouping's split, attach and describe. Moving any of them means paying for
+reasoning on calls that have never needed it, which is the spiral that
+`max_tokens` headroom was sized against (runs #35 and #40). The thinking sites
+(grouping-pass-1 at medium, thread and writers at low, tie-break at xhigh) are
+unaffected. The scoring comparison was skipped for a bad reason: the smoke test
+used the translation script, which forces `"none"`, so it proved nothing about
+5.3 at `medium`. Phase 2 re-runs it through grouping-pass-1 itself.
+
+**Noticed:** the language detector sends English Hacker News items whose body
+is only "Comments" to translation as fra/por. They come back unchanged and cost
+a slot in a batch. It is not worth a rule yet.
