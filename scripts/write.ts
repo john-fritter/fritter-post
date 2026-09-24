@@ -19,6 +19,7 @@
 
 import "dotenv/config";
 import { runWriters, repairWriterRun } from "../src/pipeline/writers/index.js";
+import { overridesFromFlags } from "../src/config/overrides.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -70,19 +71,7 @@ async function main() {
     process.exit(1);
   }
 
-  const overrides =
-    flags["model"] || flags["provider"] || flags["reasoning-effort"] || flags["max-tokens"]
-      ? {
-          ...(flags["model"] ? { model: flags["model"] } : {}),
-          ...(flags["provider"]
-            ? { provider: flags["provider"] as "ollama-cloud" | "nanogpt" | "openrouter" }
-            : {}),
-          ...(flags["reasoning-effort"]
-            ? { reasoningEffort: flags["reasoning-effort"] === "omit" ? null : flags["reasoning-effort"] }
-            : {}),
-          ...(flags["max-tokens"] ? { maxTokens: parseInt(flags["max-tokens"], 10) } : {}),
-        }
-      : undefined;
+  const overrides = overridesFromFlags(flags);
 
   const summary = await runWriters({
     ...(editorRunId !== undefined ? { editorRunId } : {}),

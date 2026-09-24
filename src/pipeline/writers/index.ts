@@ -23,6 +23,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig, type WritersStageConfig } from "../../config/models.js";
+import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { buildEditorRunPackets, loadWriterDocs, type RenderedPacket } from "./packets.js";
@@ -612,32 +613,12 @@ export interface RunWritersOptions {
   ranks?: number[];
   /** Model comparison only: replaces `writers.*` settings for this run. A
    *  reasoning effort of null sends none, for a model that rejects the field. */
-  overrides?: {
-    model?: string;
-    provider?: WritersStageConfig["provider"];
-    reasoningEffort?: string | null;
-    maxTokens?: number;
-  };
-}
-
-/** Pure: the writers config with a comparison run's overrides applied. */
-export function applyWriterOverrides(
-  cfg: WritersStageConfig,
-  overrides: RunWritersOptions["overrides"],
-): WritersStageConfig {
-  if (!overrides) return cfg;
-  const next: WritersStageConfig = { ...cfg };
-  if (overrides.model !== undefined) next.model = overrides.model;
-  if (overrides.provider !== undefined) next.provider = overrides.provider;
-  if (overrides.maxTokens !== undefined) next.max_tokens = overrides.maxTokens;
-  if (overrides.reasoningEffort === null) delete next.reasoning_effort;
-  else if (overrides.reasoningEffort !== undefined) next.reasoning_effort = overrides.reasoningEffort;
-  return next;
+  overrides?: ModelOverrides;
 }
 
 export async function runWriters(options: RunWritersOptions): Promise<WriterRunSummary> {
   const pool = getPool();
-  const cfg = applyWriterOverrides(loadModelConfig().writers, options.overrides);
+  const cfg = applyModelOverrides(loadModelConfig().writers, options.overrides);
   const { tier, limit, ranks } = options;
   const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 

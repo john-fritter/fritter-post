@@ -2,6 +2,7 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { excerpt } from "../../lib/text.js";
@@ -67,9 +68,11 @@ export async function runRerunCheck(options: {
    * an old run, which would otherwise be judged against the papers made from it.
    */
   asOf?: string;
+  /** Model comparison only: replaces the judge's model settings for this run. */
+  overrides?: ModelOverrides;
 }): Promise<RerunRunSummary> {
   const pool = getPool();
-  const cfg = loadModelConfig().rerun;
+  const cfg = applyModelOverrides(loadModelConfig().rerun, options.overrides);
   const { groupingPass1RunId } = options;
 
   if (!cfg.enabled) {
