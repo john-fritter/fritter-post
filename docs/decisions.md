@@ -6261,3 +6261,75 @@ continuations, so the reader would have lost most of what the marker is for.
 GLM 5.2 is neither loose nor timid, and its replay mostly reproduced its printed
 links. The 2026-09-04 audit put its false-link rate at 1 in 167. No candidate
 improves on that, and the stage costs seconds a paper at any model.
+
+## 2026-09-25 — Flash at reasoning "high" loses every judgment stage, for different reasons
+
+**Why this was run.** The rerun and lineage verdicts above tested Flash only with
+reasoning off, and three writer bake-offs had shown its reasoning level changes
+its quality a great deal. So Flash at "high" was run on the five judgment stages
+where overrides now exist. Each stage also got a fresh GLM 5.2 run as its noise
+control. Five new commands made that possible: `thread-check`, and
+`--reasoning-effort`, `--max-tokens` and `--timeout-ms` on `prefilter` and
+`grouping-pass1`. Every disagreement was read.
+
+| stage | Flash at "high" | GLM 5.2 repeat (noise) | why it loses |
+|---|---|---|---|
+| rerun judge (Sep 7–14) | withheld 101 rows | 81 (ref 84) | fails a must-keep: "Supreme Court again blocks Missouri's map" judged RERUN, "same denial already reported" |
+| lineage judge (papers 38–44) | 166 links | printed 144 | no better than GLM 5.2; one false link; one call used its whole 16,000-token budget |
+| scoring (grouping run 75) | ρ 0.83 / 0.86 vs GLM | ρ 0.91 | ranks by its own heuristic, not the bio |
+| thread pass | 1 of 3 days produced nothing | all days | one call, and it can fail outright |
+| prefilter (one day, 624 items) | cut 261 | cut 213 (prod 216) | too aggressive for a keep-when-unsure stage |
+
+**Rerun.** Flash at "high" reads nuance well. It rightly called the crypto
+scammers' court date a rerun ("face court" was the printed headline), and it
+kept the Houthi-and-Saudi exchange whose two halves had troubled the backtest.
+But it withholds more than GLM 5.2 does, and two of its drops are disqualifying:
+- the Missouri map, one of the eight named must-keep developments;
+- a New York sheriff's Flock stalking arrest, withheld as the Oregon officer's
+  case: another instance of the same kind of event, which the prompt names as
+  NEW.
+
+It took 134–240 s a day against GLM 5.2's 16–41 s, and its largest call used
+15,077 of 16,000 tokens.
+
+**Lineage.** Flash at "high" avoided the Gaza and Kyiv "same war" links GLM 5.3
+drew, and it recovered most of the continuations Flash at "none" missed. It
+still linked two different BLM wild-horse gathers in southeast Oregon
+(Riddle Mountain against Sheepshead–Heath Creek). With GLM 5.2 already at 1 false
+link in 167, a tie does not pay for the slower, budget-hungry calls.
+
+**Scoring.** Flash at "high" agrees with Flash at "medium" (ρ 0.93) more than
+with GLM 5.2, and where GLM 5.2 agrees with itself, Flash departs the same way
+every time:
+- **Down:** the reader's own geography (the Philippines' budget −15, VP Sara's
+  impeachment vote −14, the EU–Philippines trade deal −18, a Bellingham hazmat
+  spill −16), and anything it calls "statement, not action" (the Hormuz standoff
+  −28, the UN expert on boat strikes −14).
+- **Up:** distant hard news the bio gives no reason to want (a Turkish school
+  shooting +18, a Japanese typhoon +19, a lunar crater +21).
+
+That is a consistent ranking, just not this reader's. One disagreement is
+unresolved and worth a look: Flash scored the Nolan Wells no-charges decision
++34 as an Oregon grand jury, while GLM 5.2 called it Mississippi.
+
+**Thread pass.** On the one day all three judges finished, the threads were
+near-identical. But Flash at "high" spent the whole 48,000-token budget without
+output on one of its three days, and needed a retry on another. The thread pass
+is a single call, and a failed call yields zero threads: run #50 lost its call
+and put three separate wildfire rows in the top ten. A model that can fail that
+way cannot run it.
+
+**Prefilter.** Flash at "high" cut 48 more items than GLM 5.2 on the same 624.
+Its extra cuts include:
+- local PNW news: a Bellingham waterfront fire, Portland comics culture;
+- substantive foreign coverage: Datafolha presidential polls, an Argentine
+  growth outlook, a Kirchner trial date;
+- one item whose reason says "actually keep" beside a CUT verdict.
+
+It also kept Hacker News "Comments" stubs as articles, and the stage took 288 s
+against 52–67 s. The prompt's rule is to keep when unsure, and Flash reverses it.
+
+**Result.** GLM 5.2 stays on every judgment stage. Flash at "high" is the writer.
+The difference is the job: writing wants careful reading of sources, which
+reasoning buys. These judgment stages were tuned, prompt by prompt, against
+GLM 5.2's calibration, and the reader's bio is part of that calibration.
