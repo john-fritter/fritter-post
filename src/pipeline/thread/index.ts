@@ -7,6 +7,7 @@ import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
+import { applyModelOverrides, withModel, type ModelOverrides } from "../../config/overrides.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import { buildThreadSystemPrompt, buildThreadUserPrompt } from "./prompt.js";
 
@@ -252,6 +253,7 @@ export interface ThreadRunSummary {
 export interface RunThreadingOptions {
   groupingPass1RunId: number;
   modelOverride?: string;
+  overrides?: ModelOverrides;
   /** Rows the rerun check withheld. A rerun is not a member of anything. */
   exclude?: Set<string>;
 }
@@ -273,8 +275,11 @@ export async function runThreading(
   options: RunThreadingOptions,
 ): Promise<ThreadRunSummary> {
   const pool = getPool();
-  const { thread: config } = loadModelConfig();
-  const model = options.modelOverride ?? config.model;
+  const config = applyModelOverrides(
+    loadModelConfig().thread,
+    withModel(options.overrides, options.modelOverride),
+  );
+  const model = config.model;
   const { groupingPass1RunId } = options;
 
   const candidates = await loadThreadCandidates(

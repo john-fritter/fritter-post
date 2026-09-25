@@ -23,6 +23,7 @@ import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig, type WritersStageConfig } from "../../config/models.js";
+import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { buildEditorRunPackets, loadWriterDocs, type RenderedPacket } from "./packets.js";
@@ -606,16 +607,27 @@ export interface RunWritersOptions {
   tier?: string;
   /** Cap the number of pieces written. */
   limit?: number;
+  /** Write only these editor ranks. A rank is a whole story, so a thread's
+   *  lead, sidebars and lines come together. Used for model comparisons, where
+   *  every model must write the same pieces. */
+  ranks?: number[];
+  /** Model comparison only: replaces `writers.*` settings for this run. A
+   *  reasoning effort of null sends none, for a model that rejects the field. */
+  overrides?: ModelOverrides;
 }
 
 export async function runWriters(options: RunWritersOptions): Promise<WriterRunSummary> {
   const pool = getPool();
-  const cfg = loadModelConfig().writers;
-  const { tier, limit } = options;
+  const cfg = applyModelOverrides(loadModelConfig().writers, options.overrides);
+  const { tier, limit, ranks } = options;
   const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 
   const all = await buildEditorRunPackets(editorRunId);
   let selected = tier ? all.filter((p) => p.packet.tier === tier) : all;
+  if (ranks !== undefined) {
+    const wanted = new Set(ranks);
+    selected = selected.filter((p) => wanted.has(p.packet.rank));
+  }
   if (limit !== undefined) selected = selected.slice(0, limit);
 
   if (selected.length === 0) {

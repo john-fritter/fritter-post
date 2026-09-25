@@ -7,6 +7,7 @@ import { loadModelConfig } from "../../config/models.js";
 import { callLLM, type LLMProvider } from "../../llm/index.js";
 import { callWithBackoff, type BackoffConfig } from "../../llm/backoff.js";
 import { englishTitle, englishBodyExcerpt } from "../../lib/text.js";
+import { applyModelOverrides, withModel, type ModelOverrides } from "../../config/overrides.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -250,6 +251,7 @@ export async function runPrefilter(
   options: {
     preprocessorRunId?: number;
     modelOverride?: string;
+    overrides?: ModelOverrides;
   } = {},
 ): Promise<PrefilterRun> {
   const pool = getPool();
@@ -268,8 +270,11 @@ export async function runPrefilter(
 
   // 2. Load model config.
   const modelConfig = loadModelConfig();
-  const stageConfig = modelConfig.prefilter;
-  const model = options.modelOverride ?? stageConfig.model;
+  const stageConfig = applyModelOverrides(
+    modelConfig.prefilter,
+    withModel(options.overrides, options.modelOverride),
+  );
+  const model = stageConfig.model;
   const temperature = stageConfig.temperature;
   const maxTokens = stageConfig.max_tokens;
   const batchSize = stageConfig.batch_size;

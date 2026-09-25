@@ -444,22 +444,29 @@ editor:
     retry_max_attempts: 5
     retry_base_ms: 2000
 
-# Writers stage. The writer call itself is not built yet — the model id below is
-# still a placeholder — but the fetch sub-stage that feeds it is.
+# Writers stage: the fetch sub-stage, the packet assembler and the writer calls.
 writers:
-  # GLM for prose, as concept.md called for, and the same family the judgment
-  # stages run on. Non-thinking: writing 400 words from twelve sources in front
-  # of you is composition, not inference, and run #40's lesson was that a
-  # thinking model can spend its whole budget reasoning and emit nothing.
-  model: zai-org/glm-5.2
+  # Chosen by three blind bake-offs (docs/decisions.md, 2026-09-23 and
+  # 2026-09-25), every piece read against its sources before the key was opened.
+  # Round 1 (eight models at "low"): Flash put an unsupported fact, frame or
+  # attribution in 1 of 30 pieces, GLM 5.2 in 5–6. Rounds 2 and 3 tried reasoning
+  # levels. At "high" Flash had 1 such piece in 96 across three runs. At "low" it
+  # refused one full packet, at "none" it ran long, and at "xhigh" it reasoned
+  # through 32,000 tokens and wrote nothing. GLM 5.3 matched it only at "xhigh",
+  # at six times the time. Prose did not decide any round; attribution did: who
+  # said what.
+  model: deepseek/deepseek-v4.1-flash
   provider: nanogpt
   # Higher than every other stage. The judgment stages want repeatability; this
   # one wants prose that does not read like a form letter.
   temperature: 0.6
-  # A feature is 400-600 words, roughly 900 tokens. The headroom is for a batch
-  # of ten briefs plus whatever reasoning_effort "low" spends.
-  max_tokens: 8000
-  reasoning_effort: "low"
+  # A feature is 400-600 words, roughly 900 tokens; the rest is reasoning.
+  # Flash at "high" spent up to 7,553 output tokens on one call in round 2, so
+  # the old 8000 would sit a single long feature at the edge of run #35's
+  # budget exhaustion (a call that reasons until the budget is gone and emits
+  # nothing). That was its peak across three runs; 16000 leaves twice it.
+  max_tokens: 16000
+  reasoning_effort: "high"
   stream: true
   timeout_ms: 300000
   # 15 features + 60 standards = 75 individual calls, plus 8 brief batches.

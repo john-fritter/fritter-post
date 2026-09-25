@@ -171,7 +171,7 @@ export function parseBatchOutput(text: string): Map<string, ParsedTranslation> {
   return results;
 }
 
-const defaultCallBatchLLM: BatchLLMCallFn = async (items, config, stage, runId) => {
+export const defaultCallBatchLLM: BatchLLMCallFn = async (items, config, stage, runId) => {
   const result = await callLLM({
     stage,
     stageRunId: runId,

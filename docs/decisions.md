@@ -5952,3 +5952,384 @@ failed calls, no must-keep development withheld, one expected rerun not
 retrieved (Imelda Marcos). Production now runs the branch. The prompt is left as
 measured; two borderline two-fact candidates (Sep 9 C86, Sep 8 C16) are noted in
 CLAUDE.md as the shape to watch in live runs.
+
+## 2026-09-23 — Model evaluation, phase 1: translation stays, and GLM-5.3 cannot stop thinking
+
+**Translation stays on `Qwen/Qwen3.6-35B-A3B`.** `npm run translation-experiment`
+(new) re-translated 40 of preprocessor run #74's 253 non-English items with
+each candidate through the production path. Where Qwen3.8 answered, its
+translations read the same as the incumbent's. It was worse at the batch
+contract, though. The incumbent needed 1 split-retry and 38.6 s. `qwen3.8-27b`
+dropped ids so often that it needed 36 split-retries, took 239.5 s and left 6
+of 40 untranslated. `qwen3.8-flash` needed 38 split-retries, took 912.7 s, left
+5 untranslated and wrote 137,497 output tokens for 40 items: it reasons with
+reasoning off. No catalog prices were available. Qwen 4 had no nanogpt ID yet.
+
+The question answered along the way: translation is not only for embeddings.
+Prefilter, scoring, the thread pass, the tie-break and the writers' feed text
+all read `english_*`, so a multilingual embedding model (jina v5 was the
+candidate, and it would have needed a fourth provider) would remove one reason
+for the stage, not the stage.
+
+**GLM-5.3 refuses `reasoning_effort: "none"`.** Every call to `z-ai/glm-5.3`,
+`z-ai/glm-5.3:thinking` and `z-ai/glm-5.3-flash` at that setting returned `400
+GLM 5.3 always thinks and does not support disabling reasoning.` Note the new
+`z-ai/` prefix; 5.2 is `zai-org/`. So 5.3 is not a drop-in for the six GLM
+call sites that run at `"none"`: prefilter, rerun, the lineage judge, and
+grouping's split, attach and describe. Moving any of them means paying for
+reasoning on calls that have never needed it, which is the spiral that
+`max_tokens` headroom was sized against (runs #35 and #40). The thinking sites
+(grouping-pass-1 at medium, thread and writers at low, tie-break at xhigh) are
+unaffected. The scoring comparison was skipped for a bad reason: the smoke test
+used the translation script, which forces `"none"`, so it proved nothing about
+5.3 at `medium`. Phase 2 re-runs it through grouping-pass-1 itself.
+
+**Noticed:** the language detector sends English Hacker News items whose body
+is only "Comments" to translation as fra/por. They come back unchanged and cost
+a slot in a batch. It is not worth a rule yet.
+
+**Phase 2, same day: GLM-5.3 scores lower and ranks the same, and the scorer
+stays on 5.2.** This time the comparison went through grouping-pass-1 itself, at
+its own `reasoning_effort: "medium"`. Grouping run #75 was scored three times:
+A = #62 (the daily run, 5.2), B = #64 (5.2 again, the noise control) and C = #63
+(`z-ai/glm-5.3:thinking`). All three used the same system-prompt hash, and C had
+0 unscored rows, 0 errors and 0 budget exhaustion.
+
+| pair | rank corr | mean abs diff | top-15 overlap | top-75 overlap |
+|---|---|---|---|---|
+| A–B (noise) | 0.910 | 5.1 | 13 | 61 |
+| A–C | 0.901 | 8.8 | 8 | 62 |
+| B–C | 0.903 | 8.4 | 10 | 62 |
+
+The ranking barely moves: rank correlation and top-75 overlap sit at the noise
+level. The level does move. C's mean is 38.2 against 45.4 and 46.0, and most of
+the drop is on the consequence axis. Nothing downstream reads an absolute score
+(the pile is top-N, the editor adds `W·ln(sources)` to every row alike, and the
+thread and rerun candidate sets are top-N), so the shift on its own changes
+nothing.
+
+The 15 largest disagreements show what the shift is. 5.3 reads "did anything
+happen" more strictly. Some of that is sharper: a policy expert defending
+Medicaid cuts is "commentary on already-passed cuts", where 5.2 scored the cuts
+themselves; horse-race polling and trend pieces fall 20–28 points. Some of it
+runs against the bio. Oregon's governor debate (56 → 32) and competitiveness
+report (59 → 38) fell further than anything else of their kind, and nearness is
+the thing this reader weights hardest. Zelensky meeting the CIA director days
+after his first Moscow trip fell 73 → 46 on "contents unknown". C's top 15 also
+lost the Hormuz blockade, record diesel and the Moscow refinery. Its reasons are
+crisper than 5.2's, but that is not the same as a better paper.
+
+So there is no case for the swap. The ranking is the same within noise, the
+calibration is different, and the local-news regression is the one direction
+this scorer cannot afford. 5.3 also costs slightly more (24.3k output tokens
+against 19–22k; 34 s average against 26–30 s). The writers were not tested.
+
+## 2026-09-23 — The writers move to DeepSeek V4.1 Flash, chosen blind
+
+**The first writer bake-off.** Eight writer runs (64–71) covered the same 30
+pieces of editor run 143: six features, eight standards, and briefs and section
+lines, including thread sections. Only the model changed; every run used the
+same flags (`--reasoning-effort low --max-tokens 16000`). The export was blind
+(`writer-bakeoff-export --blind`). Each piece was read against its exact packet
+and ranked before `key.md` was opened. The per-piece notes are the evidence.
+
+| writer | model | pieces with an unsupported fact, frame, quote or attribution | best in piece | out tok | wall s |
+|---|---|---|---|---|---|
+| F | deepseek/deepseek-v4.1-flash | **1** | **13** | 24,724 | 74 |
+| E | qwen/qwen3.8-27b | 3 | 1 | 56,662 | 449 |
+| A | z-ai/glm-5.3 | 2 | 3 | 7,100 | 45 |
+| B | moonshotai/kimi-k2.6 | 3 | 1 | 111,240 | 271 |
+| G | z-ai/glm-5.2 (noise control) | 5 | 2 | 15,804 | 105 |
+| C | z-ai/glm-5.2 (production) | 6 | 0 | 12,877 | 65 |
+| D | z-ai/glm-5.3-flash | 8 | 1 | 16,491 | 196 |
+| H | deepseek/deepseek-v4-pro | 6 (11 errors) | 0 | 30,328 | 141 |
+
+All 240 pieces were written, with 0 failed calls. GLM 5.3 ranks third despite
+two error pieces because one of them was the worst single fabrication in the
+set: its ICE-shooting feature ended "The agency did not respond to questions
+about why…", but the paper had asked nobody anything.
+
+**The noise control held, and it validates the judging.** Before unblinding,
+the verdict had already identified C and G as the two GLM 5.2 runs: rank 18 was
+word-for-word identical, and rank 25 altered the same Newsom quote in the same
+way. Scored separately, the two were rated 6th and 5th. The rater's noise is a
+place or so; F's margin is five places.
+
+**Prose was not the discriminator; attribution was.** All eight write competent
+newspaper English, and the briefs were close to interchangeable. The errors that
+separated them were the ones `docs/voice.md` names:
+- superlatives migrating to a new speaker (Meduza's own "most massive attack on
+  Moscow" credited to Reuters, Sobyanin or Ukraine);
+- an outlet's framing put in a subject's mouth (five of eight turned the
+  Guardian's "which has destabilised the region" into Burnham's words);
+- a collective quote pinned on one named refugee;
+- an absence reported as a finding ("DHS has not released the footage");
+- the machine section title leaking in as fact ("U.S. naval blockade", and "Trump
+  called off airstrikes, according to reports").
+
+**Two surprises.** DeepSeek V4 Pro was the *worst* writer and its Flash sibling
+the best. Pro states contested accounts in the paper's own voice ("an ICE agent
+rammed his car"), made Thomas Massie a senator, and wrote that Grassley "broke
+with the Iran war". Kimi K2.6 wrote well, and spent 111k output tokens and 271 s
+on 30 pieces doing it. Qwen3.8 27B came second on accuracy and was the slowest
+by far (449 s), which at 150 pieces is the difference between minutes and most
+of an hour.
+
+**Cost and fit.** Flash used about twice GLM 5.2's output tokens and took 74 s
+against 65–105 s. It accepted `reasoning_effort: "low"`, and its largest single
+call (2,637 tokens) sits well inside the production `max_tokens` of 8000, so
+only the model id changes.
+
+**Limits.** This was one day and one editor run, judged by one reader of the
+sources. The verdict rests on the features and standards. The first live papers
+on Flash should be audited the same way (sources against prose), with GLM 5.2
+one config line away. Flash's twice-GLM output tokens are the thing to watch
+for budget exhaustion on the brief batches.
+
+## 2026-09-25 — Writers: Flash at reasoning "high", not "low"
+
+**Round 2 asked what round 1 held constant.** Round 1 ran every model at
+`reasoning_effort: "low"`, and "low" means something different to each
+provider. Five writer runs covered the same 32 pieces of editor run 145: five
+features, standards, section lines and a brief batch, with Portuguese-only and
+fifteen-source packets among them. Every run used `--max-tokens 16000`. The export
+was blind, and every piece was read against its packet before the key was opened.
+
+| writer | model | effort | pieces with an unsupported fact, frame or attribution | other | out tok | max out | wall s |
+|---|---|---|---|---|---|---|---|
+| C | deepseek-v4.1-flash | high | **1** ("The report does not say…") | fewest overruns; best or joint best in 7 of 12 long pieces and 5 of 6 briefs | 55,470 | 7,553 | 357 |
+| D | deepseek-v4.1-flash | low | 0 | **one refusal published as the piece**; features shading into translation; 5 of 6 briefs over the ceiling | 24,601 | 3,422 | 306 |
+| A | glm-5.2 | high | 3 | credits quotes to the wrong source; misspelt a minister | 23,038 | 5,730 | 78 |
+| E | deepseek-v4.1-flash | none | 2 (an invented death; a sourcing note printed in the body) | the long writer: features at 650, 655 and 781 words, lines and briefs over their caps | 8,295 | 981 | 74 |
+| B | glm-5.2 | low (production) | 3 pieces, 7 instances | invented frames, an editorial closing line, a wrong lapse date | 22,405 | 5,156 | 129 |
+
+**The refusal.** Given a full Folha packet in Portuguese, Flash at "low" answered
+"I can't write this piece — the source material didn't come through". That was
+stored as an `ok` piece with no headline. It is one of 62 Flash-at-low pieces
+across the two rounds, and nothing else about that writer was wrong. But it is
+the worst single outcome in either round, and it lands at rank 2.
+
+**Why "high".** More reasoning bought discipline, not length. At "high" the
+writer kept its sources' hedges, credited analysis to the outlet that wrote it,
+caught a source's own caveat that no other writer carried, and stayed inside the
+ceilings that "none" and "low" overran. GLM 5.2 barely moves between "low" and
+"high" (22k against 23k output tokens), and both levels misattributed as often
+as round 1's GLM runs did.
+
+**The cost is budget and time, and both are set for it.** "High" spends about
+2.3 times the output tokens of "low". Its largest call, 7,553 tokens, would sit
+at the edge of the old `max_tokens: 8000`, so that goes to 16000, which is what
+both bake-offs ran with. Wall time was 357 s against GLM 5.2's 129 s for 32
+pieces at concurrency 4. Scaled to a 150-piece paper, that is roughly 25–30
+minutes inside a 90-minute deadline. `inspect timing` on the first live runs is
+the check.
+
+**Separately, a pipeline gap.** A refusal is prose, so the parser accepted it,
+and nothing downstream reads a piece's meaning. That is not a model-choice
+question, and it is recorded in `docs/open-items.md` rather than fixed here.
+
+## 2026-09-25 — The rerun judge stays on GLM 5.2
+
+**The test.** The rerun judge was replayed over the seven backtest days,
+2026-09-07 to 09-14, on pass-1 runs 55–61. The reference was GLM 5.2 (rerun runs
+1–7, the backtest that shipped the pass). Two candidates judged the same pairs:
+DeepSeek V4.1 Flash at `none` (runs 13, 15, …, 25) and GLM 5.3 at `low` (runs 14,
+16, …, 26), since GLM 5.3 cannot turn reasoning off. None of the three had a
+failed call, and all three passed all eight must-keep developments. The criterion
+is the stage's own asymmetry: a wrongly dropped development is invisible to the
+reader, while a missed rerun is the paper as it already was. So the pairs that
+matter are the ones a candidate called RERUN and GLM 5.2 did not.
+
+| judge | rows withheld (7 days) | pair disagreements with GLM 5.2 | calls RERUN where GLM 5.2 kept | keeps where GLM 5.2 called RERUN |
+|---|---|---|---|---|
+| GLM 5.2 (reference) | 84 | — | — | — |
+| Flash, none | 90 | 71 | 21 | 15 |
+| GLM 5.3, low | 99 | 47 | 27 | 6 |
+
+Every disagreement was read, with both reasons and the printed headline.
+
+**Flash fails in the shape this stage exists to avoid.** It matches the two
+stories on a shared background fact and ignores the new event:
+- Merz clashing with the AfD in the Bundestag, withheld because both mention
+  the Saxony-Anhalt result;
+- Ukrainian strikes on Arctic gas plants, withheld against a Novorossiysk strike;
+- the Houthis taking another city and island, withheld against the fall of Mocha;
+- Oregon lawmakers approving $1.25M for drop boxes, withheld against a
+  late-postmark story;
+- Oregon and Washington late-ballot rejections, withheld against Washington's
+  alone;
+- DeepSeek's benchmarks against Kimi K3, which the shipping backtest had
+  already named as a correct development.
+
+This is the "two facts, one printed" hazard named when the pass shipped, and
+Flash hits it about once a day. It also misses plain reruns in the other
+direction: Bangladesh measles at 1,000 deaths after 999, and the same Anthropic
+resignation twice. Its errors run both ways, so it is noise, not a different
+threshold.
+
+**GLM 5.3 is closer and stricter, and strictness is the wrong direction here.**
+It disagrees less, but most of its extra RERUN calls are features and reaction
+pieces that GLM 5.2 kept: Lebanese villages under attack, Venezuelans on the oil
+deal, wolves in the Pacific Northwest, civil groups on Google's leak. Each rests on
+news already printed and adds reporting. Some of those drops are defensible under
+the prompt's "nothing of substance" test. But the pass fails open by design, and a
+judge that withholds 18% more rows has to be clearly more right to earn that. It
+is not. It misread an Oregon story (the drop-box request rising from $500,000 to
+$1.25M, "already printed") and withheld the AfD's Kremlin-messaging angle, the
+backtest's other named development.
+
+**Limits.** There is no GLM 5.2 noise control. The reference ran on 2026-09-22,
+and some disagreements will be GLM 5.2's own run-to-run variation. That weakens
+any claim that a candidate is *better*. It does not rescue Flash, whose errors are
+wrong on their face. Speed is no factor: every judge takes 20–45 s a day.
+
+## 2026-09-25 — Writers, round 3: GLM 5.3 at xhigh ties Flash at high, at six times the time
+
+**The question.** GLM 5.3 was only ever tried at "low", where it barely reasoned,
+and nothing had been tried at "xhigh". Five writer runs (82–86) covered round 2's
+32 pieces of editor run 145, with `--max-tokens 32000 --timeout-ms 900000`. Gizmo
+reused the same editor run rather than a new day. That makes a direct comparison
+with round 2 possible, but it is not a third day of news. The export was blind,
+and every piece was read against its packet before the key was opened.
+
+| writer | model | effort | pieces with an unsupported fact, frame or attribution | near-misses | rule slips | failed | out tok | max out | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| D | deepseek-v4.1-flash | high | 0 | 2 | 2 | 0 | 37,434 | 4,329 | 123 |
+| E | deepseek-v4.1-flash | high (repeat) | 0 | 3 | 2 | 0 | 55,137 | 6,907 | 111 |
+| A | glm-5.3 | xhigh | 0 | 2 | 1 | 0 | 212,728 | 28,625 | 736 |
+| C | deepseek-v4.1-flash | xhigh | 0 | 0 | 1 | **1** | 151,313 | 32,000 | 2,853 |
+| B | glm-5.3 | high | **3** | 6 | 5 | 0 | 24,799 | 8,836 | 141 |
+
+**The noise control held.** The two Flash-at-high runs were read blind as
+separate writers and landed within one near-miss of each other. Flash at "high"
+has now run three times on two days: one unsupported claim in round 2, and none
+in either round-3 run.
+
+**GLM 5.3 at "high" behaves like GLM 5.2.** It spent 24,799 output tokens, about
+what GLM 5.2 spends at any level, and its level probe spent 81 on a whole piece.
+It made the same errors: an absence reported as a finding, a verification note
+printed in the body, and Folha's analysis hung on "analysts". On the Zelensky
+piece it invented "not civilian", word for word the slip round 2's GLM 5.2 made.
+
+**At "xhigh" GLM 5.3 is genuinely good, and only ties.** Its writing was as
+accurate as Flash at high. The cost is 212,728 output tokens against 37–55k, and
+736 s against 111–123 s for 32 pieces. That scales to over an hour of a 90-minute
+deadline for a 150-piece paper. And one call reached 28,625 of 32,000 tokens,
+within a tenth of round 3's own budget exhaustion. A tie on quality does not buy
+that.
+
+**Flash at "xhigh" is out.** It wrote the cleanest prose in the set and lost the
+rank-2 lead feature to 32,000 tokens of reasoning with no text. Seven provider
+errors and 2,853 s of wall time came with it.
+
+**So round 2's setting stands:** Flash at "high", `max_tokens: 16000`. Flash at
+"high" peaked at 7,553 tokens across three runs, so 16000 leaves twice that as
+headroom.
+
+## 2026-09-25 — The lineage judge stays on GLM 5.2
+
+**The test.** `npm run lineage-check` replayed the "previously" judge over papers
+38–44 in dry-run mode: 378 candidate pairs, 0 failed calls for every judge. Three
+judges ran: GLM 5.2 at production settings (the replay's own noise control),
+DeepSeek V4.1 Flash at `none`, and GLM 5.3 at `low`, its lowest level. Paper 42
+printed no links, because of the lookback bug fixed on 2026-09-22, so its replay
+links have nothing printed to compare against. Every pair where a replay and the
+printed paper disagreed was read with both texts, 62 in all. The criterion is the
+stage's own asymmetry: a false link prints where the reader sees it, and a missed
+one leaves the page as it was.
+
+| judge | YES verdicts | links | clear false links among its extra links | real continuations missed |
+|---|---|---|---|---|
+| GLM 5.2 (replay) | 240 | 161 | none clear (two weak: an Arctic strike to a summer drone-campaign roundup, Trump's aborted Houthi strike to Mayun Island) | 3, where the printed run itself linked (its own run-to-run noise) |
+| Flash, none | 214 | 149 | one weak (Axon camera logs to police hiding plate-reader use) | about 12, 10 in paper 41 alone: Pennsylvania measles, the Swedish election, the Fields Medal letter, Altman's safety remarks, Lula and the STF crisis |
+| GLM 5.3, low | 253 | 167 | **two clear** (see below), plus two weak (Hormuz recovery claims to a Brent price story; the Senate Flock hearing to Axon logs) | 1–2 |
+
+**GLM 5.3 brings back the defect the judge exists to stop.** It links "same kind
+of event, different instance", which is exactly how the first retrieval-only
+version failed:
+- an Israeli strike killing two in Gaza, linked to a Beit Lahiya airstrike a
+  week earlier, "same Gaza ceasefire violations" (0.8631);
+- the September 24 Kyiv strikes, linked to a September 11 strike on a different
+  building, "same war's repeated Kyiv strikes" (0.8071).
+
+Both reasons name a war rather than a transaction, the vagueness that the "name
+something both texts say" rule was written against.
+
+**Flash errs the safe way, too far.** A missed link costs nothing on the page, so
+Flash is the better of the two candidates. But one paper lost ten real
+continuations, so the reader would have lost most of what the marker is for.
+GLM 5.2 is neither loose nor timid, and its replay mostly reproduced its printed
+links. The 2026-09-04 audit put its false-link rate at 1 in 167. No candidate
+improves on that, and the stage costs seconds a paper at any model.
+
+## 2026-09-25 — Flash at reasoning "high" loses every judgment stage, for different reasons
+
+**Why this was run.** The rerun and lineage verdicts above tested Flash only with
+reasoning off, and three writer bake-offs had shown its reasoning level changes
+its quality a great deal. So Flash at "high" was run on the five judgment stages
+where overrides now exist. Each stage also got a fresh GLM 5.2 run as its noise
+control. Five new commands made that possible: `thread-check`, and
+`--reasoning-effort`, `--max-tokens` and `--timeout-ms` on `prefilter` and
+`grouping-pass1`. Every disagreement was read.
+
+| stage | Flash at "high" | GLM 5.2 repeat (noise) | why it loses |
+|---|---|---|---|
+| rerun judge (Sep 7–14) | withheld 101 rows | 81 (ref 84) | fails a must-keep: "Supreme Court again blocks Missouri's map" judged RERUN, "same denial already reported" |
+| lineage judge (papers 38–44) | 166 links | printed 144 | no better than GLM 5.2; one false link; one call used its whole 16,000-token budget |
+| scoring (grouping run 75) | ρ 0.83 / 0.86 vs GLM | ρ 0.91 | ranks by its own heuristic, not the bio |
+| thread pass | 1 of 3 days produced nothing | all days | one call, and it can fail outright |
+| prefilter (one day, 624 items) | cut 261 | cut 213 (prod 216) | too aggressive for a keep-when-unsure stage |
+
+**Rerun.** Flash at "high" reads nuance well. It rightly called the crypto
+scammers' court date a rerun ("face court" was the printed headline), and it
+kept the Houthi-and-Saudi exchange whose two halves had troubled the backtest.
+But it withholds more than GLM 5.2 does, and two of its drops are disqualifying:
+- the Missouri map, one of the eight named must-keep developments;
+- a New York sheriff's Flock stalking arrest, withheld as the Oregon officer's
+  case: another instance of the same kind of event, which the prompt names as
+  NEW.
+
+It took 134–240 s a day against GLM 5.2's 16–41 s, and its largest call used
+15,077 of 16,000 tokens.
+
+**Lineage.** Flash at "high" avoided the Gaza and Kyiv "same war" links GLM 5.3
+drew, and it recovered most of the continuations Flash at "none" missed. It
+still linked two different BLM wild-horse gathers in southeast Oregon
+(Riddle Mountain against Sheepshead–Heath Creek). With GLM 5.2 already at 1 false
+link in 167, a tie does not pay for the slower, budget-hungry calls.
+
+**Scoring.** Flash at "high" agrees with Flash at "medium" (ρ 0.93) more than
+with GLM 5.2, and where GLM 5.2 agrees with itself, Flash departs the same way
+every time:
+- **Down:** the reader's own geography (the Philippines' budget −15, VP Sara's
+  impeachment vote −14, the EU–Philippines trade deal −18, a Bellingham hazmat
+  spill −16), and anything it calls "statement, not action" (the Hormuz standoff
+  −28, the UN expert on boat strikes −14).
+- **Up:** distant hard news the bio gives no reason to want (a Turkish school
+  shooting +18, a Japanese typhoon +19, a lunar crater +21).
+
+That is a consistent ranking, just not this reader's. One disagreement is
+unresolved and worth a look: Flash scored the Nolan Wells no-charges decision
++34 as an Oregon grand jury, while GLM 5.2 called it Mississippi.
+
+**Thread pass.** On the one day all three judges finished, the threads were
+near-identical. But Flash at "high" spent the whole 48,000-token budget without
+output on one of its three days, and needed a retry on another. The thread pass
+is a single call, and a failed call yields zero threads: run #50 lost its call
+and put three separate wildfire rows in the top ten. A model that can fail that
+way cannot run it.
+
+**Prefilter.** Flash at "high" cut 48 more items than GLM 5.2 on the same 624.
+Its extra cuts include:
+- local PNW news: a Bellingham waterfront fire, Portland comics culture;
+- substantive foreign coverage: Datafolha presidential polls, an Argentine
+  growth outlook, a Kirchner trial date;
+- one item whose reason says "actually keep" beside a CUT verdict.
+
+It also kept Hacker News "Comments" stubs as articles, and the stage took 288 s
+against 52–67 s. The prompt's rule is to keep when unsure, and Flash reverses it.
+
+**Result.** GLM 5.2 stays on every judgment stage. Flash at "high" is the writer.
+The difference is the job: writing wants careful reading of sources, which
+reasoning buys. These judgment stages were tuned, prompt by prompt, against
+GLM 5.2's calibration, and the reader's bio is part of that calibration.

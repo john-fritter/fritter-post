@@ -24,6 +24,7 @@
 import { getPool } from "../../db/index.js";
 import { excerpt } from "../../lib/text.js";
 import { loadModelConfig } from "../../config/models.js";
+import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { selectLineageLinks, type LineageCandidate } from "./select.js";
@@ -42,6 +43,28 @@ export interface LineageResult {
   /** True when the judge could not be reached; no links are recorded. */
   judgeFailed: boolean;
   skipped: boolean;
+  /** Every pair the judge was asked about, with its verdict. Null when the call failed. */
+  judged: JudgedPair[];
+  /** The links selected from the YES verdicts — what the paper prints. */
+  links: LineageCandidate[];
+}
+
+export interface JudgedPair {
+  candidate: LineageCandidate;
+  /** True for YES; null when the judge call failed. */
+  verdict: boolean | null;
+  reason: string | null;
+}
+
+export interface LineageOptions {
+  /** Model comparison only: replaces the judge's model settings for this run. */
+  overrides?: ModelOverrides;
+  /**
+   * Judge and select, but write nothing. The replay path: the paper being
+   * replayed is already published, and its markers are live on the reader's
+   * page — a comparison run must never replace them.
+   */
+  dryRun?: boolean;
 }
 
 interface CandidateRow {
@@ -71,10 +94,14 @@ interface CandidateRow {
 export async function buildPaperLineage(
   paperId: number,
   publishedOn: string,
+  options: LineageOptions = {},
 ): Promise<LineageResult> {
-  const cfg = loadModelConfig().publisher.lineage;
+  const base = loadModelConfig().publisher.lineage;
+  const cfg = { ...base, adjudicate: applyModelOverrides(base.adjudicate, options.overrides) };
   if (!cfg.enabled) {
-    return { linked: 0, candidates: 0, rejected: 0, judgeFailed: false, skipped: true };
+    return {
+      linked: 0, candidates: 0, rejected: 0, judgeFailed: false, skipped: true, judged: [], links: [],
+    };
   }
 
   const pool = getPool();
@@ -177,13 +204,16 @@ export async function buildPaperLineage(
 
   let links: LineageCandidate[] = [];
   let judgeFailed = false;
+  let judged: JudgedPair[] = pairs.map((candidate) => ({ candidate, verdict: null, reason: null }));
 
   if (pairs.length > 0) {
     try {
       const result = await callWithBackoff(
         () =>
           callLLM({
-            stage: "lineage",
+            // A replay logs apart from the production judge, whose calls
+            // `inspect publisher` and the lineage audits read by stage.
+            stage: options.dryRun ? "lineage-check" : "lineage",
             stageRunId: paperId,
             model: cfg.adjudicate.model,
             systemPrompt: buildLineageSystemPrompt(),
@@ -208,6 +238,11 @@ export async function buildPaperLineage(
         "lineage",
       );
       const confirmed = parseLineageVerdicts(result.text, pairs.length);
+      judged = pairs.map((candidate, i) => ({
+        candidate,
+        verdict: confirmed.has(i),
+        reason: confirmed.get(i) ?? null,
+      }));
       links = selectLineageLinks(
         pairs
           .map((c, i) => ({ ...c, judgeReason: confirmed.get(i) ?? null }))
@@ -226,6 +261,13 @@ export async function buildPaperLineage(
   }
 
   const rejected = pairs.length - links.length;
+
+  if (options.dryRun) {
+    return {
+      linked: links.length, candidates: pairs.length, rejected, judgeFailed, skipped: false,
+      judged, links,
+    };
+  }
 
   const client = await pool.connect();
   try {
@@ -261,5 +303,7 @@ export async function buildPaperLineage(
     rejected,
     judgeFailed,
     skipped: false,
+    judged,
+    links,
   };
 }

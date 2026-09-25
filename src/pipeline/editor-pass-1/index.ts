@@ -9,6 +9,7 @@ import { callLLM, type LLMProvider } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { getClusteringItems } from "../preprocessor/assembler.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
+import { applyModelOverrides, withModel, type ModelOverrides } from "../../config/overrides.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,
@@ -396,7 +397,7 @@ export async function scoreBatches(
 }
 
 export async function runGroupingPass1(
-  options: { groupingRunId?: number; modelOverride?: string } = {},
+  options: { groupingRunId?: number; modelOverride?: string; overrides?: ModelOverrides } = {},
 ): Promise<GroupingPass1Run> {
   const pool = getPool();
 
@@ -428,8 +429,11 @@ export async function runGroupingPass1(
 
   // 3. Load model config (scoring reuses editor_pass_1 model settings).
   const modelConfig = loadModelConfig();
-  const stageConfig = modelConfig.editor_pass_1;
-  const model = options.modelOverride ?? stageConfig.model;
+  const stageConfig = applyModelOverrides(
+    modelConfig.editor_pass_1,
+    withModel(options.overrides, options.modelOverride),
+  );
+  const model = stageConfig.model;
   const { temperature, max_tokens: maxTokens, batch_size: batchSize, concurrency } = stageConfig;
   const bodyCap = stageConfig.body_cap;
   const summaryCap = stageConfig.summary_cap;

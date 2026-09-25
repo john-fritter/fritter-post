@@ -570,6 +570,21 @@ resilience. `editor.fallback` no longer exists in `models.yaml`. See
 Three pieces: the materials resolver, the article-text fetch, and the prompt
 assembler, then the writer calls themselves.
 
+**The writer is DeepSeek V4.1 Flash at reasoning `high`, the one stage not on
+GLM 5.2.** Three blind bake-offs (writer runs 64–71, 74–78, 82–86) read every
+piece against its packet. They were decided by attribution, not prose: who said
+what, whether an analyst's view stays the analyst's, whether an absence gets
+reported as a finding. Across three runs Flash at `high` put one unsupported
+claim in 96 pieces; GLM 5.2 put one in five or six pieces a run. The level
+matters as much as the model:
+- `low` once refused a full packet ("the source material didn't come through";
+  open item 4);
+- `none` ran long everywhere;
+- `xhigh` spent a 32,000-token budget reasoning and wrote nothing.
+
+`max_tokens` is 16000 because `high` has used up to 7,553 on one call. See
+`docs/decisions.md`, 2026-09-23 and 2026-09-25.
+
 **`materials.ts` — the resolver.** Walks a ranked editor story to the articles
 underneath it: thread → `thread_members` → cluster → `grouping_runs.digest` →
 `preprocessed_items`. It does the walk and nothing else — no fetching, capping,
@@ -1559,8 +1574,8 @@ number is ambiguous. The next migration is **046**.
 - `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
 - `npm run fetch-text -- --editor-run <n> [--dry-run] [--limit <n>]` — fetch
   publisher article text for the stories of an editor run
-- `npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>]` — write the
-  paper's pieces
+- `npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>] [--ranks 1-6,20]`
+  — write the paper's pieces; `--ranks` limits a run to those editor ranks
 - `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
   pieces, in place
 - `npm run publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]` — freeze a
@@ -1696,6 +1711,39 @@ number is ambiguous. The next migration is **046**.
   the translation stage can be deleted rather than hardened. Repeating
   `--body-cap` also measures truncation sensitivity. Read-only apart from the
   `generation_logs` rows every LLM call writes.
+
+**Model comparisons.** These exist so a model can be judged on the same input,
+with only the model changed. **Every one of them needs a noise control**: run the
+production model again beside the candidate, because a model differs from itself
+run to run. The difference that counts is candidate-vs-production beyond
+production-vs-production. The 2026-09-23 to 09-25 evaluation in
+`docs/decisions.md` is the worked example, and the lesson that cost a round is
+that **a reasoning model must be tested at more than one reasoning level**. Flash
+lost every judge stage at `none` and won the writers at `high`.
+- **Override flags.** `write`, `rerun-check`, `lineage-check`, `thread-check`,
+  `prefilter` and `grouping-pass1` take `--model`, `--provider`,
+  `--reasoning-effort <level|omit>`, `--max-tokens` and `--timeout-ms` for one
+  run (`src/config/overrides.ts`). In `grouping-pass1` they apply to the scoring
+  calls only. Raise `--max-tokens` with the reasoning level: reasoning spends
+  output tokens, and a call that spends them all returns nothing. `prefilter`
+  writes a run that grouping will read as *the* prefilter run for that
+  preprocessor run, so never test it on today's run.
+- `npm run writer-bakeoff-export -- --runs <a,b,…> --out <dir> [--blind]` — every
+  piece of several writer runs side by side with their packets. `--blind` labels
+  the runs by letter and writes `key.md` and `summary.md` separately. **Read
+  every piece against its packet before opening the key.**
+- `npm run rerun-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD` — the
+  rerun judge alone, against the papers that existed that day. The Sep 7–14
+  backtest (pass-1 runs 55–61, reference rerun runs 1–7) is the regression set.
+- `npm run lineage-check -- (--last <n> | --papers <a,b,…>) --out <file.md>` —
+  replays the "previously" judge in dry-run mode and diffs against the printed
+  links. Writes a `.md` and a `.tsv`, and nothing but `generation_logs` rows.
+- `npm run thread-check -- --pass1-runs <a,b,…>` runs the thread pass alone
+  (thread tables only, no pile). `--export --out <file.md> [--blind]` writes
+  every thread run over those pass-1 runs with member titles.
+- `npm run translation-experiment -- --preprocessor-run-id <n> --limit <n>
+  --model <provider>:<id> [--model …] --out <file.md>` — re-translates a spread
+  sample of non-English items per model, side by side.
 
 There is **no** `inspect grouping` or `inspect grouping-pass1` subcommand yet.
 Those two stages currently have no inspection view, which is a gap: the
