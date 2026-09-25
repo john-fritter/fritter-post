@@ -6182,3 +6182,46 @@ backtest's other named development.
 and some disagreements will be GLM 5.2's own run-to-run variation. That weakens
 any claim that a candidate is *better*. It does not rescue Flash, whose errors are
 wrong on their face. Speed is no factor: every judge takes 20–45 s a day.
+
+## 2026-09-25 — Writers, round 3: GLM 5.3 at xhigh ties Flash at high, at six times the time
+
+**The question.** GLM 5.3 was only ever tried at "low", where it barely reasoned,
+and nothing had been tried at "xhigh". Five writer runs (82–86) covered round 2's
+32 pieces of editor run 145, with `--max-tokens 32000 --timeout-ms 900000`. Gizmo
+reused the same editor run rather than a new day. That makes a direct comparison
+with round 2 possible, but it is not a third day of news. The export was blind,
+and every piece was read against its packet before the key was opened.
+
+| writer | model | effort | pieces with an unsupported fact, frame or attribution | near-misses | rule slips | failed | out tok | max out | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| D | deepseek-v4.1-flash | high | 0 | 2 | 2 | 0 | 37,434 | 4,329 | 123 |
+| E | deepseek-v4.1-flash | high (repeat) | 0 | 3 | 2 | 0 | 55,137 | 6,907 | 111 |
+| A | glm-5.3 | xhigh | 0 | 2 | 1 | 0 | 212,728 | 28,625 | 736 |
+| C | deepseek-v4.1-flash | xhigh | 0 | 0 | 1 | **1** | 151,313 | 32,000 | 2,853 |
+| B | glm-5.3 | high | **3** | 6 | 5 | 0 | 24,799 | 8,836 | 141 |
+
+**The noise control held.** The two Flash-at-high runs were read blind as
+separate writers and landed within one near-miss of each other. Flash at "high"
+has now run three times on two days: one unsupported claim in round 2, and none
+in either round-3 run.
+
+**GLM 5.3 at "high" behaves like GLM 5.2.** It spent 24,799 output tokens, about
+what GLM 5.2 spends at any level, and its level probe spent 81 on a whole piece.
+It made the same errors: an absence reported as a finding, a verification note
+printed in the body, and Folha's analysis hung on "analysts". On the Zelensky
+piece it invented "not civilian", word for word the slip round 2's GLM 5.2 made.
+
+**At "xhigh" GLM 5.3 is genuinely good, and only ties.** Its writing was as
+accurate as Flash at high. The cost is 212,728 output tokens against 37–55k, and
+736 s against 111–123 s for 32 pieces. That scales to over an hour of a 90-minute
+deadline for a 150-piece paper. And one call reached 28,625 of 32,000 tokens,
+within a tenth of round 3's own budget exhaustion. A tie on quality does not buy
+that.
+
+**Flash at "xhigh" is out.** It wrote the cleanest prose in the set and lost the
+rank-2 lead feature to 32,000 tokens of reasoning with no text. Seven provider
+errors and 2,853 s of wall time came with it.
+
+**So round 2's setting stands:** Flash at "high", `max_tokens: 16000`. Flash at
+"high" peaked at 7,553 tokens across three runs, so 16000 leaves twice that as
+headroom.
