@@ -446,16 +446,15 @@ editor:
 
 # Writers stage: the fetch sub-stage, the packet assembler and the writer calls.
 writers:
-  # Chosen by two blind bake-offs (docs/decisions.md, 2026-09-23 and
-  # 2026-09-25), each piece read against its sources before the key was opened.
-  # Round 1 (editor run 143, eight models at "low"): DeepSeek V4.1 Flash put an
-  # unsupported fact, frame or attribution in 1 of 30 pieces, against 6 and 5
-  # for GLM 5.2, this stage's previous model. Round 2 (editor run 145, 32 pieces)
-  # tried reasoning levels: Flash at "high" was best (1 such piece, the fewest
-  # overruns), Flash at "low" refused one feature outright with a full packet,
-  # Flash at "none" ran long everywhere, and GLM 5.2 at low and high had 3
-  # error pieces each. Neither round was decided by prose; attribution decided
-  # both: who said what.
+  # Chosen by three blind bake-offs (docs/decisions.md, 2026-09-23 and
+  # 2026-09-25), every piece read against its sources before the key was opened.
+  # Round 1 (eight models at "low"): Flash put an unsupported fact, frame or
+  # attribution in 1 of 30 pieces, GLM 5.2 in 5–6. Rounds 2 and 3 tried reasoning
+  # levels. At "high" Flash had 1 such piece in 96 across three runs. At "low" it
+  # refused one full packet, at "none" it ran long, and at "xhigh" it reasoned
+  # through 32,000 tokens and wrote nothing. GLM 5.3 matched it only at "xhigh",
+  # at six times the time. Prose did not decide any round; attribution did: who
+  # said what.
   model: deepseek/deepseek-v4.1-flash
   provider: nanogpt
   # Higher than every other stage. The judgment stages want repeatability; this
@@ -465,7 +464,7 @@ writers:
   # Flash at "high" spent up to 7,553 output tokens on one call in round 2, so
   # the old 8000 would sit a single long feature at the edge of run #35's
   # budget exhaustion (a call that reasons until the budget is gone and emits
-  # nothing). 16000 is what both bake-offs ran with.
+  # nothing). Flash at "high" peaked at 7,553 across three runs.
   max_tokens: 16000
   reasoning_effort: "high"
   stream: true
