@@ -6127,3 +6127,58 @@ the check.
 **Separately, a pipeline gap.** A refusal is prose, so the parser accepted it,
 and nothing downstream reads a piece's meaning. That is not a model-choice
 question, and it is recorded in `docs/open-items.md` rather than fixed here.
+
+## 2026-09-25 — The rerun judge stays on GLM 5.2
+
+**The test.** The rerun judge was replayed over the seven backtest days,
+2026-09-07 to 09-14, on pass-1 runs 55–61. The reference was GLM 5.2 (rerun runs
+1–7, the backtest that shipped the pass). Two candidates judged the same pairs:
+DeepSeek V4.1 Flash at `none` (runs 13, 15, …, 25) and GLM 5.3 at `low` (runs 14,
+16, …, 26), since GLM 5.3 cannot turn reasoning off. None of the three had a
+failed call, and all three passed all eight must-keep developments. The criterion
+is the stage's own asymmetry: a wrongly dropped development is invisible to the
+reader, while a missed rerun is the paper as it already was. So the pairs that
+matter are the ones a candidate called RERUN and GLM 5.2 did not.
+
+| judge | rows withheld (7 days) | pair disagreements with GLM 5.2 | calls RERUN where GLM 5.2 kept | keeps where GLM 5.2 called RERUN |
+|---|---|---|---|---|
+| GLM 5.2 (reference) | 84 | — | — | — |
+| Flash, none | 90 | 71 | 21 | 15 |
+| GLM 5.3, low | 99 | 47 | 27 | 6 |
+
+Every disagreement was read, with both reasons and the printed headline.
+
+**Flash fails in the shape this stage exists to avoid.** It matches the two
+stories on a shared background fact and ignores the new event:
+- Merz clashing with the AfD in the Bundestag, withheld because both mention
+  the Saxony-Anhalt result;
+- Ukrainian strikes on Arctic gas plants, withheld against a Novorossiysk strike;
+- the Houthis taking another city and island, withheld against the fall of Mocha;
+- Oregon lawmakers approving $1.25M for drop boxes, withheld against a
+  late-postmark story;
+- Oregon and Washington late-ballot rejections, withheld against Washington's
+  alone;
+- DeepSeek's benchmarks against Kimi K3, which the shipping backtest had
+  already named as a correct development.
+
+This is the "two facts, one printed" hazard named when the pass shipped, and
+Flash hits it about once a day. It also misses plain reruns in the other
+direction: Bangladesh measles at 1,000 deaths after 999, and the same Anthropic
+resignation twice. Its errors run both ways, so it is noise, not a different
+threshold.
+
+**GLM 5.3 is closer and stricter, and strictness is the wrong direction here.**
+It disagrees less, but most of its extra RERUN calls are features and reaction
+pieces that GLM 5.2 kept: Lebanese villages under attack, Venezuelans on the oil
+deal, wolves in the Pacific Northwest, civil groups on Google's leak. Each rests on
+news already printed and adds reporting. Some of those drops are defensible under
+the prompt's "nothing of substance" test. But the pass fails open by design, and a
+judge that withholds 18% more rows has to be clearly more right to earn that. It
+is not. It misread an Oregon story (the drop-box request rising from $500,000 to
+$1.25M, "already printed") and withheld the AfD's Kremlin-messaging angle, the
+backtest's other named development.
+
+**Limits.** There is no GLM 5.2 noise control. The reference ran on 2026-09-22,
+and some disagreements will be GLM 5.2's own run-to-run variation. That weakens
+any claim that a candidate is *better*. It does not rescue Flash, whose errors are
+wrong on their face. Speed is no factor: every judge takes 20–45 s a day.
