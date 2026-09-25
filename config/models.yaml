@@ -446,23 +446,28 @@ editor:
 
 # Writers stage: the fetch sub-stage, the packet assembler and the writer calls.
 writers:
-  # Chosen by a blind bake-off on 2026-09-23 (editor run 143, 30 pieces, eight
-  # writers, each read against its sources before the key was opened; see
-  # docs/decisions.md). DeepSeek V4.1 Flash put an unsupported fact, frame or
-  # attribution in 1 of 30 pieces; the two GLM 5.2 runs (this stage's previous
-  # model) put one in 6 and 5. The bake-off was not decided by prose quality,
-  # where all eight were close. It was decided by attribution: who said what.
-  # Non-thinking use, as before: run #40's lesson was that a thinking model can
-  # spend its whole budget reasoning and emit nothing.
+  # Chosen by two blind bake-offs (docs/decisions.md, 2026-09-23 and
+  # 2026-09-25), each piece read against its sources before the key was opened.
+  # Round 1 (editor run 143, eight models at "low"): DeepSeek V4.1 Flash put an
+  # unsupported fact, frame or attribution in 1 of 30 pieces, against 6 and 5
+  # for GLM 5.2, this stage's previous model. Round 2 (editor run 145, 32 pieces)
+  # tried reasoning levels: Flash at "high" was best (1 such piece, the fewest
+  # overruns), Flash at "low" refused one feature outright with a full packet,
+  # Flash at "none" ran long everywhere, and GLM 5.2 at low and high had 3
+  # error pieces each. Neither round was decided by prose; attribution decided
+  # both: who said what.
   model: deepseek/deepseek-v4.1-flash
   provider: nanogpt
   # Higher than every other stage. The judgment stages want repeatability; this
   # one wants prose that does not read like a form letter.
   temperature: 0.6
-  # A feature is 400-600 words, roughly 900 tokens. The headroom is for a batch
-  # of ten briefs plus whatever reasoning_effort "low" spends.
-  max_tokens: 8000
-  reasoning_effort: "low"
+  # A feature is 400-600 words, roughly 900 tokens; the rest is reasoning.
+  # Flash at "high" spent up to 7,553 output tokens on one call in round 2, so
+  # the old 8000 would sit a single long feature at the edge of run #35's
+  # budget exhaustion (a call that reasons until the budget is gone and emits
+  # nothing). 16000 is what both bake-offs ran with.
+  max_tokens: 16000
+  reasoning_effort: "high"
   stream: true
   timeout_ms: 300000
   # 15 features + 60 standards = 75 individual calls, plus 8 brief batches.

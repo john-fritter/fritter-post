@@ -6085,3 +6085,45 @@ sources. The verdict rests on the features and standards. The first live papers
 on Flash should be audited the same way (sources against prose), with GLM 5.2
 one config line away. Flash's twice-GLM output tokens are the thing to watch
 for budget exhaustion on the brief batches.
+
+## 2026-09-25 — Writers: Flash at reasoning "high", not "low"
+
+**Round 2 asked what round 1 held constant.** Round 1 ran every model at
+`reasoning_effort: "low"`, and "low" means something different to each
+provider. Five writer runs covered the same 32 pieces of editor run 145: five
+features, standards, section lines and a brief batch, with Portuguese-only and
+fifteen-source packets among them. Every run used `--max-tokens 16000`. The export
+was blind, and every piece was read against its packet before the key was opened.
+
+| writer | model | effort | pieces with an unsupported fact, frame or attribution | other | out tok | max out | wall s |
+|---|---|---|---|---|---|---|---|
+| C | deepseek-v4.1-flash | high | **1** ("The report does not say…") | fewest overruns; best or joint best in 7 of 12 long pieces and 5 of 6 briefs | 55,470 | 7,553 | 357 |
+| D | deepseek-v4.1-flash | low | 0 | **one refusal published as the piece**; features shading into translation; 5 of 6 briefs over the ceiling | 24,601 | 3,422 | 306 |
+| A | glm-5.2 | high | 3 | credits quotes to the wrong source; misspelt a minister | 23,038 | 5,730 | 78 |
+| E | deepseek-v4.1-flash | none | 2 (an invented death; a sourcing note printed in the body) | the long writer: features at 650, 655 and 781 words, lines and briefs over their caps | 8,295 | 981 | 74 |
+| B | glm-5.2 | low (production) | 3 pieces, 7 instances | invented frames, an editorial closing line, a wrong lapse date | 22,405 | 5,156 | 129 |
+
+**The refusal.** Given a full Folha packet in Portuguese, Flash at "low" answered
+"I can't write this piece — the source material didn't come through". That was
+stored as an `ok` piece with no headline. It is one of 62 Flash-at-low pieces
+across the two rounds, and nothing else about that writer was wrong. But it is
+the worst single outcome in either round, and it lands at rank 2.
+
+**Why "high".** More reasoning bought discipline, not length. At "high" the
+writer kept its sources' hedges, credited analysis to the outlet that wrote it,
+caught a source's own caveat that no other writer carried, and stayed inside the
+ceilings that "none" and "low" overran. GLM 5.2 barely moves between "low" and
+"high" (22k against 23k output tokens), and both levels misattributed as often
+as round 1's GLM runs did.
+
+**The cost is budget and time, and both are set for it.** "High" spends about
+2.3 times the output tokens of "low". Its largest call, 7,553 tokens, would sit
+at the edge of the old `max_tokens: 8000`, so that goes to 16000, which is what
+both bake-offs ran with. Wall time was 357 s against GLM 5.2's 129 s for 32
+pieces at concurrency 4. Scaled to a 150-piece paper, that is roughly 25–30
+minutes inside a 90-minute deadline. `inspect timing` on the first live runs is
+the check.
+
+**Separately, a pipeline gap.** A refusal is prose, so the parser accepted it,
+and nothing downstream reads a piece's meaning. That is not a model-choice
+question, and it is recorded in `docs/open-items.md` rather than fixed here.

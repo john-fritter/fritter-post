@@ -83,6 +83,28 @@ Ranking is relative, so a uniform shift is harmless. Whether the *ordering* of
 non-local items got worse is not established. Re-measure if the top of the paper
 starts looking wrong in a way nearness does not explain.
 
+### 4. A writer's refusal publishes as the piece
+
+In the round-2 writer bake-off (writer run 75, DeepSeek V4.1 Flash at "low"),
+rank 2's feature came back as "I can't write this piece — the source material
+didn't come through", with the full Folha packet in its prompt. It was stored as
+an `ok` piece with no headline, so a live run would have printed a note to the
+operator at the top of the paper. The parser was made forgiving on purpose (a
+piece with no headline is still a piece, `docs/decisions.md`, run #36), and a
+refusal is prose, so nothing between the call and the page reads it for what it
+means.
+
+It is one piece in 62 at that setting, and production now runs "high", which
+did not refuse in 32. That makes it rare, not impossible, and it is the worst
+thing either bake-off produced.
+
+**Fix, if it recurs or before it can:** treat a body that opens by declining the
+task ("I can't write", "I cannot write", "the source material didn't come
+through") as a failed piece with that reason, so `--repair` re-asks it and the
+writers gate counts it. Keep it to a small, evidence-driven phrase list with a
+test for the cut and the near-miss prose that must survive (a quoted official
+saying "I can't"), which is the junk filter's rule applied here.
+
 ---
 
 ## Structural, no reader impact yet
