@@ -36,6 +36,9 @@ function testFlagsParsed() {
   );
   assert.throws(() => overridesFromFlags({ provider: "anthropic" }));
   assert.throws(() => overridesFromFlags({ "max-tokens": "lots" }));
+  assert.deepEqual(overridesFromFlags({ "timeout-ms": "900000" }), { timeoutMs: 900000 });
+  assert.throws(() => overridesFromFlags({ "timeout-ms": "forever" }));
+  assert.equal(applyModelOverrides(writers, { timeoutMs: 900000 }).timeout_ms, 900000);
 }
 
 testNoOverridesIsProduction();
