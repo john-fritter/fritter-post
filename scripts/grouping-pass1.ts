@@ -4,28 +4,33 @@ import { assembleGroupingPile } from "../src/pipeline/editor-pass-1/assemble-pil
 import { runThreading } from "../src/pipeline/thread/index.js";
 import { runRerunCheck } from "../src/pipeline/rerun/index.js";
 import { loadModelConfig } from "../src/config/models.js";
+import { overridesFromFlags, type ModelOverrides } from "../src/config/overrides.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
   let groupingRunId: number | undefined;
-  let modelOverride: string | undefined;
+  const flags: Record<string, string> = {};
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--grouping-run-id" && i + 1 < args.length) {
       groupingRunId = parseInt(args[++i]!, 10);
-    } else if (args[i] === "--model" && i + 1 < args.length) {
-      modelOverride = args[++i];
+    } else if (args[i]!.startsWith("--") && i + 1 < args.length) {
+      flags[args[i]!.slice(2)] = args[++i]!;
     }
   }
 
-  return { groupingRunId, modelOverride };
+  // --model / --provider / --reasoning-effort / --max-tokens / --timeout-ms
+  // apply to the scoring calls only; the rerun check and thread pass that
+  // follow run at production settings.
+  const overrides: ModelOverrides | undefined = overridesFromFlags(flags);
+  return { groupingRunId, overrides };
 }
 
 async function main() {
-  const { groupingRunId, modelOverride } = parseArgs(process.argv);
+  const { groupingRunId, overrides } = parseArgs(process.argv);
 
   console.log("[grouping-pass-1] starting...");
-  const run = await runGroupingPass1({ groupingRunId, modelOverride });
+  const run = await runGroupingPass1({ groupingRunId, overrides });
   console.log(
     `[grouping-pass-1] run #${run.id} complete: ` +
       `${run.itemsIn} items scored, model=${run.modelUsed}`,

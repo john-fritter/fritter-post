@@ -46,6 +46,15 @@ function tsv(values: Array<string | number | boolean | null>): string {
 }
 
 async function main() {
+  // A bare --help used to fall through to a full default replay.
+  if (process.argv.includes("--help")) {
+    console.log(
+      "Usage: npm run lineage-check -- (--last <n> | --papers <a,b,…>) [--out <file.md>]\n" +
+        "         [--model <id>] [--provider nanogpt] [--reasoning-effort <level|omit>]\n" +
+        "         [--max-tokens <n>] [--timeout-ms <n>]",
+    );
+    process.exit(0);
+  }
   const flags = parseArgs(process.argv);
   const overrides = overridesFromFlags(flags);
   const pool = getPool();

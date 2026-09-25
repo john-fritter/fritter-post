@@ -28,7 +28,8 @@
     "writer-bakeoff-export": "tsx scripts/writer-bakeoff-export.ts",
     "lineage-check": "tsx scripts/lineage-check.ts",
     "probe-source": "tsx scripts/probe-source.ts",
-    "rerun-check": "tsx scripts/rerun-check.ts"
+    "rerun-check": "tsx scripts/rerun-check.ts",
+    "thread-check": "tsx scripts/thread-check.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

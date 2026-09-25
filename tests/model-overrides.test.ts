@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { loadModelConfig } from "../src/config/models.js";
-import { applyModelOverrides, overridesFromFlags } from "../src/config/overrides.js";
+import { applyModelOverrides, overridesFromFlags, withModel } from "../src/config/overrides.js";
 
 const writers = loadModelConfig().writers;
 const rerun = loadModelConfig().rerun;
@@ -41,7 +41,17 @@ function testFlagsParsed() {
   assert.equal(applyModelOverrides(writers, { timeoutMs: 900000 }).timeout_ms, 900000);
 }
 
+function testWithModelFoldsOldFlag() {
+  assert.equal(withModel(undefined, undefined), undefined);
+  assert.deepEqual(withModel(undefined, "x/y"), { model: "x/y" });
+  assert.deepEqual(
+    withModel({ reasoningEffort: "high" }, "x/y"),
+    { reasoningEffort: "high", model: "x/y" },
+  );
+}
+
 testNoOverridesIsProduction();
+testWithModelFoldsOldFlag();
 testModelAndBudgetReplaced();
 testReasoningEffortOmitted();
 testFlagsParsed();

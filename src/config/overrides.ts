@@ -44,6 +44,18 @@ export function applyModelOverrides<T extends ModelShapedConfig>(
   return next;
 }
 
+/**
+ * Folds a stage's older `--model`-only override into the full override set, so
+ * a script that has always taken `--model` keeps doing so.
+ */
+export function withModel(
+  overrides: ModelOverrides | undefined,
+  modelOverride: string | undefined,
+): ModelOverrides | undefined {
+  if (modelOverride === undefined) return overrides;
+  return { ...overrides, model: modelOverride };
+}
+
 const PROVIDERS: LLMProvider[] = ["ollama-cloud", "nanogpt", "openrouter"];
 
 /**

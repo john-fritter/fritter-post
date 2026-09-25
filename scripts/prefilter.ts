@@ -9,6 +9,7 @@
 
 import "dotenv/config";
 import { runPrefilter } from "../src/pipeline/prefilter/index.js";
+import { overridesFromFlags } from "../src/config/overrides.js";
 import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
@@ -56,7 +57,11 @@ async function main() {
   console.log(`  concurrency: ${modelConfig.prefilter.concurrency}`);
   console.log("");
 
-  const run = await runPrefilter({ preprocessorRunId, modelOverride });
+  // --provider / --reasoning-effort / --max-tokens / --timeout-ms, for model
+  // comparisons; --model alone behaves as it always has.
+  const overrides = overridesFromFlags(flags);
+  if (overrides) console.log(`  overrides: ${JSON.stringify(overrides)}`);
+  const run = await runPrefilter({ preprocessorRunId, modelOverride, overrides });
 
   console.log(`\nPrefilter run #${run.id} complete.`);
   console.log(`  Preprocessor run:  #${run.preprocessorRunId}`);
