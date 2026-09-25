@@ -464,7 +464,7 @@ writers:
   # Flash at "high" spent up to 7,553 output tokens on one call in round 2, so
   # the old 8000 would sit a single long feature at the edge of run #35's
   # budget exhaustion (a call that reasons until the budget is gone and emits
-  # nothing). Flash at "high" peaked at 7,553 across three runs.
+  # nothing). That was its peak across three runs; 16000 leaves twice it.
   max_tokens: 16000
   reasoning_effort: "high"
   stream: true
