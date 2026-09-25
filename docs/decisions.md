@@ -6225,3 +6225,39 @@ errors and 2,853 s of wall time came with it.
 **So round 2's setting stands:** Flash at "high", `max_tokens: 16000`. Flash at
 "high" peaked at 7,553 tokens across three runs, so 16000 leaves twice that as
 headroom.
+
+## 2026-09-25 — The lineage judge stays on GLM 5.2
+
+**The test.** `npm run lineage-check` replayed the "previously" judge over papers
+38–44 in dry-run mode: 378 candidate pairs, 0 failed calls for every judge. Three
+judges ran: GLM 5.2 at production settings (the replay's own noise control),
+DeepSeek V4.1 Flash at `none`, and GLM 5.3 at `low`, its lowest level. Paper 42
+printed no links, because of the lookback bug fixed on 2026-09-22, so its replay
+links have nothing printed to compare against. Every pair where a replay and the
+printed paper disagreed was read with both texts, 62 in all. The criterion is the
+stage's own asymmetry: a false link prints where the reader sees it, and a missed
+one leaves the page as it was.
+
+| judge | YES verdicts | links | clear false links among its extra links | real continuations missed |
+|---|---|---|---|---|
+| GLM 5.2 (replay) | 240 | 161 | none clear (two weak: an Arctic strike to a summer drone-campaign roundup, Trump's aborted Houthi strike to Mayun Island) | 3, where the printed run itself linked (its own run-to-run noise) |
+| Flash, none | 214 | 149 | one weak (Axon camera logs to police hiding plate-reader use) | about 12, 10 in paper 41 alone: Pennsylvania measles, the Swedish election, the Fields Medal letter, Altman's safety remarks, Lula and the STF crisis |
+| GLM 5.3, low | 253 | 167 | **two clear** (see below), plus two weak (Hormuz recovery claims to a Brent price story; the Senate Flock hearing to Axon logs) | 1–2 |
+
+**GLM 5.3 brings back the defect the judge exists to stop.** It links "same kind
+of event, different instance", which is exactly how the first retrieval-only
+version failed:
+- an Israeli strike killing two in Gaza, linked to a Beit Lahiya airstrike a
+  week earlier, "same Gaza ceasefire violations" (0.8631);
+- the September 24 Kyiv strikes, linked to a September 11 strike on a different
+  building, "same war's repeated Kyiv strikes" (0.8071).
+
+Both reasons name a war rather than a transaction, the vagueness that the "name
+something both texts say" rule was written against.
+
+**Flash errs the safe way, too far.** A missed link costs nothing on the page, so
+Flash is the better of the two candidates. But one paper lost ten real
+continuations, so the reader would have lost most of what the marker is for.
+GLM 5.2 is neither loose nor timid, and its replay mostly reproduced its printed
+links. The 2026-09-04 audit put its false-link rate at 1 in 167. No candidate
+improves on that, and the stage costs seconds a paper at any model.
