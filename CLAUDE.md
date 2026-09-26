@@ -87,7 +87,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–045)
+├── migrations/                  # numbered SQL migrations (001–046)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -1241,10 +1241,9 @@ judge call is in `generation_logs` with its full prompt and verdicts. The 114
 hand-reviewed links from 2026-09-04 are the regression set. See
 `docs/open-items.md`.
 
-**The marker is text, never a link.** `/story/<ref>` resolves refs against the
-*latest* paper only, so a route to yesterday's piece does not exist — and the
-reading view's rule is that colour means exactly one thing, a link that leaves
-for someone else's reporting. A "previously" line is the paper talking about
+**The marker is text, never a link.** Yesterday's piece now has a permanent
+address (`/article/<id>`), but the reading view's rule is that colour means
+exactly one thing, a link that leaves for someone else's reporting. A "previously" line is the paper talking about
 itself, so it is set unlinked and uncoloured under the headline. A prior *section
 line* has no headline of its own and is dropped rather than rendered: a pointer
 to a pointer is not worth a row.
@@ -1385,9 +1384,39 @@ says so and says what to do instead.
 
 ### the reading view
 
-`src/app/` — the index at `/`, one page per piece at `/story/<ref>`. Server
-components reading only the `paper_*` tables: a published paper is
-self-contained, so rendering never touches the pipeline's working tables.
+`src/app/` — the index at `/`, one page per piece at `/story/<ref>`, and the
+same page at its permanent address `/article/<id>`. Server components reading
+only the `paper_*` tables: a published paper is self-contained, so rendering
+never touches the pipeline's working tables.
+
+**A piece has two addresses, and only one is permanent.** `/story/<ref>`
+resolves against the latest paper, because refs are run-local — C27 today is
+not C27 tomorrow. `/article/<id>` resolves any published piece by its **article
+id, which is `writer_pieces.id`**, not `paper_pieces.id`: a re-publish deletes
+and re-inserts the date's paper, so every `paper_pieces` id changes whenever a
+morning is corrected, while `--repair` rewrites writer pieces in place and keeps
+theirs. A paper replaced from a *different* writer run takes its old ids with
+it, so a stale id goes missing and never points at a different story. An
+earlier edition's page says which paper it is from and sends "back" to today's.
+
+**"Discuss on the board" is a link and nothing more** (live since 2026-09-26,
+`BOARD_URL=https://board.fritter.lol`). Every piece page links to
+Fritter Board's entry point for that article (`BOARD_URL` + `/article/<id>`),
+which opens the article's thread or offers to start one. The paper never reads
+the board's tables to learn whether a thread exists, so it shows no reply counts
+— that would be an engagement metric on a newspaper. Unset `BOARD_URL` and the
+link is not drawn. It is uncoloured: the board is the paper's neighbour, not
+someone else's reporting.
+
+**The board reads the paper through the `published` schema, and nothing else**
+(migration 046). Two views — `published.articles` and
+`published.article_sources` — are the whole contract; the board's role gets
+`USAGE` on that schema and `SELECT` on those views and no grant in `public`, so
+it can never see `article_texts` (third-party full text, never to be published,
+and which the board's bots would send to a model provider). Views run with
+their owner's privileges, so no underlying-table grant is needed. **Add columns
+to the views freely; never rename or drop one without changing the board in the
+same breath.**
 
 **Containers expand, pieces open.** A thread is the only container, so it is the
 only thing that expands in place; every piece — brief included — has a page.
@@ -1560,7 +1589,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **046**.
+number is ambiguous. The next migration is **047**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1784,6 +1813,14 @@ The reader relays between us. So:
   to learn, and what to report back.
 - **Give exact commands.** CLI runs inside the container as
   `docker compose exec -T app npm run <script> -- <args>`.
+- **Tests are not in the production image.** The runner stage copies `src`,
+  `scripts`, `migrations`, `config` and `docs`, not `tests`, so
+  `docker compose exec -T app npm test` fails. Have Gizmo run `npm test` from
+  the source checkout on the host (it did for the 2026-09-26 deploy: 39 of 39).
+- **Fritter Board shares this database.** It lives in the `board` schema as
+  role `fritter_board`, runs as `fritter-board-app-1` from `/srv/fritter-board`,
+  and reads only the `published` views (migration 046). Dropping or renaming a
+  column there breaks the board. See the board repo's README.
 - **Always include the network reconnect.** The app service declares only
   `internal`, and `seedbox_default` is attached by hand, so every
   `docker compose up -d --build` drops Caddy's route and the site 502s until
