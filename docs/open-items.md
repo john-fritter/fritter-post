@@ -31,8 +31,55 @@ shared with his Gmail and Photos). rclone uploads with the `drive.file` scope,
 through a `crypt` remote, so Google holds only ciphertext. The encryption
 passphrases are in John's password manager. Retention is 7 daily, 4 weekly and
 6 monthly copies, sized against the measured dump. The task is
-`docs/gizmo-backups-prompt.md`. This item closes when Gizmo reports a first
-nightly run and a passing restore test.
+`docs/gizmo-backups-prompt.md`.
+
+**Status 2026-09-26: running, restore degraded.** The timer runs nightly at
+10:30 UTC. The first run succeeded, the Drive copy is encrypted, and its
+checksum matched the local dump. The restore test brought back every row
+(counts matched on papers, pieces, embeddings, logs, board users and posts,
+and published articles), but `pg_restore` exited 1: it could not recreate
+`raw_items_source_guid_unique` because the live table holds duplicates. That
+is item 0b, not a backup defect. Until 0b is repaired, a restored database has
+no unique constraint on `raw_items`, and the collector's `ON CONFLICT
+(source_name, item_guid)` then fails on every insert. So de-duplicating
+`raw_items` is part of any restore. This item closes when a restore test
+passes clean.
+
+### 0b. A corrupt index stopped enforcing uniqueness on `raw_items`
+
+The first restore test found it. The live `raw_items` table holds **1,082
+duplicate `(source_name, item_guid)` groups**, and `amcheck` reports an
+ordering-invariant violation in `raw_items_source_guid_unique`. The index is
+out of order, so inserts search the wrong part of the tree, and the collector's
+`ON CONFLICT … DO NOTHING` misses rows it already has and inserts them again.
+
+**Likely cause, unconfirmed:** a collation change. The postgres service uses
+the floating tag `pgvector/pgvector:pg16`. A re-pull onto a newer Debian base
+changes glibc's text-sorting rules, and indexes built under the old rules no
+longer agree with the new ones. Postgres 16 records the collation version each
+database was created with, so this is checkable.
+
+**Reader cost so far looks small.** The preprocessor's cross-run dedup runs in
+memory, keyed on canonical URL and normalized title (`dedup.ts`), and never
+uses this index, so re-collected items should be dropped there. Any
+collation-dependent index can be damaged, though. The diagnosis checks every
+B-tree index, and counts how many extra copies reached `preprocessed_items`
+and a published paper.
+
+**Diagnosis (read-only):** `docs/gizmo-index-diagnosis-prompt.md`.
+
+**Repair, pending that diagnosis.** Only once the diagnosis confirms it, and
+in a window with the pipeline timer paused:
+1. De-duplicate `raw_items`, keeping the lowest id per key, and re-point any
+   `preprocessed_items.raw_item_id` from the extra copies to it.
+2. `REINDEX` every corrupt index, and any collation-dependent index that
+   predates the change.
+3. `ALTER DATABASE fritter_post REFRESH COLLATION VERSION`.
+4. Re-run `amcheck`, then a backup with a clean restore test.
+
+Then **pin the postgres image** in `docker-compose.yml` to a Debian-suffixed
+tag or a digest, so the base can't change under the database again. After
+that, every image upgrade is a deliberate reindex.
 
 ### 1. A section line has no headline
 
