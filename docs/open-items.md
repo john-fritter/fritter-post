@@ -24,8 +24,15 @@ members, posts and PMs, none of which the pipeline can regenerate.
 **Fix:** a nightly whole-database `pg_dump -Fc` from the postgres container,
 kept for a rotation and copied off the box, plus one test restore into a
 scratch database, because a dump that was never restored is only assumed to
-work. Schedule it away from the 06:00 run. It is Gizmo's to build, and the
-decision needed is where the off-box copy goes.
+work. Schedule it away from the 06:00 run.
+
+**Destination decided 2026-09-26:** John's Google Drive (Google One, 100 GB,
+shared with his Gmail and Photos). rclone uploads with the `drive.file` scope,
+through a `crypt` remote, so Google holds only ciphertext. The encryption
+passphrases are in John's password manager. Retention is 7 daily, 4 weekly and
+6 monthly copies, sized against the measured dump. The task is
+`docs/gizmo-backups-prompt.md`. This item closes when Gizmo reports a first
+nightly run and a passing restore test.
 
 ### 1. A section line has no headline
 
