@@ -12,6 +12,21 @@ with no evidence behind it does not belong here; speculation belongs in
 
 ## Ranked by what costs the reader most
 
+### 0. The database has no backup
+
+Gizmo's 2026-09-26 deploy report looked for a Postgres dump of `fritter_post`
+and found none. `/var/backups` holds Debian package state, not the database. One
+volume (`postgres_data`) holds every paper ever published, the embeddings that
+lineage and the rerun check depend on (never swept, and costly to rebuild), the
+`generation_logs` feedback loop, and now Fritter Board's `board` schema:
+members, posts and PMs, none of which the pipeline can regenerate.
+
+**Fix:** a nightly whole-database `pg_dump -Fc` from the postgres container,
+kept for a rotation and copied off the box, plus one test restore into a
+scratch database, because a dump that was never restored is only assumed to
+work. Schedule it away from the 06:00 run. It is Gizmo's to build, and the
+decision needed is where the off-box copy goes.
+
 ### 1. A section line has no headline
 
 The writers' line contract is `ref;;the sentence`, so twelve pieces a day have

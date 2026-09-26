@@ -1241,10 +1241,9 @@ judge call is in `generation_logs` with its full prompt and verdicts. The 114
 hand-reviewed links from 2026-09-04 are the regression set. See
 `docs/open-items.md`.
 
-**The marker is text, never a link.** `/story/<ref>` resolves refs against the
-*latest* paper only, so a route to yesterday's piece does not exist — and the
-reading view's rule is that colour means exactly one thing, a link that leaves
-for someone else's reporting. A "previously" line is the paper talking about
+**The marker is text, never a link.** Yesterday's piece now has a permanent
+address (`/article/<id>`), but the reading view's rule is that colour means
+exactly one thing, a link that leaves for someone else's reporting. A "previously" line is the paper talking about
 itself, so it is set unlinked and uncoloured under the headline. A prior *section
 line* has no headline of its own and is dropped rather than rendered: a pointer
 to a pointer is not worth a row.
@@ -1400,7 +1399,8 @@ theirs. A paper replaced from a *different* writer run takes its old ids with
 it, so a stale id goes missing and never points at a different story. An
 earlier edition's page says which paper it is from and sends "back" to today's.
 
-**"Discuss on the board" is a link and nothing more.** Every piece page links to
+**"Discuss on the board" is a link and nothing more** (live since 2026-09-26,
+`BOARD_URL=https://board.fritter.lol`). Every piece page links to
 Fritter Board's entry point for that article (`BOARD_URL` + `/article/<id>`),
 which opens the article's thread or offers to start one. The paper never reads
 the board's tables to learn whether a thread exists, so it shows no reply counts
@@ -1813,6 +1813,14 @@ The reader relays between us. So:
   to learn, and what to report back.
 - **Give exact commands.** CLI runs inside the container as
   `docker compose exec -T app npm run <script> -- <args>`.
+- **Tests are not in the production image.** The runner stage copies `src`,
+  `scripts`, `migrations`, `config` and `docs`, not `tests`, so
+  `docker compose exec -T app npm test` fails. Have Gizmo run `npm test` from
+  the source checkout on the host (it did for the 2026-09-26 deploy: 39 of 39).
+- **Fritter Board shares this database.** It lives in the `board` schema as
+  role `fritter_board`, runs as `fritter-board-app-1` from `/srv/fritter-board`,
+  and reads only the `published` views (migration 046). Dropping or renaming a
+  column there breaks the board. See the board repo's README.
 - **Always include the network reconnect.** The app service declares only
   `internal`, and `seedbox_default` is attached by hand, so every
   `docker compose up -d --build` drops Caddy's route and the site 502s until
