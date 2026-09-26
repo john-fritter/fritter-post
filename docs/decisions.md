@@ -6333,3 +6333,41 @@ against 52–67 s. The prompt's rule is to keep when unsure, and Flash reverses 
 The difference is the job: writing wants careful reading of sources, which
 reasoning buys. These judgment stages were tuned, prompt by prompt, against
 GLM 5.2's calibration, and the reader's bio is part of that calibration.
+
+## 2026-09-26 — Fritter Board links to articles by writer_pieces.id, through a schema of views
+
+Fritter Board (the discussion board, phase 3 of its build) gives an article a
+thread, shows an article card at the top of it, and puts a "Discuss on the
+board" link on every piece page here. Three choices were not obvious.
+
+**The article id is `writer_pieces.id`.** The board stores one id per thread,
+unique, and it has to keep meaning the same piece. `paper_pieces.id` fails that
+the first time a morning is corrected: the publisher deletes and re-inserts the
+date's paper, so every id changes. Date + ref fails more quietly: refs are
+run-local, and a paper replaced from a different writer run can hand `C27` to a
+different cluster, so a thread would sit under the wrong article with nothing to
+say so. `writer_pieces.id` is minted once per written piece and never reused,
+`--repair` rewrites in place, and re-publishing the same writer run keeps it.
+Replaced from a different run, the old id resolves to nothing — a stale id can
+go missing but can never point at a different story. The board shows a missing
+article as "no longer in the paper" and keeps the thread.
+
+**A permanent page, `/article/<id>`.** `/story/<ref>` only means today's paper,
+so the board's card had nowhere lasting to link. The new route is the same page
+component; on an earlier edition it names the paper's date.
+
+**The board reads a schema of views, not the tables.** `published.articles` and
+`published.article_sources` (migration 046) are the contract, and the board's
+role is granted that schema only. A view runs with its owner's privileges, so
+the grant is a real boundary: the board cannot read `article_texts`, which
+holds third-party full text the paper never publishes and which the board's
+bots would otherwise be able to send to a model provider. It also means a
+pipeline table can be reshaped without breaking the board, as long as the view
+keeps its columns. The grants are a deploy step rather than part of the
+migration, because the board's role is created on the box and does not exist in
+a development database.
+
+**One direction only.** The paper links to the board and never reads it. A
+"12 replies" count beside a headline would be the first engagement metric in a
+newspaper that is explicitly not a feed; the link is enough.
+

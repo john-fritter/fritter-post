@@ -172,6 +172,22 @@ export function displayHeadline(piece: { headline: string | null; body: string }
 }
 
 /**
+ * Where "Discuss on the board" goes: Fritter Board's entry point for one
+ * article, which opens its thread or offers to start one. The paper only links
+ * there -- whether a thread exists is the board's business, so the reading view
+ * never reads the board's tables. Null when no board is configured or the piece
+ * has no permanent id, and then no link is drawn.
+ */
+export function boardDiscussUrl(
+  boardUrl: string | null | undefined,
+  articleId: number | null,
+): string | null {
+  const base = boardUrl?.trim().replace(/\/+$/, "");
+  if (!base || articleId === null) return null;
+  return `${base}/article/${articleId}`;
+}
+
+/**
  * Words a minute, for the folio line and a piece's reading time.
  *
  * A display constant, not a tuning lever: it changes a number the reader

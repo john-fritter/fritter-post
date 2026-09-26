@@ -87,7 +87,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–045)
+├── migrations/                  # numbered SQL migrations (001–046)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -1385,9 +1385,38 @@ says so and says what to do instead.
 
 ### the reading view
 
-`src/app/` — the index at `/`, one page per piece at `/story/<ref>`. Server
-components reading only the `paper_*` tables: a published paper is
-self-contained, so rendering never touches the pipeline's working tables.
+`src/app/` — the index at `/`, one page per piece at `/story/<ref>`, and the
+same page at its permanent address `/article/<id>`. Server components reading
+only the `paper_*` tables: a published paper is self-contained, so rendering
+never touches the pipeline's working tables.
+
+**A piece has two addresses, and only one is permanent.** `/story/<ref>`
+resolves against the latest paper, because refs are run-local — C27 today is
+not C27 tomorrow. `/article/<id>` resolves any published piece by its **article
+id, which is `writer_pieces.id`**, not `paper_pieces.id`: a re-publish deletes
+and re-inserts the date's paper, so every `paper_pieces` id changes whenever a
+morning is corrected, while `--repair` rewrites writer pieces in place and keeps
+theirs. A paper replaced from a *different* writer run takes its old ids with
+it, so a stale id goes missing and never points at a different story. An
+earlier edition's page says which paper it is from and sends "back" to today's.
+
+**"Discuss on the board" is a link and nothing more.** Every piece page links to
+Fritter Board's entry point for that article (`BOARD_URL` + `/article/<id>`),
+which opens the article's thread or offers to start one. The paper never reads
+the board's tables to learn whether a thread exists, so it shows no reply counts
+— that would be an engagement metric on a newspaper. Unset `BOARD_URL` and the
+link is not drawn. It is uncoloured: the board is the paper's neighbour, not
+someone else's reporting.
+
+**The board reads the paper through the `published` schema, and nothing else**
+(migration 046). Two views — `published.articles` and
+`published.article_sources` — are the whole contract; the board's role gets
+`USAGE` on that schema and `SELECT` on those views and no grant in `public`, so
+it can never see `article_texts` (third-party full text, never to be published,
+and which the board's bots would send to a model provider). Views run with
+their owner's privileges, so no underlying-table grant is needed. **Add columns
+to the views freely; never rename or drop one without changing the board in the
+same breath.**
 
 **Containers expand, pieces open.** A thread is the only container, so it is the
 only thing that expands in place; every piece — brief included — has a page.
@@ -1560,7 +1589,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **046**.
+number is ambiguous. The next migration is **047**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
