@@ -6399,3 +6399,50 @@ through `raw_item_id`, so re-pointing the 521 references at the original row
 loses no data. The audit CSV of every removed row and every re-pointed
 reference is kept in Gizmo's workspace.
 
+## 2026-09-27 — Backups closed and `raw_items` repaired (open items 0 and 0b)
+
+Both items are done and leave `open-items.md`. What's in place and what it
+showed:
+
+- **Backups.** Every night at 10:30 UTC:
+  - a whole-database `pg_dump`, plus the roles and both apps' `.env` and the
+    Caddyfile;
+  - encrypted with an rclone `crypt` remote and uploaded to John's Google Drive
+    under the `drive.file` scope, so Google holds only ciphertext;
+  - 7 daily, 4 weekly and 6 monthly copies kept;
+  - an `amcheck` pass after the upload, which fails the service on any corrupt
+    index.
+
+  A dump is about 1.3 GB. The script is in `docs/gizmo-backups-prompt.md`, and
+  the passphrases are in John's password manager.
+- **The repair.** Done with the pipeline timer stopped, after a fresh backup
+  and an audit export (checksummed CSVs in Gizmo's
+  `fritter-index-repair-20260927` workspace).
+  - One transaction re-pointed 521 `preprocessed_items.raw_item_id` references
+    and deleted 1,088 duplicate `raw_items` rows. It verified 0 duplicate groups
+    and 0 dangling references with index scans off, then rebuilt the unique
+    index.
+  - The nine other collation-dependent `public` indexes were rebuilt
+    concurrently.
+  - `amcheck`: 110 indexes, 0 corrupt, 0 invalid.
+- **The pin.** The postgres container was recreated once for it, with
+  `--pull never`: same image ID (`be2dedd…`), same volume, app container
+  untouched.
+- **The proof.** The post-repair backup logged `index integrity ok`. Its Drive
+  copy, downloaded and decrypted, restored into a scratch database with
+  `pg_restore --exit-on-error` exiting 0. Nine table counts matched live
+  exactly, `raw_items` (70,925) among them.
+
+**On the cause, stated at its real strength:** the musl-to-glibc switch on
+June 11 is the explanation the evidence supports:
+- the cluster predates it;
+- the first 518 duplicates are from that day;
+- the damaged index is a text key with punctuation-heavy values that the two
+  libraries order differently;
+- no other damage was found.
+
+But the catalog could not prove the before-and-after collation versions,
+because musl records none. The repair doesn't depend on the attribution. The
+digest pin and the nightly `amcheck` guard against the whole class of failure,
+whatever the exact cause.
+

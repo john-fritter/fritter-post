@@ -1827,7 +1827,13 @@ The reader relays between us. So:
   switch to the Debian image corrupted `raw_items`' unique index. A new image
   means: pull, `REINDEX` every collation-dependent index, run `amcheck`. The
   nightly backup also runs `amcheck` and fails the service on corruption
-  (open item 0b, `docs/decisions.md` 2026-09-27).
+  (`docs/decisions.md`, both 2026-09-27 entries).
+- **The database is backed up nightly** (10:30 UTC, clear of the pipeline).
+  It goes encrypted to John's Google Drive, keeping 7 daily, 4 weekly and 6
+  monthly copies. The script is in `docs/gizmo-backups-prompt.md`. A failed
+  `fritter-backup.service` means either the backup failed or an index is
+  corrupt, and the journal says which. A restore needs the rclone crypt
+  passphrases, which John keeps in his password manager.
 - **Always include the network reconnect.** The app service declares only
   `internal`, and `seedbox_default` is attached by hand, so every
   `docker compose up -d --build` drops Caddy's route and the site 502s until
