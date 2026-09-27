@@ -6333,3 +6333,116 @@ against 52–67 s. The prompt's rule is to keep when unsure, and Flash reverses 
 The difference is the job: writing wants careful reading of sources, which
 reasoning buys. These judgment stages were tuned, prompt by prompt, against
 GLM 5.2's calibration, and the reader's bio is part of that calibration.
+
+## 2026-09-26 — Fritter Board links to articles by writer_pieces.id, through a schema of views
+
+Fritter Board (the discussion board, phase 3 of its build) gives an article a
+thread, shows an article card at the top of it, and puts a "Discuss on the
+board" link on every piece page here. Three choices were not obvious.
+
+**The article id is `writer_pieces.id`.** The board stores one id per thread,
+unique, and it has to keep meaning the same piece. `paper_pieces.id` fails that
+the first time a morning is corrected: the publisher deletes and re-inserts the
+date's paper, so every id changes. Date + ref fails more quietly: refs are
+run-local, and a paper replaced from a different writer run can hand `C27` to a
+different cluster, so a thread would sit under the wrong article with nothing to
+say so. `writer_pieces.id` is minted once per written piece and never reused,
+`--repair` rewrites in place, and re-publishing the same writer run keeps it.
+Replaced from a different run, the old id resolves to nothing — a stale id can
+go missing but can never point at a different story. The board shows a missing
+article as "no longer in the paper" and keeps the thread.
+
+**A permanent page, `/article/<id>`.** `/story/<ref>` only means today's paper,
+so the board's card had nowhere lasting to link. The new route is the same page
+component; on an earlier edition it names the paper's date.
+
+**The board reads a schema of views, not the tables.** `published.articles` and
+`published.article_sources` (migration 046) are the contract, and the board's
+role is granted that schema only. A view runs with its owner's privileges, so
+the grant is a real boundary: the board cannot read `article_texts`, which
+holds third-party full text the paper never publishes and which the board's
+bots would otherwise be able to send to a model provider. It also means a
+pipeline table can be reshaped without breaking the board, as long as the view
+keeps its columns. The grants are a deploy step rather than part of the
+migration, because the board's role is created on the box and does not exist in
+a development database.
+
+**One direction only.** The paper links to the board and never reads it. A
+"12 replies" count beside a headline would be the first engagement metric in a
+newspaper that is explicitly not a feed; the link is enough.
+
+## 2026-09-27 — The postgres image is pinned by digest, and indexes are checked nightly
+
+The first backup's restore test found `raw_items_source_guid_unique` out of
+order, with 1,088 duplicate rows behind it (open item 0b). The cause is the
+June 11 switch from `postgres:16-alpine` to `pgvector/pgvector:pg16`: musl
+sorts text by bytes and glibc linguistically, so a text index built under one
+is misordered under the other. A misordered unique index stops enforcing
+uniqueness, and `ON CONFLICT DO NOTHING` quietly inserts duplicates.
+
+Two things follow, and both are standing rules now:
+
+- **`docker-compose.yml` pins the image by digest.** A floating tag lets a
+  re-pull swap the C library under the database, and this cluster cannot
+  warn when that happens: it was initialised under musl, so `datcollversion`
+  is NULL. That is also why no `REFRESH COLLATION VERSION` was done, since it
+  errors on NULL. Upgrading the image is a deliberate step: pull, `REINDEX`
+  every collation-dependent index, then run `amcheck`.
+- **The nightly backup runs `amcheck` over every B-tree index,** after the
+  upload, and fails the service on any corruption. It takes seconds and needs
+  only a SELECT-level lock. This check, not Postgres, is what will notice the
+  next time an index and its collation disagree.
+
+The duplicates are de-duplicated rather than kept. Every `preprocessed_items`
+row carries its own title, body, URLs and times, and nothing reads `raw_items`
+through `raw_item_id`, so re-pointing the 521 references at the original row
+loses no data. The audit CSV of every removed row and every re-pointed
+reference is kept in Gizmo's workspace.
+
+## 2026-09-27 — Backups closed and `raw_items` repaired (open items 0 and 0b)
+
+Both items are done and leave `open-items.md`. What's in place and what it
+showed:
+
+- **Backups.** Every night at 10:30 UTC:
+  - a whole-database `pg_dump`, plus the roles and both apps' `.env` and the
+    Caddyfile;
+  - encrypted with an rclone `crypt` remote and uploaded to John's Google Drive
+    under the `drive.file` scope, so Google holds only ciphertext;
+  - 7 daily, 4 weekly and 6 monthly copies kept;
+  - an `amcheck` pass after the upload, which fails the service on any corrupt
+    index.
+
+  A dump is about 1.3 GB. The script is in `docs/gizmo-backups-prompt.md`, and
+  the passphrases are in John's password manager.
+- **The repair.** Done with the pipeline timer stopped, after a fresh backup
+  and an audit export (checksummed CSVs in Gizmo's
+  `fritter-index-repair-20260927` workspace).
+  - One transaction re-pointed 521 `preprocessed_items.raw_item_id` references
+    and deleted 1,088 duplicate `raw_items` rows. It verified 0 duplicate groups
+    and 0 dangling references with index scans off, then rebuilt the unique
+    index.
+  - The nine other collation-dependent `public` indexes were rebuilt
+    concurrently.
+  - `amcheck`: 110 indexes, 0 corrupt, 0 invalid.
+- **The pin.** The postgres container was recreated once for it, with
+  `--pull never`: same image ID (`be2dedd…`), same volume, app container
+  untouched.
+- **The proof.** The post-repair backup logged `index integrity ok`. Its Drive
+  copy, downloaded and decrypted, restored into a scratch database with
+  `pg_restore --exit-on-error` exiting 0. Nine table counts matched live
+  exactly, `raw_items` (70,925) among them.
+
+**On the cause, stated at its real strength:** the musl-to-glibc switch on
+June 11 is the explanation the evidence supports:
+- the cluster predates it;
+- the first 518 duplicates are from that day;
+- the damaged index is a text key with punctuation-heavy values that the two
+  libraries order differently;
+- no other damage was found.
+
+But the catalog could not prove the before-and-after collation versions,
+because musl records none. The repair doesn't depend on the attribution. The
+digest pin and the nightly `amcheck` guard against the whole class of failure,
+whatever the exact cause.
+

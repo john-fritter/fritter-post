@@ -9,6 +9,7 @@ import {
   formatMarkerDate,
   readingMinutes,
   replacementShortfall,
+  boardDiscussUrl,
   type PublishablePiece,
 } from "../src/pipeline/publisher/assemble.js";
 import type {
@@ -289,6 +290,17 @@ function testMarkerDateDoesNotDriftAcrossTheDateLine() {
   assert.equal(formatMarkerDate("not-a-date"), "not-a-date");
 }
 
+function testDiscussLinkNeedsABoardAndAnId() {
+  // The link is drawn only when both exist: an unconfigured board means the
+  // paper has nowhere to send the reader, and a piece without a permanent id
+  // has nothing the board could key a thread on.
+  assert.equal(boardDiscussUrl("https://board.fritter.lol", 812), "https://board.fritter.lol/article/812");
+  assert.equal(boardDiscussUrl("https://fritter.lol/board/", 812), "https://fritter.lol/board/article/812");
+  assert.equal(boardDiscussUrl(undefined, 812), null);
+  assert.equal(boardDiscussUrl("  ", 812), null);
+  assert.equal(boardDiscussUrl("https://board.fritter.lol", null), null);
+}
+
 testStandaloneTakesEveryArticle();
 testSectionPieceTakesOnlyItsMember();
 testUnknownStoryYieldsNoSourcesRatherThanThrowing();
@@ -312,4 +324,5 @@ testCorrectingAMorningIsAllowed();
 testGrowthIsNeverRefused();
 testReplacingAnEmptyPaperIsAllowed();
 testTheFloorIsTheConfiguredOne();
+testDiscussLinkNeedsABoardAndAnId();
 console.log("publisher assemble tests passed");

@@ -178,6 +178,8 @@ body {
   text-underline-offset: 0.22em; text-decoration-thickness: 0.06em;
 }
 .art-srcs .none { color: var(--ink-faint); font-style: italic; }
+.art-discuss { margin: 0.9rem 0 0; font-family: "Archivo", system-ui, sans-serif; font-size: 0.8rem; }
+.art-discuss a { color: var(--ink-soft); text-underline-offset: 0.22em; text-decoration-thickness: 0.06em; }
 
 /* ---------- the end ----------------------------------------------------- */
 .endmark { border-top: 2px solid var(--ink); padding-top: 1.2rem; margin-top: 1.6rem; text-align: center; }

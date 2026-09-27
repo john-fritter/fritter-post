@@ -1,23 +1,15 @@
 /**
- * One piece.
+ * One piece of today's paper, addressed by its ref.
  *
- * The prose as the writers produced it, and the links out underneath. The
- * source list is the only coloured thing on the page, which is the paper's own
- * rule made visible: the paper's framing is its own, and the reporting stays
- * where it was published.
+ * Refs are run-local — C27 today is not C27 tomorrow — so this address only
+ * ever means the latest paper. The permanent address is `/article/<id>`.
  */
 
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import {
-  displayHeadline,
-  formatMarkerDate,
-  paragraphs,
-  readingMinutes,
-} from "@/pipeline/publisher/assemble";
-import { lineageLabel } from "@/pipeline/lineage/select";
+import { displayHeadline } from "@/pipeline/publisher/assemble";
 import { loadLatestPaper, loadPaperPiece } from "@/pipeline/publisher/read";
+import { ArticleView } from "../../_components/article";
 
 export const dynamic = "force-dynamic";
 
@@ -42,86 +34,5 @@ export default async function StoryPage({ params }: { params: Promise<{ ref: str
   const { ref } = await params;
   const piece = await findPiece(ref);
   if (!piece) notFound();
-
-  const minutes = readingMinutes(piece.wordCount);
-  const body = paragraphs(piece.body);
-  // A section line has no headline; its sentence leads the page instead, and
-  // then must not be repeated as the body underneath it.
-  const leadsOnSentence = !piece.headline || !piece.headline.trim();
-  // Null when nothing was linked, and also when the prior piece was a section
-  // line with no headline of its own — a pointer to a pointer is not worth a row.
-  const previously = piece.previously
-    ? lineageLabel(
-        { priorPublishedOn: piece.previously.publishedOn, priorHeadline: piece.previously.headline },
-        formatMarkerDate,
-      )
-    : null;
-
-  return (
-    <main className="app">
-      <article className="article">
-        <Link className="back" href="/">
-          ← All stories
-        </Link>
-
-        {piece.sectionRef && piece.sectionTitle ? (
-          <p className="part-of">
-            Part of{" "}
-            <Link href={`/?thread=${encodeURIComponent(piece.sectionRef)}#t-${piece.sectionRef}`}>
-              {piece.sectionTitle}
-            </Link>
-          </p>
-        ) : null}
-
-        <h1 className={leadsOnSentence ? "art-hl art-hl-line" : "art-hl"}>
-          {displayHeadline(piece)}
-        </h1>
-
-        {previously ? (
-          <p className="art-prev">
-            <span className="art-prev-label">Previously</span>
-            {previously}
-          </p>
-        ) : null}
-
-        <p className="art-meta">
-          No. {piece.rank}
-          <span className="sep">·</span>
-          {piece.wordCount} words
-          {minutes !== null ? (
-            <>
-              <span className="sep">·</span>
-              {minutes} min
-            </>
-          ) : null}
-        </p>
-
-        {leadsOnSentence ? null : (
-          <div className="art-body">
-            {body.map((p, i) => (
-              <p key={i}>{p}</p>
-            ))}
-          </div>
-        )}
-
-        <footer className="art-srcs">
-          <h2>{piece.sources.length === 1 ? "Source" : `${piece.sources.length} sources`}</h2>
-          {piece.sources.length === 0 ? (
-            <p className="none">No source could be resolved for this piece.</p>
-          ) : (
-            <p>
-              {piece.sources.map((s, i) => (
-                <span key={s.url}>
-                  {i > 0 ? <span className="sep">·</span> : null}
-                  <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.title}>
-                    {s.sourceName}
-                  </a>
-                </span>
-              ))}
-            </p>
-          )}
-        </footer>
-      </article>
-    </main>
-  );
+  return <ArticleView piece={piece} earlierEdition={null} />;
 }

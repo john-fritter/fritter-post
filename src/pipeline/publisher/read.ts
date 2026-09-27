@@ -23,6 +23,13 @@ export interface PaperMeta {
 /** A piece as the index shows it: enough to draw a row, not the whole article. */
 export interface PaperPieceRow extends Groupable {
   id: number;
+  /**
+   * The article's permanent id: writer_pieces.id. paper_pieces.id changes on
+   * every re-publish; this one survives a re-publish of the same writer run, and
+   * is what /article/<id> and Fritter Board address. Null only for a row
+   * written without one, which the publisher never does.
+   */
+  articleId: number | null;
   rank: number;
   sectionRank: number;
   tier: PaperTier;
@@ -50,11 +57,11 @@ export interface PaperSourceRow {
 /**
  * What this paper said about this story before.
  *
- * Text, not a link: `/story/<ref>` resolves refs against the *latest* paper
- * only, so a route to yesterday's piece does not exist. That is not a gap to
- * fill here either — the reading view's rule is that colour means exactly one
- * thing, a link that leaves for someone else's reporting, and a "previously"
- * line is the paper talking about itself.
+ * Text, not a link. `/story/<ref>` resolves refs against the *latest* paper
+ * only; yesterday's piece does have a permanent address (`/article/<id>`), but
+ * the reading view's rule is that colour means exactly one thing, a link that
+ * leaves for someone else's reporting, and a "previously" line is the paper
+ * talking about itself.
  */
 export interface PaperLineageRow {
   publishedOn: string;
@@ -70,6 +77,7 @@ export interface PaperPiece extends PaperPieceRow {
 
 interface RawPieceRow {
   id: string;
+  writer_piece_id: string | null;
   rank: number;
   section_rank: number;
   tier: PaperTier;
@@ -88,6 +96,7 @@ interface RawPieceRow {
 function toRow(r: RawPieceRow): PaperPieceRow {
   return {
     id: Number(r.id),
+    articleId: r.writer_piece_id === null ? null : Number(r.writer_piece_id),
     rank: r.rank,
     sectionRank: r.section_rank,
     tier: r.tier,
@@ -105,7 +114,7 @@ function toRow(r: RawPieceRow): PaperPieceRow {
 }
 
 const PIECE_COLUMNS = `
-  p.id::text, p.rank, p.section_rank, p.tier, p.ref, p.section_ref, p.section_title,
+  p.id::text, p.writer_piece_id::text, p.rank, p.section_rank, p.tier, p.ref, p.section_ref, p.section_title,
   p.section_role, p.headline, p.body, p.word_count, p.source_count,
   (SELECT COUNT(*) FROM paper_sources s WHERE s.paper_piece_id = p.id)::text
     AS resolved_sources,
@@ -189,6 +198,27 @@ export async function loadPaperPiece(paperId: number, ref: string): Promise<Pape
         }
       : null,
   };
+}
+
+/**
+ * An article by its permanent id, from the latest paper that carries it, plus
+ * that paper's date. Null when no published paper has it -- a paper replaced
+ * from a different writer run takes its old ids with it.
+ */
+export async function loadArticle(
+  articleId: number,
+): Promise<{ piece: PaperPiece; publishedOn: string; paperId: number } | null> {
+  const { rows } = await getPool().query<{ paper_id: number; published_on: string; ref: string }>(
+    `SELECT p.id AS paper_id, to_char(p.published_on, 'YYYY-MM-DD') AS published_on, pp.ref
+       FROM paper_pieces pp JOIN papers p ON p.id = pp.paper_id
+      WHERE pp.writer_piece_id = $1
+      ORDER BY p.published_on DESC, p.id DESC LIMIT 1`,
+    [articleId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const piece = await loadPaperPiece(r.paper_id, r.ref);
+  return piece ? { piece, publishedOn: r.published_on, paperId: r.paper_id } : null;
 }
 
 /** Every ref in a paper, for generating static routes. */
