@@ -1821,6 +1821,13 @@ The reader relays between us. So:
   role `fritter_board`, runs as `fritter-board-app-1` from `/srv/fritter-board`,
   and reads only the `published` views (migration 046). Dropping or renaming a
   column there breaks the board. See the board repo's README.
+- **The postgres image is pinned by digest; upgrading it is a reindex.** A
+  C-library change under the database misorders text indexes, and this cluster
+  can't warn about it (`datcollversion` is NULL, from its musl start). June 11's
+  switch to the Debian image corrupted `raw_items`' unique index. A new image
+  means: pull, `REINDEX` every collation-dependent index, run `amcheck`. The
+  nightly backup also runs `amcheck` and fails the service on corruption
+  (open item 0b, `docs/decisions.md` 2026-09-27).
 - **Always include the network reconnect.** The app service declares only
   `internal`, and `seedbox_default` is attached by hand, so every
   `docker compose up -d --build` drops Caddy's route and the site 502s until

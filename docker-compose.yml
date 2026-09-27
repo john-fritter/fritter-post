@@ -1,6 +1,14 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    # Pinned by digest, deliberately. Text indexes are ordered by the C library's
+    # collation rules, so a base-image change under a floating tag silently
+    # corrupts them: the June 11 switch from postgres:16-alpine (musl) to this
+    # image (Debian 12, glibc 2.36) did exactly that to raw_items' unique index
+    # (open item 0b). The cluster was initialised under musl, so datcollversion
+    # is NULL and Postgres cannot warn about a change. Upgrading this image is a
+    # deliberate act: pull, then REINDEX every collation-dependent index, then
+    # run amcheck (the nightly backup does). Digest = pg16, Debian 12, glibc 2.36.
+    image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}

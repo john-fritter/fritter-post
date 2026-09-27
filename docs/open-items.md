@@ -53,33 +53,48 @@ ordering-invariant violation in `raw_items_source_guid_unique`. The index is
 out of order, so inserts search the wrong part of the tree, and the collector's
 `ON CONFLICT … DO NOTHING` misses rows it already has and inserts them again.
 
-**Likely cause, unconfirmed:** a collation change. The postgres service uses
-the floating tag `pgvector/pgvector:pg16`. A re-pull onto a newer Debian base
-changes glibc's text-sorting rules, and indexes built under the old rules no
-longer agree with the new ones. Postgres 16 records the collation version each
-database was created with, so this is checkable.
+**Cause, established by the 2026-09-26 diagnosis
+(`docs/gizmo-index-diagnosis-prompt.md`):**
+- The cluster was initialised on May 27 under `postgres:16-alpine`, whose musl
+  libc sorts text by bytes.
+- On June 11 a deploy pulled `pgvector/pgvector:pg16` (Debian 12,
+  glibc 2.36, linguistic ordering that ignores punctuation such as the `?p=` in
+  +972 Magazine's guids) and recreated the container on the same volume.
+- The first extra copies are from that day: 518 of them. They run every few
+  days since.
+- `datcollversion` is NULL, because musl reports no collation version, so
+  Postgres never warned.
 
-**Reader cost so far looks small.** The preprocessor's cross-run dedup runs in
-memory, keyed on canonical URL and normalized title (`dedup.ts`), and never
-uses this index, so re-collected items should be dropped there. Any
-collation-dependent index can be damaged, though. The diagnosis checks every
-B-tree index, and counts how many extra copies reached `preprocessed_items`
-and a published paper.
+What `amcheck` found:
+- 1 of 110 B-tree indexes is corrupt.
+- 1,082 duplicate groups, 1,088 extra rows.
+- 521 of the extra rows are referenced by `preprocessed_items`; 9 reach
+  `paper_sources`.
+- The seven other collation-dependent unique keys have no duplicates.
 
-**Diagnosis (read-only):** `docs/gizmo-index-diagnosis-prompt.md`.
+A query planned as an index-only scan on the damaged index reports **zero**
+duplicates, so any duplicate check must turn index scans off.
 
-**Repair, pending that diagnosis.** Only once the diagnosis confirms it, and
-in a window with the pipeline timer paused:
-1. De-duplicate `raw_items`, keeping the lowest id per key, and re-point any
-   `preprocessed_items.raw_item_id` from the extra copies to it.
-2. `REINDEX` every corrupt index, and any collation-dependent index that
-   predates the change.
-3. `ALTER DATABASE fritter_post REFRESH COLLATION VERSION`.
-4. Re-run `amcheck`, then a backup with a clean restore test.
+**Reader cost has been small.** The preprocessor's cross-run dedup runs in
+memory, keyed on canonical URL and normalized title, and never used this index.
+Nothing reads `raw_items` through `preprocessed_items.raw_item_id`, which is a
+lineage pointer only.
 
-Then **pin the postgres image** in `docker-compose.yml` to a Debian-suffixed
-tag or a digest, so the base can't change under the database again. After
-that, every image upgrade is a deliberate reindex.
+**Repair: `docs/gizmo-index-repair-prompt.md`**, run with the pipeline timer
+stopped:
+1. Take a fresh backup and export an audit CSV of every changed row.
+2. In one transaction:
+   - re-point `raw_item_id` from the extra copies to the original (the lowest
+     id per key);
+   - delete the extra copies;
+   - verify with index scans off;
+   - `REINDEX` the unique index.
+3. `REINDEX CONCURRENTLY` the other nine collation-dependent `public` indexes.
+4. Confirm `amcheck` reports 110 clean.
+5. **Pin the postgres image by digest** (`docker-compose.yml`), and add a
+   nightly `amcheck` pass to the backup script. Postgres can't warn about a
+   collation change on this cluster, so that pass is the warning.
+6. Back up again. The item closes when the restore test's `pg_restore` exits 0.
 
 ### 1. A section line has no headline
 

@@ -182,6 +182,39 @@ find "$LOCAL" -mindepth 1 -maxdepth 1 -type d -mtime +1 -exec rm -rf {} +
 
 date -u +%FT%TZ > "$LOCAL/LAST_OK"
 echo "fritter-backup: $DAY ok, $(du -sh "$OUT" | cut -f1)"
+
+# Index integrity, every night (added 2026-09-27 after open item 0b). Every
+# B-tree index is checked against its table (~10 s, a SELECT-level lock). It
+# runs after the upload, so a damaged index never costs a night's backup. A
+# failure marks the service failed, which is how it gets noticed. Postgres
+# cannot warn about a collation change on this cluster (datcollversion is
+# NULL; it was initialised under musl), so this is the warning.
+docker compose exec -T postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+DO $$
+DECLARE r record; bad int := 0;
+BEGIN
+  FOR r IN
+    SELECT c.oid, n.nspname, c.relname
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_am am ON am.oid = c.relam
+     WHERE am.amname = 'btree' AND i.indisvalid AND i.indisready
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+  LOOP
+    BEGIN
+      PERFORM bt_index_check(r.oid, true);
+    EXCEPTION WHEN OTHERS THEN
+      bad := bad + 1;
+      RAISE WARNING 'CORRUPT %.%: %', r.nspname, r.relname, SQLERRM;
+    END;
+  END LOOP;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'fritter-backup: % corrupt index(es); the backup itself uploaded', bad;
+  END IF;
+END $$;
+SQL
+echo "fritter-backup: index integrity ok"
 ```
 
 If step 0 cut the monthly copies to 3, change `185d` to `95d`. The weekly and

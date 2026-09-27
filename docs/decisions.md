@@ -6371,3 +6371,31 @@ a development database.
 "12 replies" count beside a headline would be the first engagement metric in a
 newspaper that is explicitly not a feed; the link is enough.
 
+## 2026-09-27 — The postgres image is pinned by digest, and indexes are checked nightly
+
+The first backup's restore test found `raw_items_source_guid_unique` out of
+order, with 1,088 duplicate rows behind it (open item 0b). The cause is the
+June 11 switch from `postgres:16-alpine` to `pgvector/pgvector:pg16`: musl
+sorts text by bytes and glibc linguistically, so a text index built under one
+is misordered under the other. A misordered unique index stops enforcing
+uniqueness, and `ON CONFLICT DO NOTHING` quietly inserts duplicates.
+
+Two things follow, and both are standing rules now:
+
+- **`docker-compose.yml` pins the image by digest.** A floating tag lets a
+  re-pull swap the C library under the database, and this cluster cannot
+  warn when that happens: it was initialised under musl, so `datcollversion`
+  is NULL. That is also why no `REFRESH COLLATION VERSION` was done, since it
+  errors on NULL. Upgrading the image is a deliberate step: pull, `REINDEX`
+  every collation-dependent index, then run `amcheck`.
+- **The nightly backup runs `amcheck` over every B-tree index,** after the
+  upload, and fails the service on any corruption. It takes seconds and needs
+  only a SELECT-level lock. This check, not Postgres, is what will notice the
+  next time an index and its collation disagree.
+
+The duplicates are de-duplicated rather than kept. Every `preprocessed_items`
+row carries its own title, body, URLs and times, and nothing reads `raw_items`
+through `raw_item_id`, so re-pointing the 521 references at the original row
+loses no data. The audit CSV of every removed row and every re-pointed
+reference is kept in Gizmo's workspace.
+
