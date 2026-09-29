@@ -230,6 +230,11 @@ export interface FetchOutcome {
  * Turns a completed response into an outcome. Separated from the request so the
  * status rules — what counts as blocked, what counts as thin — are testable.
  */
+/** A missing header is given the benefit of the doubt; a declared non-page is not. */
+export function isHtmlContentType(contentType: string | null): boolean {
+  return contentType === null || /html|xml/i.test(contentType);
+}
+
 export function classifyResponse(
   httpStatus: number,
   contentType: string | null,
@@ -242,7 +247,7 @@ export function classifyResponse(
   if (httpStatus < 200 || httpStatus >= 300) {
     return { status: "error", detail: `HTTP ${httpStatus}` };
   }
-  if (contentType !== null && !/html|xml/i.test(contentType)) {
+  if (!isHtmlContentType(contentType)) {
     return { status: "error", detail: `content-type ${contentType}` };
   }
   if (extractedChars < minExtractedChars) {
@@ -336,6 +341,15 @@ export async function fetchArticleText(
     return { ...empty, status, httpStatus: res.status, detail };
   }
 
+  // A PDF, image or feed is not a page Readability can read. It used to be
+  // decoded as HTML anyway and its "text" stored on an `error` row that no
+  // writer reads — binary bytes are full of NULs, and a NUL in that text is
+  // the likeliest cause of the 2026-09-29 failure (see decisions.md). Not read.
+  if (!isHtmlContentType(contentType)) {
+    const { status, detail } = classifyResponse(res.status, contentType, 0, cfg.min_extracted_chars);
+    return { ...empty, status, httpStatus: res.status, detail };
+  }
+
   // Size guard before reading: a 40MB page has nothing a writer needs, and
   // buffering it would cost more than the article is worth.
   const declaredLength = Number(res.headers.get("content-length") ?? "0");
@@ -366,6 +380,9 @@ export async function fetchArticleText(
 
   const { text: html } = decodeHtmlBytes(bytes, contentType);
   const extracted = extractArticle(html);
+  if (extracted.nulsRemoved > 0) {
+    console.warn(`[fetch-text] removed ${extracted.nulsRemoved} NUL character(s) from the body of ${url}`);
+  }
   const { status, detail } = classifyResponse(
     res.status,
     contentType,

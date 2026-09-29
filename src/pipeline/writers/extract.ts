@@ -20,7 +20,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { stripHtml } from "../../lib/html.js";
-import { stripNul } from "../../lib/pg-text.js";
+import { countNul, stripNul } from "../../lib/pg-text.js";
 
 export interface ExtractedArticle {
   /** Article prose as paragraphs, or "" when nothing article-shaped was found. */
@@ -28,9 +28,11 @@ export interface ExtractedArticle {
   /** Readability's own title guess, useful for spotting a device-check page. */
   title: string | null;
   chars: number;
+  /** NUL characters removed from the text, so the caller can name the page. */
+  nulsRemoved: number;
 }
 
-const EMPTY: ExtractedArticle = { text: "", title: null, chars: 0 };
+const EMPTY: ExtractedArticle = { text: "", title: null, chars: 0, nulsRemoved: 0 };
 
 /**
  * Extracts article text from an HTML document. Never throws: a malformed page,
@@ -50,8 +52,10 @@ export function extractArticle(html: string): ExtractedArticle {
 
     // A NUL in the page survives Readability and html-to-text, and Postgres
     // refuses to store one. Removed here so `chars` counts what is stored.
-    const text = stripNul(stripHtml(parsed.content ?? null) ?? "");
-    return { text, title: parsed.title ?? null, chars: text.length };
+    const raw = stripHtml(parsed.content ?? null) ?? "";
+    const nulsRemoved = countNul(raw);
+    const text = nulsRemoved > 0 ? stripNul(raw) : raw;
+    return { text, title: parsed.title ?? null, chars: text.length, nulsRemoved };
   } catch {
     return EMPTY;
   }

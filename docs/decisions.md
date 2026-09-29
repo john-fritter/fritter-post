@@ -6473,3 +6473,28 @@ the per-target log line printed only after the upsert.
 
 No `error` row is written in place of a refused one: `article_texts` failures
 feed the host cooldown, and a database refusal is not the host's fault.
+
+**Recovery.** Deployed at `26cab8f`; `npm run pipeline -- --from fetch-text`
+resumed pipeline #30's lineage as pipeline #31, reusing editor run #150. It
+finished `degraded` on one unrelated warning (nytimes.com newly in cooldown):
+writer run #91 wrote 150 of 150 with no failures, and paper #49 published for
+2026-09-29 with 150 pieces, 234 source links, 0 skipped and 0 unsourced.
+`storeFailed` was 0.
+
+**The recovery could not name the article, and that was our doing.** #31's log
+had no NUL line. The retried article should have produced one, but
+`extractArticle` stripped body NULs *silently*, and the upsert's log only fires
+for NULs that reach it, so a body NUL now left no trace. `extractArticle` now
+returns `nulsRemoved` and the fetch logs it with the URL.
+
+**The likeliest source was hiding in the fetch summary.** #31 reported
+`ok=0 thin=3 blocked=3 error=11` and body text `4112 → 840904` characters.
+Three thin extractions cannot account for 840k characters, but `error` rows
+can. `classifyResponse` marks a non-HTML Content-Type as `error`, yet
+`fetchArticleText` had already decoded those bytes as HTML, extracted them, and
+returned the result with the error status. So a PDF's bytes were stored as
+`article_texts.text` on a row no writer reads. Binary data is full of NULs.
+This is inference, not observation: the rows would confirm it (`status='error'
+AND detail LIKE 'content-type%' AND text_chars > 0`). Whether or not it was
+Tuesday's article, reading a body only to discard it is wrong, so a non-HTML
+response is now turned away before its body is read.

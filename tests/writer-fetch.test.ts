@@ -8,6 +8,7 @@ import {
   type FetchStatus,
   overwritesAttempts,
   sanitizeArticleTextRow,
+  isHtmlContentType,
   type ArticleTextRow,
 } from "../src/pipeline/writers/fetch-text.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
@@ -426,6 +427,17 @@ function testExtractionStripsNulFromTheBody() {
   assert.ok(r.chars > 0, "the article is still extracted");
   assert.ok(!r.text.includes("\u0000"), "no NUL reaches the stored body");
   assert.equal(r.chars, r.text.length, "chars counts the text as stored");
+  assert.equal(r.nulsRemoved, 1, "the removal is reported so the page can be named");
+}
+
+function testNonHtmlBodiesAreNotRead() {
+  // A PDF used to be decoded as HTML and its extracted bytes stored on an
+  // `error` row no writer reads — the likeliest home of 2026-09-29's NUL.
+  assert.equal(isHtmlContentType("application/pdf"), false);
+  assert.equal(isHtmlContentType("image/jpeg"), false);
+  assert.equal(isHtmlContentType("text/html; charset=utf-8"), true);
+  assert.equal(isHtmlContentType("application/xhtml+xml"), true);
+  assert.equal(isHtmlContentType(null), true, "a missing header is not a verdict");
 }
 
 function row(over: Partial<ArticleTextRow> = {}): ArticleTextRow {
@@ -505,6 +517,7 @@ testExtractionOfAWallReturnsAlmostNothing();
 testExtractionNeverThrows();
 testHostOfStripsWww();
 testExtractionStripsNulFromTheBody();
+testNonHtmlBodiesAreNotRead();
 testNulInTextIsStrippedAndRecounted();
 testNulInMetadataIsStrippedToo();
 testATextOfOnlyNulsBecomesNull();
