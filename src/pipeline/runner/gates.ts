@@ -435,6 +435,12 @@ export interface FetchMetrics {
   newlyCooledHosts: string[];
   /** Everything currently in cooldown, for the reason line's context. */
   cooldownHosts: string[];
+  /**
+   * article_texts rows the database refused. Before 2026-09-29 one of these
+   * threw and stopped the pipeline; now it costs one article's fetched text,
+   * and this is what keeps that from being silent.
+   */
+  storeFailed: number;
 }
 
 /**
@@ -487,6 +493,13 @@ export function gateFetch(
         `host(s) newly in cooldown since the last run: ${m.newlyCooledHosts.join(", ")} — ` +
         `their stories now run on headline-level material whatever they rank ` +
         `(${m.cooldownHosts.length} host(s) in cooldown in total)`,
+    },
+    {
+      when: m.storeFailed > 0,
+      verdict: "warn",
+      reason:
+        `${m.storeFailed} article_texts row(s) refused by the database — those stories ` +
+        `run on their feed body; the STORE FAILED lines in the log name each one`,
     },
   ]);
 }

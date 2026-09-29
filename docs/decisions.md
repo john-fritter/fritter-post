@@ -6446,3 +6446,30 @@ because musl records none. The repair doesn't depend on the attribution. The
 digest pin and the nightly `amcheck` guard against the whole class of failure,
 whatever the exact cause.
 
+## 2026-09-29 — A NUL byte in one article stopped the paper; fetch-text now strips them and survives a refused row
+
+**What happened.** Pipeline #30 ran collect through editor cleanly (editor run
+#150, 150 ranked) and died 27 seconds into fetch-text:
+`invalid byte sequence for encoding "UTF8": 0x00` from the `article_texts`
+upsert. No writer run, no paper. Postgres TEXT cannot store U+0000, and a
+literal NUL in publisher HTML passes through linkedom, Readability and
+html-to-text unchanged (reproduced in `tests/writer-fetch.test.ts`). The
+offending article was never identified: the rejected write was not committed and
+the per-target log line printed only after the upsert.
+
+**Two defects, fixed separately.**
+- *The character.* `extractArticle` strips NULs before computing `chars`, so the
+  stored count describes the stored text. `sanitizeArticleTextRow` strips them
+  from every TEXT parameter at the database boundary as well, because the report
+  could not say the body was the parameter at fault. Only U+0000 is removed —
+  it is the one character Postgres refuses.
+- *The blast radius.* One upsert rejection rejected the host workers'
+  `Promise.all` and aborted the whole stage — the "a failed call is a row, not
+  an exception" rule, unapplied in the one stage that writes a row per article.
+  A refused upsert is now caught, logged with item id, host, status and URL
+  (never the body), and counted as `storeFailed`; the gate warns on any.
+  Nothing is swallowed: the run is recorded `degraded` and the log names the
+  row. The article falls back to its feed body, as a blocked fetch does.
+
+No `error` row is written in place of a refused one: `article_texts` failures
+feed the host cooldown, and a database refusal is not the host's fault.

@@ -20,6 +20,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { stripHtml } from "../../lib/html.js";
+import { stripNul } from "../../lib/pg-text.js";
 
 export interface ExtractedArticle {
   /** Article prose as paragraphs, or "" when nothing article-shaped was found. */
@@ -47,7 +48,9 @@ export function extractArticle(html: string): ExtractedArticle {
     const parsed = new Readability(document as never).parse();
     if (!parsed) return EMPTY;
 
-    const text = stripHtml(parsed.content ?? null) ?? "";
+    // A NUL in the page survives Readability and html-to-text, and Postgres
+    // refuses to store one. Removed here so `chars` counts what is stored.
+    const text = stripNul(stripHtml(parsed.content ?? null) ?? "");
     return { text, title: parsed.title ?? null, chars: text.length };
   } catch {
     return EMPTY;

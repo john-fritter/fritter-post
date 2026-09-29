@@ -463,6 +463,7 @@ function testFetchIsSilentAboutStandingCooldown() {
       ok: 129,
       thin: 14,
       newlyCooledHosts: [],
+      storeFailed: 0,
       cooldownHosts: [
         "npr.org",
         "oregonlive.com",
@@ -485,6 +486,7 @@ function testFetchWarnsOnAHostThatJustStoppedAnswering() {
       thin: 10,
       newlyCooledHosts: ["reuters.com"],
       cooldownHosts: ["nytimes.com", "reuters.com"],
+      storeFailed: 0,
     },
     GATES.fetch,
   );
@@ -495,17 +497,28 @@ function testFetchWarnsOnAHostThatJustStoppedAnswering() {
 
 function testFetchWarnsWhenNothingUsableCameBack() {
   const r = gateFetch(
-    { requested: 148, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [] },
+    { requested: 148, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [], storeFailed: 0 },
     GATES.fetch,
   );
   assert.equal(r.verdict, "warn");
   assert.match(r.reasons.join(" "), /none yielded usable text/);
 }
 
+function testFetchStoreFailureWarns() {
+  // 2026-09-29: one row the database refused used to throw and cost the paper.
+  // Now it costs one article, and a cost is never silent.
+  const r = gateFetch(
+    { requested: 111, ok: 80, thin: 20, newlyCooledHosts: [], cooldownHosts: [], storeFailed: 1 },
+    GATES.fetch,
+  );
+  assert.equal(r.verdict, "warn");
+  assert.match(r.reasons.join(" "), /refused by the database/);
+}
+
 function testFetchThatRequestedNothingIsSilent() {
   // Every story's feed body cleared the floor. Not a failure.
   const r = gateFetch(
-    { requested: 0, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [] },
+    { requested: 0, ok: 0, thin: 0, newlyCooledHosts: [], cooldownHosts: [], storeFailed: 0 },
     GATES.fetch,
   );
   assert.equal(r.verdict, "ok");
@@ -589,6 +602,7 @@ function testRunOneIsNotDegraded() {
         thin: 14,
         // Nothing entered cooldown that run; all five were already there.
         newlyCooledHosts: [],
+        storeFailed: 0,
         cooldownHosts: [
           "npr.org",
           "oregonlive.com",
@@ -656,6 +670,7 @@ testRecoveryIsSilent();
 testFetchIsSilentAboutStandingCooldown();
 testFetchWarnsOnAHostThatJustStoppedAnswering();
 testFetchWarnsWhenNothingUsableCameBack();
+testFetchStoreFailureWarns();
 testFetchThatRequestedNothingIsSilent();
 testPublisherCleanPaperPasses();
 testPublisherWarnsOnUnsourcedPieces();

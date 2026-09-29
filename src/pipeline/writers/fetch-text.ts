@@ -37,6 +37,7 @@ import {
   BROWSER_HINT_HEADERS,
   hostOf,
 } from "../../lib/http.js";
+import { stripNul, countNul } from "../../lib/pg-text.js";
 import { stripBoilerplate } from "./boilerplate.js";
 import { extractArticle } from "./extract.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "./materials.js";
@@ -396,23 +397,70 @@ export interface FetchRunSummary {
   charsBefore: number;
   charsAfter: number;
   pruned: number;
+  /**
+   * Rows the database refused. The fetch itself may have worked; the article
+   * falls back to its feed body, as any failed fetch does. Counted so the gate
+   * can name it — the stage no longer dies on one, which is how 2026-09-29 lost
+   * its paper to a single article.
+   */
+  storeFailed: number;
 }
 
-async function upsert(
-  pool: import("pg").Pool,
-  row: {
-    preprocessedItemId: number;
-    canonicalUrl: string;
-    host: string;
-    status: FetchStatus;
-    httpStatus: number | null;
-    extractor: string | null;
-    text: string | null;
-    textChars: number;
-    feedChars: number;
-    detail: string | null;
-  },
-): Promise<void> {
+export interface ArticleTextRow {
+  preprocessedItemId: number;
+  canonicalUrl: string;
+  host: string;
+  status: FetchStatus;
+  httpStatus: number | null;
+  extractor: string | null;
+  text: string | null;
+  textChars: number;
+  feedChars: number;
+  detail: string | null;
+}
+
+/**
+ * The row as Postgres will accept it, and which fields had to change.
+ *
+ * `extractArticle` already strips NULs from the body; this is the boundary
+ * check for every TEXT column, because the 2026-09-29 failure could not say
+ * which parameter carried the NUL and the body is only the likeliest one. When
+ * the text changes, `textChars` is recounted so the stored count describes the
+ * stored text.
+ */
+export function sanitizeArticleTextRow(row: ArticleTextRow): {
+  row: ArticleTextRow;
+  nulFields: string[];
+} {
+  const nulFields: string[] = [];
+  const clean = <T extends string | null>(field: string, v: T): T => {
+    if (v === null) return v;
+    const n = countNul(v);
+    if (n === 0) return v;
+    nulFields.push(`${field}(${n})`);
+    return stripNul(v) as T;
+  };
+  const text = clean("text", row.text);
+  const sanitized: ArticleTextRow = {
+    ...row,
+    canonicalUrl: clean("canonical_url", row.canonicalUrl),
+    host: clean("host", row.host),
+    extractor: clean("extractor", row.extractor),
+    text: text !== null && text.length === 0 ? null : text,
+    textChars: text !== row.text ? (text?.length ?? 0) : row.textChars,
+    detail: clean("detail", row.detail),
+  };
+  return { row: sanitized, nulFields };
+}
+
+async function upsert(pool: import("pg").Pool, input: ArticleTextRow): Promise<void> {
+  const { row, nulFields } = sanitizeArticleTextRow(input);
+  if (nulFields.length > 0) {
+    console.warn(
+      `[fetch-text] removed NUL characters from item ${row.preprocessedItemId} ` +
+        `(${row.host}): ${nulFields.join(", ")}`,
+    );
+  }
   const onlyOverwriteSkips = overwritesAttempts(row.status) === false;
   await pool.query(
     `INSERT INTO article_texts
@@ -530,6 +578,24 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
     charsBefore: 0,
     charsAfter: 0,
     pruned,
+    storeFailed: 0,
+  };
+
+  // One row the database refuses costs that article's fetched text, not the
+  // edition: the writers fall back to the feed body exactly as they do for a
+  // blocked host. Never swallowed silently — logged with the row's identity
+  // (never its body), counted, and warned on by the gate.
+  const store = async (row: ArticleTextRow): Promise<void> => {
+    try {
+      await upsert(pool, row);
+    } catch (err) {
+      summary.storeFailed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[fetch-text] STORE FAILED item ${row.preprocessedItemId} ${row.host} ` +
+          `status=${row.status} textChars=${row.textChars} — ${msg} (${row.canonicalUrl})`,
+      );
+    }
   };
 
   if (dryRun) {
@@ -540,21 +606,18 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
   }
 
   for (const skip of plan.skips) {
-    await upsert(
-      pool,
-      {
-        preprocessedItemId: skip.preprocessedItemId,
-        canonicalUrl: skip.canonicalUrl,
-        host: skip.host,
-        status: "skipped",
-        httpStatus: null,
-        extractor: null,
-        text: null,
-        textChars: 0,
-        feedChars: skip.feedChars,
-        detail: skip.detail,
-      },
-    );
+    await store({
+      preprocessedItemId: skip.preprocessedItemId,
+      canonicalUrl: skip.canonicalUrl,
+      host: skip.host,
+      status: "skipped",
+      httpStatus: null,
+      extractor: null,
+      text: null,
+      textChars: 0,
+      feedChars: skip.feedChars,
+      detail: skip.detail,
+    });
   }
 
   // Hosts run concurrently; each host's own URLs run one at a time with a pause
@@ -574,7 +637,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
           for (const item of target.items) {
             summary.charsBefore += item.feedChars;
             summary.charsAfter += Math.max(item.feedChars, outcome.textChars);
-            await upsert(pool, {
+            await store({
               preprocessedItemId: item.preprocessedItemId,
               canonicalUrl: target.canonicalUrl,
               host,
@@ -601,8 +664,9 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
 
   console.log(
     `[fetch-text] done: ok=${summary.ok} thin=${summary.thin} blocked=${summary.blocked} ` +
-      `error=${summary.error} skipped=${summary.skipped} — ` +
-      `body text ${summary.charsBefore} → ${summary.charsAfter} chars`,
+      `error=${summary.error} skipped=${summary.skipped}` +
+      (summary.storeFailed > 0 ? ` STORE-FAILED=${summary.storeFailed}` : "") +
+      ` — body text ${summary.charsBefore} → ${summary.charsAfter} chars`,
   );
 
   return summary;

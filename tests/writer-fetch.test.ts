@@ -7,6 +7,8 @@ import {
   isTransportError,
   type FetchStatus,
   overwritesAttempts,
+  sanitizeArticleTextRow,
+  type ArticleTextRow,
 } from "../src/pipeline/writers/fetch-text.js";
 import { extractArticle } from "../src/pipeline/writers/extract.js";
 import { hostOf } from "../src/lib/http.js";
@@ -409,6 +411,75 @@ function testATruncatedBodyOnACoolingHostIsStillSkipped() {
   assert.match(plan.skips[0]!.detail, /cooldown/);
 }
 
+// --- NUL characters (2026-09-29) ---
+// Postgres TEXT cannot hold U+0000. One page carrying one stopped fetch-text
+// with `invalid byte sequence for encoding "UTF8": 0x00` and the day made no
+// paper. The report could not say which parameter carried it, so both the body
+// and the metadata are covered.
+
+function testExtractionStripsNulFromTheBody() {
+  const prose = "This is a sentence of article prose that goes on for a while. ".repeat(20);
+  const html =
+    `<html><head><title>T</title></head><body><article><h1>Head</h1>` +
+    `<p>${prose}\u0000 more ${prose}</p><p>${prose}</p></article></body></html>`;
+  const r = extractArticle(html);
+  assert.ok(r.chars > 0, "the article is still extracted");
+  assert.ok(!r.text.includes("\u0000"), "no NUL reaches the stored body");
+  assert.equal(r.chars, r.text.length, "chars counts the text as stored");
+}
+
+function row(over: Partial<ArticleTextRow> = {}): ArticleTextRow {
+  return {
+    preprocessedItemId: 1,
+    canonicalUrl: "https://example.com/a",
+    host: "example.com",
+    status: "ok",
+    httpStatus: 200,
+    extractor: "readability",
+    text: "Clean prose.",
+    textChars: 12,
+    feedChars: 300,
+    detail: null,
+    ...over,
+  };
+}
+
+function testNulInTextIsStrippedAndRecounted() {
+  const { row: r, nulFields } = sanitizeArticleTextRow(
+    row({ text: "Half\u0000 a\u0000 page", textChars: 13 }),
+  );
+  assert.equal(r.text, "Half a page");
+  assert.equal(r.textChars, 11);
+  assert.deepEqual(nulFields, ["text(2)"]);
+}
+
+function testNulInMetadataIsStrippedToo() {
+  const { row: r, nulFields } = sanitizeArticleTextRow(
+    row({
+      canonicalUrl: "https://example.com/a\u0000b",
+      detail: "body read failed: bad\u0000byte",
+    }),
+  );
+  assert.equal(r.canonicalUrl, "https://example.com/ab");
+  assert.equal(r.detail, "body read failed: badbyte");
+  assert.equal(r.text, "Clean prose.");
+  assert.equal(r.textChars, 12, "an untouched body keeps its count");
+  assert.deepEqual(nulFields, ["canonical_url(1)", "detail(1)"]);
+}
+
+function testATextOfOnlyNulsBecomesNull() {
+  const { row: r } = sanitizeArticleTextRow(row({ text: "\u0000\u0000", textChars: 2 }));
+  assert.equal(r.text, null);
+  assert.equal(r.textChars, 0);
+}
+
+function testACleanRowIsUnchanged() {
+  const input = row();
+  const { row: r, nulFields } = sanitizeArticleTextRow(input);
+  assert.deepEqual(r, input);
+  assert.deepEqual(nulFields, []);
+}
+
 testOnlyThinArticlesAreFetched();
 testALongBodyThatStopsMidSentenceIsStillFetched();
 testALongCompleteBodyIsStillSkipped();
@@ -433,4 +504,9 @@ testExtractionDropsChromeAndKeepsProse();
 testExtractionOfAWallReturnsAlmostNothing();
 testExtractionNeverThrows();
 testHostOfStripsWww();
+testExtractionStripsNulFromTheBody();
+testNulInTextIsStrippedAndRecounted();
+testNulInMetadataIsStrippedToo();
+testATextOfOnlyNulsBecomesNull();
+testACleanRowIsUnchanged();
 console.log("writer fetch tests passed");
