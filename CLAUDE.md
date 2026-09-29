@@ -634,6 +634,23 @@ than configured: a host with `min_attempts` failures and no success inside
 age out. nytimes.com and oregonlive.com serve a DataDome device check the
 browser UA does not get past.
 
+**A row the database refuses costs one article, not the paper.** Pipeline #30
+(2026-09-29) stopped in fetch-text on `invalid byte sequence for encoding
+"UTF8": 0x00`: Postgres TEXT cannot hold U+0000, a NUL in publisher HTML
+survives linkedom, Readability and html-to-text, and the uncaught upsert
+rejected the stage's `Promise.all`. `extractArticle` now strips NULs before
+counting and reports how many (logged with the URL), `sanitizeArticleTextRow`
+strips them from every TEXT column at the upsert (recounting `text_chars`), and
+a failed upsert is logged by item, host and URL — never the body — and counted
+as `storeFailed`, which the fetch gate warns on. The article falls back to its
+feed body, as any failed fetch does.
+
+**A non-HTML response is not read.** A PDF or image used to be decoded as HTML,
+extracted, and its "text" stored on an `error` row — which the writers never
+read, since `loadFetchedTexts` takes `ok` and `thin` only. Binary bytes are the
+likeliest source of that NUL. `isHtmlContentType` now turns such a response
+away before the body is downloaded; a missing Content-Type is still read.
+
 **`assembler.ts` + `prompt.ts` — the packet.** Pure functions: select, dedupe,
 budget. Selection takes one article per parent outlet before a second from the
 same one, capped per tier. Deduplication is **verbatim paragraph** removal across

@@ -6446,3 +6446,55 @@ because musl records none. The repair doesn't depend on the attribution. The
 digest pin and the nightly `amcheck` guard against the whole class of failure,
 whatever the exact cause.
 
+## 2026-09-29 — A NUL byte in one article stopped the paper; fetch-text now strips them and survives a refused row
+
+**What happened.** Pipeline #30 ran collect through editor cleanly (editor run
+#150, 150 ranked) and died 27 seconds into fetch-text:
+`invalid byte sequence for encoding "UTF8": 0x00` from the `article_texts`
+upsert. No writer run, no paper. Postgres TEXT cannot store U+0000, and a
+literal NUL in publisher HTML passes through linkedom, Readability and
+html-to-text unchanged (reproduced in `tests/writer-fetch.test.ts`). The
+offending article was never identified: the rejected write was not committed and
+the per-target log line printed only after the upsert.
+
+**Two defects, fixed separately.**
+- *The character.* `extractArticle` strips NULs before computing `chars`, so the
+  stored count describes the stored text. `sanitizeArticleTextRow` strips them
+  from every TEXT parameter at the database boundary as well, because the report
+  could not say the body was the parameter at fault. Only U+0000 is removed —
+  it is the one character Postgres refuses.
+- *The blast radius.* One upsert rejection rejected the host workers'
+  `Promise.all` and aborted the whole stage — the "a failed call is a row, not
+  an exception" rule, unapplied in the one stage that writes a row per article.
+  A refused upsert is now caught, logged with item id, host, status and URL
+  (never the body), and counted as `storeFailed`; the gate warns on any.
+  Nothing is swallowed: the run is recorded `degraded` and the log names the
+  row. The article falls back to its feed body, as a blocked fetch does.
+
+No `error` row is written in place of a refused one: `article_texts` failures
+feed the host cooldown, and a database refusal is not the host's fault.
+
+**Recovery.** Deployed at `26cab8f`; `npm run pipeline -- --from fetch-text`
+resumed pipeline #30's lineage as pipeline #31, reusing editor run #150. It
+finished `degraded` on one unrelated warning (nytimes.com newly in cooldown):
+writer run #91 wrote 150 of 150 with no failures, and paper #49 published for
+2026-09-29 with 150 pieces, 234 source links, 0 skipped and 0 unsourced.
+`storeFailed` was 0.
+
+**The recovery could not name the article, and that was our doing.** #31's log
+had no NUL line. The retried article should have produced one, but
+`extractArticle` stripped body NULs *silently*, and the upsert's log only fires
+for NULs that reach it, so a body NUL now left no trace. `extractArticle` now
+returns `nulsRemoved` and the fetch logs it with the URL.
+
+**The likeliest source was hiding in the fetch summary.** #31 reported
+`ok=0 thin=3 blocked=3 error=11` and body text `4112 → 840904` characters.
+Three thin extractions cannot account for 840k characters, but `error` rows
+can. `classifyResponse` marks a non-HTML Content-Type as `error`, yet
+`fetchArticleText` had already decoded those bytes as HTML, extracted them, and
+returned the result with the error status. So a PDF's bytes were stored as
+`article_texts.text` on a row no writer reads. Binary data is full of NULs.
+This is inference, not observation: the rows would confirm it (`status='error'
+AND detail LIKE 'content-type%' AND text_chars > 0`). Whether or not it was
+Tuesday's article, reading a body only to discard it is wrong, so a non-HTML
+response is now turned away before its body is read.

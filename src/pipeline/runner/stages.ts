@@ -482,6 +482,7 @@ export const STAGES: Stage[] = [
           thin: r.thin,
           newlyCooledHosts,
           cooldownHosts: r.cooldownHosts,
+          storeFailed: r.storeFailed,
         },
         cfg,
       );
@@ -501,6 +502,7 @@ export const STAGES: Stage[] = [
           newlyCooledHosts,
           charsBefore: r.charsBefore,
           charsAfter: r.charsAfter,
+          storeFailed: r.storeFailed,
         },
         gate,
         lineage: {},
