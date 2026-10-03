@@ -29,6 +29,7 @@
     "lineage-check": "tsx scripts/lineage-check.ts",
     "probe-source": "tsx scripts/probe-source.ts",
     "rerun-check": "tsx scripts/rerun-check.ts",
+    "novelty-preview": "tsx scripts/novelty-preview.ts",
     "thread-check": "tsx scripts/thread-check.ts"
   },
   "dependencies": {

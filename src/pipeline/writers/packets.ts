@@ -22,6 +22,7 @@ import {
   type WriterPacket,
 } from "./assembler.js";
 import { buildWriterSystemPrompt, buildWriterUserPrompt, VOICE_FALLBACK } from "./prompt.js";
+import type { PieceTier } from "../rerun/select.js";
 
 const DOCS_DIR = path.join(import.meta.dirname, "..", "..", "..", "docs");
 
@@ -153,6 +154,7 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
     levels: new Map(
       ladder.map((tier) => [tier, materialLevelAtTier(story, textsById, cfg, tier)]),
     ),
+    maxTier: (story.maxTier ?? null) as PieceTier | null,
   }));
   const { tiers, swaps } = resolveTiersByMaterial(candidates, ladder);
   for (const swap of swaps) {

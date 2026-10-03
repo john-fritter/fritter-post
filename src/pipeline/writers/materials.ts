@@ -64,6 +64,26 @@ export interface StoryArticle {
   feedTextChars: number;
 }
 
+/**
+ * What the paper already printed about this member's situation, and what is new
+ * today, from the rerun check's grade. Set only for a story the check found
+ * printed before and kept: a development, a minor update or routine news.
+ *
+ * It exists because the writer used to be told nothing about yesterday. A
+ * day-later article spends most of its words recapping the original event, so
+ * the writer wrote the original event again and buried the new detail: Christa
+ * Pike's failed execution ran as the headline on 10/1 and again on 10/2, when
+ * the news on 10/2 was that she was in critical condition and the courts had
+ * stayed further attempts.
+ */
+export interface Continuation {
+  grade: "development" | "minor" | "routine";
+  /** Today's news in one sentence, as the judge stated it. A pointer, not a source. */
+  news: string | null;
+  priorHeadline: string | null;
+  priorDate: string;
+}
+
 /** A row of the grouping/thread layer: one cluster or one singleton. */
 export interface StoryMember {
   ref: string;
@@ -74,6 +94,7 @@ export interface StoryMember {
   score: number;
   sourceCount: number;
   articles: StoryArticle[];
+  continuation?: Continuation | null;
 }
 
 /** One published story, resolved to everything it is made of. */
@@ -91,6 +112,8 @@ export interface StoryMaterials {
   score: number;
   /** Prominence as the editor ranked it: cluster member count, 1, or sum for a thread. */
   sourceCount: number;
+  /** The largest piece the rerun check allows it to run as; null is uncapped. */
+  maxTier?: EditorTier | null;
   members: StoryMember[];
   /** Every article under this story, member order, deduplicated by item id. */
   articles: StoryArticle[];
@@ -112,6 +135,7 @@ export interface EditorStoryRow {
   thread_id: string | null;
   tier: string;
   rank: number;
+  max_tier?: string | null;
 }
 
 export interface ThreadRow {
@@ -156,6 +180,8 @@ export interface MaterialsInputs {
   /** Pass-1 relevance by member ref (`C25` / `S52283`), for members and non-thread stories. */
   scoreByRef: Map<string, number>;
   parentOf: (sourceName: string) => string;
+  /** Prior coverage by member ref, from the rerun check. Absent before migration 047. */
+  continuationByRef?: Map<string, Continuation>;
 }
 
 function toArticle(
@@ -394,6 +420,11 @@ export function buildStoryMaterials(inputs: MaterialsInputs): StoryMaterials[] {
       };
     }
 
+    materials.maxTier = (story.max_tier ?? null) as EditorTier | null;
+    for (const member of materials.members) {
+      member.continuation = inputs.continuationByRef?.get(member.ref) ?? null;
+    }
+
     // Flatten, keeping member order and dropping repeats. Grouping assigns each
     // item to exactly one cluster or singleton, so a repeat means two members of
     // one thread claim the same article — worth recording, not worth failing on.
@@ -450,7 +481,7 @@ export async function loadEditorRunMaterials(editorRunId: number): Promise<Story
     `SELECT id::text AS id, item_type, cluster_index,
             preprocessed_item_id::text AS preprocessed_item_id,
             thread_id::text AS thread_id,
-            tier, rank
+            tier, rank, max_tier
      FROM editor_stories
      WHERE run_id = $1
      ORDER BY rank ASC`,
@@ -539,7 +570,32 @@ export async function loadEditorRunMaterials(editorRunId: number): Promise<Story
     parentBySource.set(source.name, source.parent ?? source.name);
   }
 
+  // What the paper printed before, for every row the rerun check graded as
+  // continuing: the writer leads on what is new rather than retelling it.
+  const { rows: continuationRows } = await pool.query<{
+    row_key: string;
+    grade: Continuation["grade"];
+    news: string | null;
+    prior_headline: string | null;
+    prior_published_on: string;
+  }>(
+    `SELECT a.row_key, a.grade, a.news, a.prior_headline,
+            to_char(a.prior_published_on, 'YYYY-MM-DD') AS prior_published_on
+     FROM rerun_assessments a
+     JOIN editor_piles ep ON ep.rerun_run_id = a.rerun_run_id
+     WHERE ep.id = $1 AND a.grade IN ('development', 'minor', 'routine')
+       AND a.prior_published_on IS NOT NULL`,
+    [run.pile_id],
+  );
+  const continuationByRef = new Map<string, Continuation>(
+    continuationRows.map((r) => [
+      r.row_key,
+      { grade: r.grade, news: r.news, priorHeadline: r.prior_headline, priorDate: r.prior_published_on },
+    ]),
+  );
+
   return buildStoryMaterials({
+    continuationByRef,
     stories,
     threadsById,
     threadMembersByThreadId,

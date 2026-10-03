@@ -1,5 +1,6 @@
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
+import type { ScoreReductions } from "../thread/index.js";
 
 interface EditorPileRow {
   id: number;
@@ -85,12 +86,23 @@ async function loadThreads(threadRunId: number): Promise<ThreadInfo[]> {
   return [...byId.values()];
 }
 
+/** What the rerun check decided, as the pile needs it. */
+export interface PileNovelty {
+  /** Rows withheld: news the paper has already printed. */
+  withheld?: Set<string>;
+  /** Rows kept but reduced (minor updates, routine news): they rank lower. */
+  reductions?: ScoreReductions;
+  /** The rerun run, recorded on the pile so the editor and writers read its grades. */
+  rerunRunId?: number | null;
+}
+
 export async function assembleGroupingPile(
   groupingPass1RunId: number,
   threadRunId?: number,
-  /** Rows the rerun check withheld: news the paper has already printed. */
-  withheld: Set<string> = new Set(),
+  novelty: PileNovelty = {},
 ): Promise<GroupingPileSummary> {
+  const withheld = novelty.withheld ?? new Set<string>();
+  const reductions: ScoreReductions = novelty.reductions ?? new Map();
   const pool = getPool();
 
   // 1. Load the grouping-pass-1 run.
@@ -105,13 +117,31 @@ export async function assembleGroupingPile(
   const groupingRunId = run.grouping_run_id;
 
   // 2. Load all scored results, sorted by score desc.
-  const { rows: resultRows } = await pool.query<GroupingPass1ResultRow>(
+  const { rows: rawRows } = await pool.query<GroupingPass1ResultRow>(
     `SELECT item_type, cluster_index, preprocessed_item_id, score, reason
      FROM grouping_pass1_results
      WHERE run_id = $1
      ORDER BY score DESC, id ASC`,
     [groupingPass1RunId],
   );
+
+  // 2a. A row the rerun check reduced ranks on its reduced score, and the pile
+  //     item records that score -- the editor ranks on what the pile stored. The
+  //     reason says why, so `inspect editor` does not show a mystery number.
+  const resultRows = rawRows
+    .map((r) => {
+      const cut = reductions.get(resultKey(r));
+      if (cut === undefined) return r;
+      return {
+        ...r,
+        score: Math.max(0, r.score - cut.penalty),
+        reason: `${r.reason} [novelty: -${cut.penalty} from ${r.score}]`,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  if (reductions.size > 0) {
+    console.log(`[pile] ${reductions.size} row(s) reduced as minor updates or routine news`);
+  }
 
   // 2b. Load threads and the rows they absorbed. A threaded row must not also
   //     appear on its own — that repetition is what the thread pass exists to
@@ -187,8 +217,9 @@ export async function assembleGroupingPile(
   const { rows: pileRows } = await pool.query<EditorPileRow>(
     `INSERT INTO editor_piles
        (grouping_run_id, grouping_pass1_run_id, thread_run_id, singleton_pile_target,
-        clusters_included, singletons_in_pile, singletons_below_line, score_cutoff)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        clusters_included, singletons_in_pile, singletons_below_line, score_cutoff,
+        rerun_run_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       groupingRunId,
@@ -199,6 +230,7 @@ export async function assembleGroupingPile(
       singletonsInPile,
       belowLine.length,
       scoreCutoff,
+      novelty.rerunRunId ?? null,
     ],
   );
   const pileId = pileRows[0]!.id;

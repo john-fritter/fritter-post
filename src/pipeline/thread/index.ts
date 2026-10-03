@@ -34,7 +34,17 @@ export interface ThreadCandidate {
   sourceCount: number;
   title: string;
   summary: string;
+  /**
+   * True when the rerun check graded this row a minor update or routine news
+   * and `score` is already reduced. Such a row still joins its situation's
+   * thread, but it is not today's news, so its sources do not count towards the
+   * thread's prominence. See deriveThreadScores.
+   */
+  reduced?: boolean;
 }
+
+/** A row the rerun check kept but reduced, keyed by ref. */
+export type ScoreReductions = Map<string, { penalty: number }>;
 
 export interface ParsedThread {
   title: string;
@@ -113,6 +123,14 @@ export function parseThreadOutput(
  *
  * This is what lets the editor's existing formula rank threads against
  * un-threaded rows without changing: combined = relevance + W * ln(sources).
+ *
+ * **Both read today's news only.** A member the rerun check reduced arrives
+ * with its score already lowered, so `max` sees the reduced value; and its
+ * sources are left out of the sum, because coverage of a minor update or of one
+ * more routine night of a war is not coverage of today's news. Without that, a
+ * war section of five routine strike reports kept its full prominence lift and
+ * reached the top ten on nine days of ten (2026-10-02 audit). A thread whose
+ * every member is reduced counts one source -- no lift at all, since ln(1) = 0.
  * Exported for testing.
  */
 export function deriveThreadScores(members: ThreadCandidate[]): {
@@ -123,9 +141,11 @@ export function deriveThreadScores(members: ThreadCandidate[]): {
   let sourceCount = 0;
   for (const m of members) {
     if (m.score > score) score = m.score;
-    sourceCount += m.sourceCount;
+    if (!m.reduced) sourceCount += m.sourceCount;
   }
-  return { score, sourceCount };
+  // At least one for any real thread: the count is fed to ln(), and ln(0) is
+  // -Infinity, which sorts a story to the bottom without an error (outlets.ts).
+  return { score, sourceCount: members.length === 0 ? 0 : Math.max(1, sourceCount) };
 }
 
 function formatCandidateBlocks(candidates: ThreadCandidate[]): string {
@@ -151,6 +171,7 @@ export async function loadThreadCandidates(
   candidateTarget: number,
   summaryCap: number,
   exclude: Set<string> = new Set(),
+  reductions: ScoreReductions = new Map(),
 ): Promise<ThreadCandidate[]> {
   const pool = getPool();
 
@@ -238,6 +259,16 @@ export async function loadThreadCandidates(
     }
   }
 
+  // A reduced row ranks, threads and is shown at its reduced score. It is not
+  // re-sorted out of the candidate set: the set is the top `candidateTarget`
+  // by pass-1 score, and a reduced story still belongs with its situation.
+  for (const c of candidates) {
+    const r = reductions.get(c.ref);
+    if (r === undefined) continue;
+    c.score = Math.max(0, c.score - r.penalty);
+    c.reduced = true;
+  }
+
   return candidates;
 }
 
@@ -256,6 +287,8 @@ export interface RunThreadingOptions {
   overrides?: ModelOverrides;
   /** Rows the rerun check withheld. A rerun is not a member of anything. */
   exclude?: Set<string>;
+  /** Rows the rerun check kept but reduced: they thread at their reduced score. */
+  reductions?: ScoreReductions;
 }
 
 /**
@@ -287,6 +320,7 @@ export async function runThreading(
     config.candidate_target,
     config.summary_cap,
     options.exclude,
+    options.reductions,
   );
 
   const { rows: runRows } = await pool.query<{ id: number }>(

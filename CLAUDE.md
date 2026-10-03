@@ -74,7 +74,7 @@ fritter-post/
 │   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
 │   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
 │   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
-│   │   ├── rerun/               # withholds news the paper already printed
+│   │   ├── rerun/               # grades novelty: withholds reruns, reduces minor and routine news
 │   │   ├── thread/              # groups related rows into one ongoing situation
 │   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
 │   │   ├── writers/             # materials + fetch + assembler + the writer calls
@@ -87,7 +87,7 @@ fritter-post/
 │   ├── app/                     # Next.js routes — the index and one page per piece
 │   └── lib/                     # shared utilities
 ├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–046)
+├── migrations/                  # numbered SQL migrations (001–047)
 └── tests/                       # unit tests for deterministic parsers
 ```
 
@@ -395,9 +395,65 @@ descending, takes the top `grouping.pile_target` (config: 150), and writes to
 a threaded row must not also appear on its own.
 
 ### rerun
-**Withholds news the paper has already printed.** Runs inside grouping-pass-1,
-after scoring and before threading. `src/pipeline/rerun/`. Writes `rerun_runs` /
-`rerun_verdicts` (migration 045); read them with `inspect reruns`.
+**Grades how new each story is to a reader who read the last editions, and
+withholds what is not new at all.** Runs inside grouping-pass-1, after scoring
+and before threading. `src/pipeline/rerun/`. Writes `rerun_runs` /
+`rerun_assessments` (migration 047; `rerun_verdicts`, 045, holds the pairwise
+runs before it); read them with `inspect reruns`.
+
+| grade | meaning | effect (`rerun.grades`) |
+|---|---|---|
+| `new` | nothing like it was printed | none |
+| `development` | something has changed since | none; the writer leads on it |
+| `minor` | the same news plus a small detail | score −12, at most `standard`; writer leads on the detail |
+| `routine` | more of what this situation does daily | score −20, at most `brief` |
+| `rerun` | nothing new | withheld from threading and the pile |
+
+**Why grades, not a yes/no (2026-10-03).** The check shipped as RERUN-or-not,
+and "not" meant *the candidate says anything the printed piece did not*. A
+day-later article always does — a quote, a condition update, an analyst — so
+the 2026-10-02 audit, reading papers #43–52 **by headline**, found about two
+repeats a day still printing, six in the top five (the US-China truce at rank 1
+on 9/27 after 9/24 and 9/26; OpenAI's training pause rank 1 on 9/28 after rank 2
+on 9/27; Christa Pike rank 2 on 10/1 and 10/2), every one under a "previously"
+line. And the same audit called 34 of 106 drops wrong, mostly a development
+matched on a printed background fact. A binary judge must pick one of those
+errors; a graded one keeps a small update and makes it small. The reader's
+ruling: minor updates are reduced, not dropped — a lower score, which may move
+them down or out of the pile, and a smaller piece — and routine war news is
+reduced the same way. The penalties were checked with `novelty-preview` over
+papers #43–53 and kept (`docs/decisions.md`, 2026-10-03); live since that day.
+
+**The judge's sentence is cleaned before a writer sees it** (`newsForWriter`):
+the preview found 14 of 358 kept-story sentences ending by talking about the
+coverage ("adding detail to yesterday's report"), so such a clause is cut, or the
+sentence dropped. Extend its pattern from audit evidence, with a test for the cut
+and the near-miss, the junk filter's rule.
+
+**Routine needs history, so a candidate is judged against everything it
+resembles at once** (`top_k` 5, the two closest with their bodies, the rest as
+dated headlines), not pair by pair. Whether tonight's strikes on Kyiv are news
+depends on whether the paper printed strikes on Kyiv each of the last five
+days — a fact about the paper, which is what the PRINTED list shows. The judge
+does not need to know the war; it needs to know what the reader was told.
+
+**A cluster is judged on its articles, not its label.** The describe summary is
+two sentences generated from every member, which compresses away what is new;
+11 of the 34 wrong drops were clusters. `candidate_cap` characters from up to
+`candidate_articles` members, the summary only as a fallback.
+
+**Where the grade lands.** A reduced row threads and enters the pile at its
+reduced score (`thread_members.score` and `editor_pile_items.score` store it, the
+reason says `[novelty: -12 from 80]`); a thread's sources sum over unreduced
+members only (`deriveThreadScores`); the editor caps the tier
+(`assignTiersWithCaps`, ranks never move) and stores `editor_stories.max_tier`,
+which `resolveTiersByMaterial` respects; and the writer gets the judge's
+sentence and yesterday's headline (`continuationLines`). `editor_piles.rerun_run_id`
+is how the editor and writers find the grades the pile ranked on.
+
+`candidate_floor` is 0.72, lineage's — it was 0.74, and eight of the fourteen
+restatements the 2026-10-01 audit traced sat between the two: linked as
+"previously", never seen by this check.
 
 **The defect.** The Sep 5–22 audit read all 257 "previously" links across nine
 editions and about one in four was the same news printed again because a later
@@ -412,22 +468,30 @@ restatement is one.
 **How.** Retrieval is lineage's: max pairwise cosine between the articles behind
 each of the top `rerun.candidate_target` rows and the articles behind every
 piece in the last `lookback_editions` papers, `top_k` per row above
-`candidate_floor`. Then a batched judge answers each pair `RERUN` (nothing of
-substance the printed piece did not already say), `DEVELOPMENT` (something has
-happened since) or `NEW` (a different story), with a reason naming the fact. A
-row with any `RERUN` pair is withheld from threading and the pile, so the next
-row takes its slot rather than leaving a hole.
+`candidate_floor`. Then a batched judge reads each candidate against its printed
+pieces and answers `n;;today's news;;GRADE` — the sentence first, so it states
+what is new before it decides whether anything is. A row graded `RERUN` is
+withheld from threading and the pile, so the next row takes its slot rather than
+leaving a hole.
 
 **It fails open — the opposite of the lineage judge — and deliberately.** A
 wrongly dropped story is invisible: the reader never learns it existed. A missed
 rerun is the paper as it already was. So a failed call, a missing line and an
-unreadable one all keep the row; the prompt says "when unsure, DEVELOPMENT";
-and only a stated `RERUN` drops anything. Every judged pair is persisted,
-dropped or not, because this table is the only place a wrong drop can be seen.
-The gate warns on a failed call and on a day that drops more than
+unreadable one leave the row ungraded, and an ungraded row is neither reduced
+nor withheld; the prompt says "when unsure whether anything is new, MINOR"; and
+only a stated `RERUN` drops anything. Every graded row is persisted, whatever the
+grade, because this table is the only place a wrong drop can be seen. The gate
+warns on a failed call and on a day that drops more than
 `warn_dropped_fraction` of what it checked.
 
-**Backtested 2026-09-22** with `npm run rerun-check -- --as-of` over Sep 7–14's
+**The two-fact rule changed with the grades.** The pairwise prompt graded a
+candidate on its "single most important fact", which the backtest flagged (below)
+and the live audit confirmed: nine wrong drops matched a candidate on the fact it
+shared with a printed piece and ignored the one it did not. The graded prompt
+reads the most significant *new* fact, and calls commentary MINOR but a party
+acting (Iran's president answering Trump at the UN) an event.
+
+**Backtested 2026-09-22** (the pairwise judge) with `npm run rerun-check -- --as-of` over Sep 7–14's
 pass-1 runs (seven days, 250 rows each): 8, 17, 17, 17, 15, 1 and 9 rows
 withheld, 93 RERUN verdicts, 0 failed calls, ~25–45 s per day. Every expected
 rerun that retrieval offered was withheld or kept as a real DEVELOPMENT (AfD's
@@ -476,6 +540,11 @@ A thread's numbers are derived in software, never asked of the model:
 relevance = max(member score)      sources = sum(member source counts)
 ```
 
+Both read today's news only: a member the rerun check reduced counts at its
+reduced score and adds no sources, and a thread of nothing but reduced members
+counts one source (no lift). A war section of five routine strike reports used to
+keep its full prominence and reached the top ten on nine days of ten.
+
 That is what makes a thread a first-class row the editor ranks with its
 existing formula, unchanged. On run #43's data the five fire rows thread to
 `score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead at
@@ -523,6 +592,9 @@ Rows sort by combined descending, then relevance, then ref.
 Tiers are assigned by rank position from fixed counts in `editor.tiers`
 (config: feature 15, standard 60, brief 75). Features fill first, then
 standard, then brief — the last tier absorbs the shortfall on a smaller pile.
+A story the rerun check capped (a minor update, routine news) takes the largest
+slot its cap allows and the slot it skipped goes to the next story down
+(`assignTiersWithCaps`); a thread is capped only if every member is.
 
 The only LLM in this stage is the **tie-break**: items sharing an identical
 combined score are grouped and ranked against each other by one small
@@ -1035,6 +1107,18 @@ case-insensitively and a restart only against the contract's literal `HEADLINE:`
 missing the opening label costs a whole piece, mistaking prose for a restart
 truncates one that parsed correctly. A revision that never re-labels is
 undetectable, and the label is the only signal there is.
+
+**The writer is told what the reader already knows.** For a story the rerun
+check graded a development, minor update or routine news, the prompt carries
+yesterday's headline and the judge's one-sentence statement of today's news, and
+says to lead with it: the headline reports today's news, the known event is a
+clause of background (`continuationLines`). It used to be told nothing, so a
+day-later article — mostly recap, new detail lower down — produced the old event
+again: Christa Pike's failed execution headlined 10/1 and again 10/2, when 10/2's
+news was her condition and the courts' stay. It is phrased as what to do and
+never says "this paper" or "previously": the standing lesson is that a model
+relays what the prompt says about itself. The judge's sentence is a pointer, not
+a source.
 
 **`npm run write -- --repair <run>`** re-writes only the failed pieces of a run,
 in place. A paper is one run: filling three holes must not cost 150 calls.
@@ -1606,7 +1690,7 @@ anything with quoted arguments).
 Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
 `025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
 tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **047**.
+number is ambiguous. The next migration is **048**.
 
 **Pipeline stages**
 - `npm run collect` — collect raw source items
@@ -1695,9 +1779,9 @@ number is ambiguous. The next migration is **047**.
 - `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
   written piece; `--full` prints the bodies
 - `npm run inspect -- reruns [--id <n>] [--all]` — rerun checks; `--id` lists the
-  rows withheld as reruns with the printed piece and the judge's reason, `--all`
-  every kept pair too. A dropped story never reaches the paper, so this is the
-  only place a wrong drop shows
+  rows withheld or reduced, with the printed piece, the judge's statement of
+  today's news and the score change; `--all` every graded row. A withheld story
+  never reaches the paper, so this is the only place a wrong drop shows
 - `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;
   `--id` shows one run's lineage, per-stage gate verdicts with their reasons,
   and the metrics each gate read. This is where "why is the paper short" is
@@ -1781,6 +1865,13 @@ lost every judge stage at `none` and won the writers at `high`.
 - `npm run rerun-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD` — the
   rerun judge alone, against the papers that existed that day. The Sep 7–14
   backtest (pass-1 runs 55–61, reference rerun runs 1–7) is the regression set.
+- `npm run novelty-preview -- --papers 43-52 --out <file.md> [--rerun-runs p:r,…]`
+  — grades each paper's candidates with the current rerun check as of its date,
+  then re-ranks the day from the stored pass-1 scores and threads with and
+  without the grades (`src/pipeline/rerun/preview.ts`: pile cut, editor formula,
+  tier caps — no tie-break, no material swap) and prints both front pages side by
+  side, plus every graded row and a `.tsv`. Writes only rerun audit rows and
+  `generation_logs`. This is how `rerun.grades` penalties are calibrated.
 - `npm run lineage-check -- (--last <n> | --papers <a,b,…>) --out <file.md>` —
   replays the "previously" judge in dry-run mode and diffs against the printed
   links. Writes a `.md` and a `.tsv`, and nothing but `generation_logs` rows.

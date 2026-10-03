@@ -4,7 +4,7 @@ import { getPool } from "../src/db/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 
 // Runs the rerun check on its own, for measurement. It writes rerun_runs and
-// rerun_verdicts (plus the generation_logs every call writes) and nothing else:
+// rerun_assessments (plus the generation_logs every call writes) and nothing else:
 // no pile, no thread run, no paper. `--as-of` makes an old grouping-pass-1 run
 // judge against the papers that existed on its day rather than those made since.
 //
@@ -49,8 +49,9 @@ async function main() {
     ...(overrides ? { overrides } : {}),
   });
   console.log(
-    `[rerun-check] rerun run #${r.rerunRunId}: ${r.dropped.size} of ${r.candidatesIn} rows would be ` +
-      `withheld; ${r.pairsJudged} pairs, ${r.calls} calls, ${r.failedCalls} failed. ` +
+    `[rerun-check] rerun run #${r.rerunRunId}: of ${r.candidatesIn} rows, ${r.rowsJudged} graded; ` +
+      `${r.dropped.size} would be withheld and ${r.reduced.size} reduced; ${r.calls} calls, ` +
+      `${r.failedCalls} failed. ` +
       `See: npm run inspect -- reruns --id ${r.rerunRunId} --all`,
   );
   await getPool().end();

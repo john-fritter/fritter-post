@@ -40,19 +40,28 @@ async function main() {
   // pick candidates, and the pile needs its results so a threaded row does not
   // also appear on its own.
   // The rerun check first: news the paper has already printed is neither a
-  // thread member nor a pile row.
+  // thread member nor a pile row, and a minor update or routine news threads
+  // and ranks at a reduced score.
   const rerun = await runRerunCheck({ groupingPass1RunId: run.id });
 
   const { thread: threadConfig } = loadModelConfig();
   let threadRunId: number | undefined;
   if (threadConfig.enabled) {
-    const threadRun = await runThreading({ groupingPass1RunId: run.id, exclude: rerun.dropped });
+    const threadRun = await runThreading({
+      groupingPass1RunId: run.id,
+      exclude: rerun.dropped,
+      reductions: rerun.reduced,
+    });
     threadRunId = threadRun.threadRunId;
   } else {
     console.log("[thread] disabled — pile will contain un-threaded rows");
   }
 
-  const pile = await assembleGroupingPile(run.id, threadRunId, rerun.dropped);
+  const pile = await assembleGroupingPile(run.id, threadRunId, {
+    withheld: rerun.dropped,
+    reductions: rerun.reduced,
+    rerunRunId: rerun.rerunRunId,
+  });
   console.log(
     `[grouping-pass-1] pile #${pile.pileId}: ` +
       `${pile.threadsInPile} threads + ${pile.clustersInPile} clusters + ` +

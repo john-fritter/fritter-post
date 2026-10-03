@@ -214,6 +214,101 @@ function targetPhrase(packet: WriterPacket): string {
   return `up to ${maxWords} words, and fewer is correct — stop when the sources do`;
 }
 
+/**
+ * What the reader already knows, and what to lead on instead.
+ *
+ * **The writer used to be told nothing about yesterday, so it wrote yesterday
+ * again.** A day-later article spends most of its words recapping the original
+ * event and adds its new detail lower down, and a writer reading it cold makes
+ * the recap the story. The 2026-10-02 audit found that shape at the top of the
+ * paper every day: Christa Pike's failed execution headlined rank 2 on 10/1
+ * and again on 10/2, when the news on 10/2 was her condition and the courts'
+ * stay; the Supreme Court's third-country ruling led on 9/30 and again on 10/1.
+ *
+ * **Phrased as what to do, never as a description of the paper.** This
+ * project's standing lesson is that a model relays what the prompt tells it
+ * about itself, five times over (CLAUDE.md, writers). So the block says what the
+ * reader knows and what to lead on; it never says "this paper reported" or
+ * "previously", which is exactly the text a writer would hand back to the
+ * reader. The "previously" marker under the headline already says that, in the
+ * paper's own voice.
+ *
+ * **The judge's sentence is a pointer, not a source**, the cluster label's rule:
+ * it was written from the same articles, but every fact in the piece still comes
+ * from the sources below.
+ */
+// The judge's own words about the paper's coverage, which must not reach a
+// writer: "…, adding detail to yesterday's report", "…, a detail not previously
+// reported", "; the decree itself was already reported on September 29". The
+// novelty preview over papers #43-53 found 14 of 358 kept-story sentences
+// ending that way, despite the judge's prompt saying not to.
+const COVERAGE_TALK =
+  /\b(?:already (?:reported|covered|printed)|previously reported|not previously reported|reported (?:earlier|previously|yesterday)|the paper|this paper|the newspaper|yesterday's (?:report|story|piece|call)|the previous day's|adding (?:detail|analysis) to)\b/i;
+
+/**
+ * The judge's sentence, made safe to hand a writer. A clause that talks about
+ * the coverage is cut at the comma, semicolon or dash that introduces it; a
+ * sentence that still talks about it after that is dropped, and the writer
+ * leads on the known headline alone. **This project's standing lesson** is that
+ * a model relays what its prompt says about the paper, so the sentence has to
+ * be clean before the writer sees it, not after. Exported for testing.
+ */
+export function newsForWriter(news: string | null): string | null {
+  if (!news) return null;
+  let text = news.trim();
+  const match = COVERAGE_TALK.exec(text);
+  if (match) {
+    const before = text.slice(0, match.index);
+    const cut = Math.max(before.lastIndexOf(","), before.lastIndexOf(";"), before.lastIndexOf("—"), before.lastIndexOf(" – "));
+    if (cut <= 0) return null;
+    text = text.slice(0, cut).trim();
+    if (COVERAGE_TALK.test(text)) return null;
+    if (!/[.!?]$/.test(text)) text += ".";
+  }
+  return text.length >= 20 ? text : null;
+}
+
+export function continuationLines(packet: WriterPacket): string[] | null {
+  const c = packet.continuation ? { ...packet.continuation, news: newsForWriter(packet.continuation.news) } : null;
+  if (!c || (!c.priorHeadline && !c.news)) return null;
+  const lines = ["WHAT THE READER ALREADY KNOWS"];
+  if (c.priorHeadline) {
+    lines.push(`The reader already knows this, from ${c.priorDate}: "${c.priorHeadline}"`);
+  } else {
+    lines.push(`The reader already knows the earlier stages of this story, from ${c.priorDate}.`);
+  }
+  if (c.news) lines.push(`What is new today: ${c.news}`);
+  lines.push(
+    "Lead with what is new. The headline must report today's news, not the event the " +
+      "reader already knows, and so must the opening sentence. Give the known event as " +
+      "background in a clause at most, the way a follow-up story does.",
+  );
+  if (c.grade !== "development") {
+    lines.push(
+      "Today's news is a small step in a story the reader already knows, so this piece is " +
+        "short: state the new thing, the little context it needs, and stop.",
+    );
+  }
+  lines.push(
+    "The \"what is new\" line above points to where the news is; it is not a source. Take " +
+      "every fact from the sources below, and if they do not support it, lead on whatever " +
+      "they report that the known story did not.",
+  );
+  return lines;
+}
+
+/** The same direction in one line, for a batched brief or section line. */
+function continuationNote(packet: WriterPacket): string | null {
+  const c = packet.continuation ? { ...packet.continuation, news: newsForWriter(packet.continuation.news) } : null;
+  if (!c || (!c.priorHeadline && !c.news)) return null;
+  const known = c.priorHeadline ? `"${c.priorHeadline}" (${c.priorDate})` : `its earlier stages (${c.priorDate})`;
+  return (
+    `The reader already knows ${known}.` +
+    (c.news ? ` New today: ${c.news}` : "") +
+    " Lead on what is new; the headline must not restate the known event."
+  );
+}
+
 export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string {
   const [minWords, maxWords] = packet.targetWords;
   const parts: string[] = [];
@@ -253,6 +348,11 @@ export function buildWriterUserPrompt(bio: string, packet: WriterPacket): string
   } else {
     parts.push(`Working title from the source: ${packet.title}`);
     parts.push("That title is the source's own. Write your own headline.");
+  }
+
+  const known = continuationLines(packet);
+  if (known !== null) {
+    parts.push("", ...known);
   }
 
   const section = sectionInstruction(packet);
@@ -378,6 +478,8 @@ export function buildBriefBatchUserPrompt(
 
   for (const packet of packets) {
     parts.push(`=== ${packet.ref} — rank ${packet.rank}, ${targetPhrase(packet)}`);
+    const known = continuationNote(packet);
+    if (known !== null) parts.push(`Note: ${known}`);
     if (packet.notes.length > 0) {
       for (const note of packet.notes) parts.push(`Note: ${note}`);
     }

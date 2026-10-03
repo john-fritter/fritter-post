@@ -1433,32 +1433,70 @@ async function main() {
       }
 
       case "reruns": {
-        // The rerun check drops stories before the reader can see them, so this
-        // is the only place a wrong drop is visible. Every judged pair is kept,
-        // dropped or not; --all shows the keeps as well.
+        // The rerun check withholds and reduces stories before the reader can see
+        // them, so this is the only place a wrong call is visible. Every graded
+        // row is kept, whatever the grade; without --all, only the rows the check
+        // changed (withheld or reduced) are shown.
         const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
         if (id === undefined) {
           const { rows } = await pool.query(
-            `SELECT id, grouping_pass1_run_id, candidates_in, pairs_judged, rows_dropped,
-                    calls, failed_calls, to_char(started_at, 'YYYY-MM-DD HH24:MI') AS started
+            `SELECT id, grouping_pass1_run_id, candidates_in, rows_judged, rows_dropped,
+                    rows_reduced, calls, failed_calls,
+                    to_char(started_at, 'YYYY-MM-DD HH24:MI') AS started
                FROM rerun_runs ORDER BY id DESC LIMIT 20`,
           );
           if (rows.length === 0) {
             console.log("No rerun runs yet. The check runs inside grouping-pass1.");
             break;
           }
-          console.log("  id  started           pass1  checked  pairs  dropped  calls  failed");
+          console.log("  id  started           pass1  checked  graded  withheld  reduced  calls  failed");
           for (const r of rows) {
             console.log(
               `  ${String(r.id).padStart(2)}  ${r.started}  ${String(r.grouping_pass1_run_id).padStart(5)}  ` +
-                `${String(r.candidates_in ?? "—").padStart(7)}  ${String(r.pairs_judged ?? "—").padStart(5)}  ` +
-                `${String(r.rows_dropped ?? "—").padStart(7)}  ${String(r.calls ?? "—").padStart(5)}  ` +
-                `${String(r.failed_calls ?? "—").padStart(6)}`,
+                `${String(r.candidates_in ?? "—").padStart(7)}  ${String(r.rows_judged ?? "—").padStart(6)}  ` +
+                `${String(r.rows_dropped ?? "—").padStart(8)}  ${String(r.rows_reduced ?? "—").padStart(7)}  ` +
+                `${String(r.calls ?? "—").padStart(5)}  ${String(r.failed_calls ?? "—").padStart(6)}`,
             );
           }
           break;
         }
         const all = flags["all"] === "true";
+        // Runs before migration 047 judged pairs and stored them in rerun_verdicts.
+        const { rows: countRows } = await pool.query(
+          "SELECT count(*)::int AS n FROM rerun_assessments WHERE rerun_run_id = $1",
+          [id],
+        );
+        const gradedRun = countRows[0].n > 0;
+        const { rows: graded } = await pool.query(
+          `SELECT row_key, row_title, grade, news, to_char(prior_published_on, 'YYYY-MM-DD') AS prior_on,
+                  prior_headline, similarity, priors_shown, score_before, penalty, max_tier
+             FROM rerun_assessments
+            WHERE rerun_run_id = $1
+              AND ($2::boolean OR grade = 'rerun' OR penalty > 0 OR max_tier IS NOT NULL)
+            ORDER BY array_position(ARRAY['rerun','routine','minor','development','new'], grade),
+                     score_before DESC NULLS LAST`,
+          [id, all],
+        );
+        if (gradedRun) {
+          console.log(`Rerun run #${id}: ${all ? "every graded row" : "rows withheld or reduced"}\n`);
+          for (const r of graded) {
+            const effect =
+              r.grade === "rerun"
+                ? "withheld"
+                : r.penalty > 0 || r.max_tier
+                  ? `score ${r.score_before}→${Math.max(0, r.score_before - r.penalty)}` +
+                    (r.max_tier ? `, at most ${r.max_tier}` : "")
+                  : `score ${r.score_before}`;
+            console.log(`  ${String(r.grade ?? "ungraded").toUpperCase().padEnd(11)} ${r.row_key}  ${r.row_title}  (${effect})`);
+            console.log(
+              `              printed ${r.prior_on}: ${r.prior_headline ?? "(section line)"}  ` +
+                `[${Number(r.similarity).toFixed(4)}, ${r.priors_shown} shown]`,
+            );
+            if (r.news) console.log(`              today: ${r.news}`);
+          }
+          if (graded.length === 0) console.log("  (none)");
+          break;
+        }
         const { rows } = await pool.query(
           `SELECT row_key, row_title, to_char(prior_published_on, 'YYYY-MM-DD') AS prior_on,
                   prior_headline, similarity, verdict, reason
@@ -1467,7 +1505,7 @@ async function main() {
             ORDER BY (verdict = 'rerun') DESC, similarity DESC`,
           [id, all],
         );
-        console.log(`Rerun run #${id}: ${all ? "every judged pair" : "rows withheld as reruns"}\n`);
+        if (rows.length > 0) console.log(`Rerun run #${id} (pairwise, before migration 047)\n`);
         for (const r of rows) {
           console.log(`  ${String(r.verdict ?? "unjudged").toUpperCase().padEnd(11)} ${r.row_key}  ${r.row_title}`);
           console.log(`              printed ${r.prior_on}: ${r.prior_headline ?? "(section line)"}  [${Number(r.similarity).toFixed(4)}]`);
@@ -1616,9 +1654,9 @@ Commands:
   writers                  List recent writer runs
   writers --id <n>         Show every written piece; add --full for bodies
   reruns                   List recent rerun checks: rows checked, withheld, failed calls
-  reruns --id <n> [--all]  Show the rows withheld as reruns of printed news, with
-                           the printed piece and the judge's reason; --all adds
-                           every kept pair too
+  reruns --id <n> [--all]  Show the rows withheld as reruns or reduced as minor
+                           updates and routine news, with the printed piece and
+                           the judge's sentence; --all adds every graded row
   pipeline                 List recent daily pipeline runs and how each ended
   pipeline --id <n>        Show one run's lineage, per-stage gates and metrics
 

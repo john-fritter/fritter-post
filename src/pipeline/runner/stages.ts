@@ -357,14 +357,17 @@ export const STAGES: Stage[] = [
       const unscored = parseInt(unscoredRows[0]?.n ?? "0", 10);
 
       // The rerun check runs before threading, so news the paper has already
-      // printed is neither a thread member nor a pile row.
+      // printed is neither a thread member nor a pile row, and a minor update
+      // or routine news threads and ranks at a reduced score.
       const rerun = await runRerunCheck({ groupingPass1RunId: r.id });
       const rerunMetrics = {
         rerunEnabled: rerun.rerunRunId !== null,
         rerunRunId: rerun.rerunRunId,
         rerunCandidatesIn: rerun.candidatesIn,
         rerunPairsJudged: rerun.pairsJudged,
+        rerunRowsJudged: rerun.rowsJudged,
         rerunRowsDropped: rerun.dropped.size,
+        rerunRowsReduced: rerun.reduced.size,
         rerunFailedCalls: rerun.failedCalls,
       };
       const rerunGate = gateRerun(
@@ -376,7 +379,11 @@ export const STAGES: Stage[] = [
       let threadGate: GateResult = { verdict: "ok", reasons: [] };
       let threadMetrics: Record<string, unknown> = { threadEnabled: false };
       if (config.thread.enabled) {
-        const t = await runThreading({ groupingPass1RunId: r.id, exclude: rerun.dropped });
+        const t = await runThreading({
+          groupingPass1RunId: r.id,
+          exclude: rerun.dropped,
+          reductions: rerun.reduced,
+        });
         threadRunId = t.threadRunId;
         threadMetrics = {
           threadEnabled: true,
@@ -395,7 +402,11 @@ export const STAGES: Stage[] = [
         );
       }
 
-      const pile = await assembleGroupingPile(r.id, threadRunId ?? undefined, rerun.dropped);
+      const pile = await assembleGroupingPile(r.id, threadRunId ?? undefined, {
+        withheld: rerun.dropped,
+        reductions: rerun.reduced,
+        rerunRunId: rerun.rerunRunId,
+      });
       const pileItems = pile.threadsInPile + pile.clustersInPile + pile.singletonsInPile;
 
       const pass1Metrics = { itemsIn: r.itemsIn, unscored, pileItems };

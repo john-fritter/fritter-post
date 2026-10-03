@@ -6498,3 +6498,130 @@ This is inference, not observation: the rows would confirm it (`status='error'
 AND detail LIKE 'content-type%' AND text_chars > 0`). Whether or not it was
 Tuesday's article, reading a body only to discard it is wrong, so a non-HTML
 response is now turned away before its body is read.
+
+## 2026-10-03 — The rerun check grades novelty; minor updates and routine news are reduced, not dropped
+
+**What the audits found.** Gizmo's audit of papers #43–51 (the first nine with
+the rerun check live) counted restatements by whether a piece's *body* added any
+fact, and found 14 of 177 "previously" links — 7.9%, no better than the 6.2% it
+measured on papers #39–41 before the check. The reader disagreed from reading the
+paper, and was right: read **by headline**, papers #44–52 carry about two repeats
+a day, six in the top five — the US-China truce at rank 1 on 9/27 (after 9/24
+and, under an identical headline, 9/26), OpenAI's training pause at rank 1 on
+9/28 after rank 2 on 9/27, the Supreme Court's third-country ruling leading on
+9/30 and again on 10/1, Christa Pike's failed execution at rank 2 on 10/1 and
+10/2, the Hormuz rejection at rank 2 on 9/26 and 9/28, CNN off Air Force One at
+rank 5 on 9/26 and 9/27. Every one carried a "previously" line. A Russia/Ukraine
+item reached the top ten on nine papers of ten.
+
+**Why the check let them through.** Its DEVELOPMENT meant "the candidate reports
+something the earlier story did not have", and a day-later article always does —
+a condition update, an analyst, a quote. The judge answered its question; the
+reader's question is whether the headline is news. The same audit called 34 of
+106 drops wrong in the other direction, mostly a development matched on a printed
+background fact (Iran's president answering Trump at the UN, withheld against
+Trump's speech). And the writer, told nothing about yesterday, wrote the old event
+again with the new detail in paragraph three — the Pike piece of 10/2 led on the
+failed execution, not on her condition or the stay.
+
+**Decision 1 — grade, don't decide.** One judgment per candidate, five grades:
+new, development, minor, routine, rerun. Rerun is still withheld (the reader
+re-confirmed it). Minor updates and routine news are *reduced*, the reader's
+word: a score penalty (minor −12, routine −20, `rerun.grades`), which may move
+the story down the ranking or out of the pile, and a size cap (minor at most
+standard, routine at most brief). New and development pass unchanged. The
+penalties are a first setting, to be calibrated on `novelty-preview` before the
+check runs live.
+
+**Decision 2 — routine is judged against the paper's own history.** The reader
+asked how a judge could know what is significant "for this war" without the
+bigger picture. It does not need the war; it needs what the reader was told, and
+the paper has that: every candidate is shown up to five printed pieces it
+resembles, newest first, so "Russian strikes kill two in Kyiv" sits beside a week
+of "Russian strikes kill eight / four / a teenager in Kyiv", while "Russian
+drones strike Kyiv's bridges" (the first time in the war) does not match the
+pattern. ROUTINE is allowed only when the printed list shows the pattern. The
+limits: a slow trend no single day marks will not register, and a situation the
+paper has never covered has no history, so all of it is new — which is right.
+
+**Decision 3 — reduced news does not carry a section.** A thread's score is
+already max(member), and members now enter at their reduced score; its source
+count now sums unreduced members only, so a section of routine strikes loses the
+prominence lift that put war sections at rank 1 on most days. Its cap is its
+least-capped member's: one real development keeps the section full-size.
+
+**Decision 4 — the writer leads on what is new.** Open item 3c deferred this
+because instructions about the paper's own coverage tend to come back to the
+reader. The repeats now cost more than that risk, and the block is phrased as what
+to do: what the reader already knows (yesterday's headline), what is new (the
+judge's sentence, flagged as a pointer, not a source), and that the headline must
+report the latter. It never says "previously" or "this paper"; a test pins that.
+
+**Smaller, from the 2026-10-01 audit.** A cluster is judged on up to two of its
+member articles, not its describe-pass summary (11 of the 34 wrong drops were
+clusters). The floor is 0.72, lineage's; eight of the fourteen leaked
+restatements sat between 0.72 and 0.74.
+
+**How it will be measured.** `npm run novelty-preview` grades papers #43–52 as of
+their dates and rebuilds each day's ranking from the stored pass-1 scores and
+threads, with and without the grades. The regression set is the audit's: the
+top-five repeats above must be withheld or reduced; the 8–10 developments the old
+check wrongly withheld (Pezeshkian at the UN, the Madrid march, the McLaughlin
+lawsuit, Malaysia's deportations beginning) must come back unreduced; routine
+strike nights must be reduced while the bridges, the winter grid plan and the
+third carrier group are not. A second grading of three papers is the noise
+control. Migration 047.
+
+## 2026-10-03 — Novelty preview: the grades hold on papers #43–53, penalties unchanged
+
+**What ran.** Gizmo built the branch at `2b6960f` as a separate image, applied
+047, and ran `novelty-preview` over papers #43–53 (rerun runs 53–63), then
+re-graded #50–52 as the noise control (runs 64–66). 486 graded rows, 0 failed
+calls, production untouched.
+
+**The top-of-paper repeats.** OpenAI's training pause (rank 1, 9/28) and the
+Supreme Court's third-country ruling (rank 1.1, 10/1) are withheld as reruns.
+CNN off Air Force One (rank 5, 9/27) is a minor update and falls to 18 as a
+standard. The truce on 9/26 is minor (3→5). Three stay where they were, graded
+development on a real new fact: the US formally rejecting Iran's Hormuz plan
+and Iran's answer (9/28), Christa Pike on 10/2 (the governor halting all
+executions), and the 9/27 summit wrap (a military crisis channel). Those are the
+cases the writer change exists for — the story is right to run, and the
+headline must lead on the new fact rather than restate yesterday's.
+
+**The "wrong drops" mostly were not.** Of the developments the 2026-10-01 audit
+said the old check had wrongly withheld, three had in fact been printed by the
+paper before the day in question — Pezeshkian's UN speech on 9/24, the Madrid
+march on 9/27, Malaysia's deportations on 9/29 — so the new grader withholds
+them too, correctly; the audit had judged them against the wrong prior piece.
+McLaughlin's investigator report comes back as a minor update (rank 47).
+Several other old-check drops come back reduced, e.g. OpenAI's own account of
+the Australian breach (minor, rank 28 on 9/30).
+
+**Routine is rare, and that is right for now.** 1–4 rows a day. A war section
+falls only when every member is routine (9/24's strike section 6→36; 10/3's Gaza
+strike 30→134); the Ukraine section still leads 10/2 and 10/3 because it carries
+a real development each day (the winter grid plan, the first strikes on Kyiv's
+bridges, Putin rejecting the ships-for-refineries trade). What should change on
+those days is the headline, which is the writer change.
+
+**Penalties stay −12 / −20.** A minor update leaves the top ten (COCC 7→46,
+fuel economy 8→37, the carpenters' donation 8→18) and a low-scoring one can
+leave the paper, which is what the reader asked for. 0–2 of each day's top ten
+change; the rest of the effect is lower down.
+
+**Noise.** 114 of 127 rows got the same grade twice (90%). Ten flips changed an
+effect, mostly minor↔rerun on rows ranked below 40; development↔new flips change
+nothing.
+
+**One defect, fixed.** 14 of 358 kept-story sentences talked about the coverage
+("adding detail to yesterday's report", "a detail not previously reported"), and
+that sentence goes to the writer. The judge's prompt now says not to, and
+`newsForWriter` cuts such a clause or drops the sentence — the paper's standing
+rule that a model relays what its prompt says about the paper.
+
+**Deployed the same day** at `6d3dcdf` (branch `ccr-621df9bb-r9xv44`): tests
+39/39, migration 047 already applied by the preview, only the app container
+recreated. The first live paper is 2026-10-04; Gizmo's read-only check of it —
+the "what the reader already knows" blocks the writers received, and any
+published piece talking about the paper's coverage — runs at 07:10 Pacific.

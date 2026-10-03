@@ -105,6 +105,33 @@ writers gate counts it. Keep it to a small, evidence-driven phrase list with a
 test for the cut and the near-miss prose that must survive (a quoted official
 saying "I can't"), which is the junk filter's rule applied here.
 
+### 4b. The novelty grades are live and need watching
+
+Deployed 2026-10-03 (`docs/decisions.md`). What the preview over papers #43–53
+could not show, and the first live papers must:
+
+- **Whether headlines change.** Three top-of-paper repeats were graded
+  development on a real new fact and stay put (Christa Pike on 10/2, the Hormuz
+  rejection on 9/28, the summit wrap on 9/27). The fix for those is the writer
+  leading on the new fact, which only a live paper shows.
+- **One retrieval-shaped miss.** 9/27's rank-1 truce piece was compared against a
+  9/24 piece at 0.786 and graded development, while 9/26 had already printed the
+  truce extension and the AI channel. Whether 9/26's pieces were among its five
+  priors is not in the preview output; `inspect reruns --id 57 --all` and the
+  `rerun_assessments.priors_shown` column say.
+- **Routine is rare** (1–4 a day). Right when war sections carry real
+  developments; revisit if a section of plainly routine strikes still leads.
+- **Noise at the minor/rerun line.** 10 of 127 rows changed effect between two
+  gradings, mostly minor↔rerun below rank 40.
+
+### 4c. Next.js has a critical advisory
+
+`npm audit` (2026-10-03): 7 advisories — 1 critical (`next`), 5 high (`sharp`,
+`postcss`, `nanoid`, `deepmerge-ts`, and others), 1 low (`esbuild`, dev server on
+Windows only). `next` serves the public reading view, so the critical one
+matters. All are fixable with `npm audit fix`, but a Next.js bump wants its own
+change and a build check, not a ride-along on another PR.
+
 ---
 
 ## Structural, no reader impact yet
@@ -150,6 +177,11 @@ the judge's reason.
 
 ### 3c. Continuity is recorded but only the reader sees it
 
+**Half done 2026-10-03:** the writers now get yesterday's headline and the rerun
+check's statement of today's news, and lead on it (`continuationLines`). The
+thread-title consumer below is still open. The text is unchanged otherwise.
+
+
 The lineage pass writes `paper_piece_lineage` and the story page renders it. The
 two consumers that would fix the *headlines* rather than annotate them are not
 built:
@@ -166,6 +198,12 @@ recorded instances of a model relaying exactly that to the reader. Precision
 first, then the prompt.
 
 ### 3d. The rerun check: one retrieval miss and one prompt shape to watch
+
+**Superseded 2026-10-03 by the graded check** (`docs/decisions.md`): the
+two-fact shape fired live (nine wrong drops), so the prompt now grades the most
+significant *new* fact, and the floor moved to 0.72. Kept until the
+`novelty-preview` replay shows both settled.
+
 
 Backtested 2026-09-22 over seven days (see CLAUDE.md, *rerun*): 93 drops, none of
 eight must-keep developments withheld. Two things are not settled:
