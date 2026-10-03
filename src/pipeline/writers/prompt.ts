@@ -237,8 +237,39 @@ function targetPhrase(packet: WriterPacket): string {
  * it was written from the same articles, but every fact in the piece still comes
  * from the sources below.
  */
+// The judge's own words about the paper's coverage, which must not reach a
+// writer: "…, adding detail to yesterday's report", "…, a detail not previously
+// reported", "; the decree itself was already reported on September 29". The
+// novelty preview over papers #43-53 found 14 of 358 kept-story sentences
+// ending that way, despite the judge's prompt saying not to.
+const COVERAGE_TALK =
+  /\b(?:already (?:reported|covered|printed)|previously reported|not previously reported|reported (?:earlier|previously|yesterday)|the paper|this paper|the newspaper|yesterday's (?:report|story|piece|call)|the previous day's|adding (?:detail|analysis) to)\b/i;
+
+/**
+ * The judge's sentence, made safe to hand a writer. A clause that talks about
+ * the coverage is cut at the comma, semicolon or dash that introduces it; a
+ * sentence that still talks about it after that is dropped, and the writer
+ * leads on the known headline alone. **This project's standing lesson** is that
+ * a model relays what its prompt says about the paper, so the sentence has to
+ * be clean before the writer sees it, not after. Exported for testing.
+ */
+export function newsForWriter(news: string | null): string | null {
+  if (!news) return null;
+  let text = news.trim();
+  const match = COVERAGE_TALK.exec(text);
+  if (match) {
+    const before = text.slice(0, match.index);
+    const cut = Math.max(before.lastIndexOf(","), before.lastIndexOf(";"), before.lastIndexOf("—"), before.lastIndexOf(" – "));
+    if (cut <= 0) return null;
+    text = text.slice(0, cut).trim();
+    if (COVERAGE_TALK.test(text)) return null;
+    if (!/[.!?]$/.test(text)) text += ".";
+  }
+  return text.length >= 20 ? text : null;
+}
+
 export function continuationLines(packet: WriterPacket): string[] | null {
-  const c = packet.continuation;
+  const c = packet.continuation ? { ...packet.continuation, news: newsForWriter(packet.continuation.news) } : null;
   if (!c || (!c.priorHeadline && !c.news)) return null;
   const lines = ["WHAT THE READER ALREADY KNOWS"];
   if (c.priorHeadline) {
@@ -268,7 +299,7 @@ export function continuationLines(packet: WriterPacket): string[] | null {
 
 /** The same direction in one line, for a batched brief or section line. */
 function continuationNote(packet: WriterPacket): string | null {
-  const c = packet.continuation;
+  const c = packet.continuation ? { ...packet.continuation, news: newsForWriter(packet.continuation.news) } : null;
   if (!c || (!c.priorHeadline && !c.news)) return null;
   const known = c.priorHeadline ? `"${c.priorHeadline}" (${c.priorDate})` : `its earlier stages (${c.priorDate})`;
   return (

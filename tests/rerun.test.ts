@@ -16,7 +16,7 @@ import { previewRanking, type PreviewRow } from "../src/pipeline/rerun/preview.j
 import { assignTier, assignTiersWithCaps } from "../src/pipeline/editor/index.js";
 import { deriveThreadScores, type ThreadCandidate } from "../src/pipeline/thread/index.js";
 import { resolveTiersByMaterial, type TierCandidate, type WriterPacket } from "../src/pipeline/writers/assembler.js";
-import { buildWriterUserPrompt, buildBriefBatchUserPrompt, continuationLines } from "../src/pipeline/writers/prompt.js";
+import { buildWriterUserPrompt, buildBriefBatchUserPrompt, continuationLines, newsForWriter } from "../src/pipeline/writers/prompt.js";
 import { gateRerun } from "../src/pipeline/runner/gates.js";
 import { loadModelConfig } from "../src/config/models.js";
 
@@ -272,6 +272,49 @@ function packet(continuation: WriterPacket["continuation"]): WriterPacket {
 
   const batch = buildBriefBatchUserPrompt("bio", [known]);
   assert.match(batch, /Note: The reader already knows "Tennessee fails to execute Christa Pike after two doses of pentobarbital" \(2026-10-01\)\. New today: Pike is in critical condition/);
+}
+
+// --- the judge's sentence never brings the paper's coverage to the writer ---
+// Real sentences from the novelty preview over papers #43-53.
+
+{
+  assert.equal(
+    newsForWriter("An independent review found that Charlie Kirk's aides insisted he speak outdoors, adding detail to yesterday's report on security failures before his death"),
+    "An independent review found that Charlie Kirk's aides insisted he speak outdoors.",
+  );
+  assert.equal(
+    newsForWriter("Four complaints have now been filed with the Oregon Secretary of State over Portland Police Chief Bob Day's political activity, up from two previously reported."),
+    "Four complaints have now been filed with the Oregon Secretary of State over Portland Police Chief Bob Day's political activity.",
+  );
+  assert.equal(
+    newsForWriter("An Idealista spokesperson criticized Spain's new rental laws, saying they will not add housing supply; the decree itself was already reported on September 29."),
+    "An Idealista spokesperson criticized Spain's new rental laws, saying they will not add housing supply.",
+  );
+  assert.equal(
+    newsForWriter("Meta's Muse chatbot creates detailed profiles of users' friends and family, raising new privacy concerns beyond the filesystem exposure previously reported"),
+    "Meta's Muse chatbot creates detailed profiles of users' friends and family.",
+  );
+  // No clean clause to cut at: the whole sentence goes, and the writer leads
+  // on the known headline alone.
+  assert.equal(
+    newsForWriter("A Durban house party shooting that killed 11 people is reported alongside the tavern shootings already covered"),
+    null,
+  );
+  // Near-misses that must survive: "already" about the world, not the coverage.
+  const ok = "An analysis finds total claims to the UN fund already exceed pledges by three to one";
+  assert.equal(newsForWriter(ok), ok);
+  const ok2 = "Tennessee Gov. Bill Lee halted all remaining executions for the rest of the year after Christa Pike survived two doses of pentobarbital.";
+  assert.equal(newsForWriter(ok2), ok2);
+  assert.equal(newsForWriter(null), null);
+
+  const prompt = buildWriterUserPrompt("bio", packet({
+    grade: "minor",
+    news: "Oregon doctors urged prevention measures as flu activity began rising, adding detail to the previous day's call for vaccinations",
+    priorHeadline: "Oregon health officials urge vaccinations ahead of expected severe respiratory season",
+    priorDate: "2026-10-01",
+  }));
+  assert.match(prompt, /What is new today: Oregon doctors urged prevention measures as flu activity began rising\.\n/);
+  assert.doesNotMatch(prompt, /previous day's/);
 }
 
 // --- the preview re-ranks a day the way the pipeline would ---

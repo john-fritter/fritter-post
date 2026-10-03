@@ -6571,3 +6571,51 @@ lawsuit, Malaysia's deportations beginning) must come back unreduced; routine
 strike nights must be reduced while the bridges, the winter grid plan and the
 third carrier group are not. A second grading of three papers is the noise
 control. Migration 047.
+
+## 2026-10-03 — Novelty preview: the grades hold on papers #43–53, penalties unchanged
+
+**What ran.** Gizmo built the branch at `2b6960f` as a separate image, applied
+047, and ran `novelty-preview` over papers #43–53 (rerun runs 53–63), then
+re-graded #50–52 as the noise control (runs 64–66). 486 graded rows, 0 failed
+calls, production untouched.
+
+**The top-of-paper repeats.** OpenAI's training pause (rank 1, 9/28) and the
+Supreme Court's third-country ruling (rank 1.1, 10/1) are withheld as reruns.
+CNN off Air Force One (rank 5, 9/27) is a minor update and falls to 18 as a
+standard. The truce on 9/26 is minor (3→5). Three stay where they were, graded
+development on a real new fact: the US formally rejecting Iran's Hormuz plan
+and Iran's answer (9/28), Christa Pike on 10/2 (the governor halting all
+executions), and the 9/27 summit wrap (a military crisis channel). Those are the
+cases the writer change exists for — the story is right to run, and the
+headline must lead on the new fact rather than restate yesterday's.
+
+**The "wrong drops" mostly were not.** Of the developments the 2026-10-01 audit
+said the old check had wrongly withheld, three had in fact been printed by the
+paper before the day in question — Pezeshkian's UN speech on 9/24, the Madrid
+march on 9/27, Malaysia's deportations on 9/29 — so the new grader withholds
+them too, correctly; the audit had judged them against the wrong prior piece.
+McLaughlin's investigator report comes back as a minor update (rank 47).
+Several other old-check drops come back reduced, e.g. OpenAI's own account of
+the Australian breach (minor, rank 28 on 9/30).
+
+**Routine is rare, and that is right for now.** 1–4 rows a day. A war section
+falls only when every member is routine (9/24's strike section 6→36; 10/3's Gaza
+strike 30→134); the Ukraine section still leads 10/2 and 10/3 because it carries
+a real development each day (the winter grid plan, the first strikes on Kyiv's
+bridges, Putin rejecting the ships-for-refineries trade). What should change on
+those days is the headline, which is the writer change.
+
+**Penalties stay −12 / −20.** A minor update leaves the top ten (COCC 7→46,
+fuel economy 8→37, the carpenters' donation 8→18) and a low-scoring one can
+leave the paper, which is what the reader asked for. 0–2 of each day's top ten
+change; the rest of the effect is lower down.
+
+**Noise.** 114 of 127 rows got the same grade twice (90%). Ten flips changed an
+effect, mostly minor↔rerun on rows ranked below 40; development↔new flips change
+nothing.
+
+**One defect, fixed.** 14 of 358 kept-story sentences talked about the coverage
+("adding detail to yesterday's report", "a detail not previously reported"), and
+that sentence goes to the writer. The judge's prompt now says not to, and
+`newsForWriter` cuts such a clause or drops the sentence — the paper's standing
+rule that a model relays what its prompt says about the paper.

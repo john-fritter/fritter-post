@@ -71,7 +71,7 @@ One line per candidate, in the order given, and nothing else: no JSON, no markdo
 Each line:
   number;;today's news;;GRADE
 
-"today's news" is one plain sentence stating the most significant thing the candidate reports that the printed stories did not, written as the opening of a news story would state it. For RERUN, state the news both report. For NEW, state the candidate's main news. Write the sentence first, then decide the grade.
+"today's news" is one plain sentence stating the most significant thing the candidate reports that the printed stories did not, written as the opening of a news story would state it. For RERUN, state the news both report. For NEW, state the candidate's main news. Write it about the world, not about the coverage: never mention the printed stories, this newspaper, or what was "already reported" or "previously reported" — the PRINTED list is for your judgment only. Write the sentence first, then decide the grade.
 
 Use every number exactly once.`;
 
