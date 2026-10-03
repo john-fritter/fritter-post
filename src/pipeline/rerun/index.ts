@@ -5,38 +5,59 @@ import { loadModelConfig } from "../../config/models.js";
 import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
-import { excerpt } from "../../lib/text.js";
+import { englishBody, englishTitle, excerpt } from "../../lib/text.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
 import { loadThreadCandidates, type ThreadCandidate } from "../thread/index.js";
-import { buildRerunSystemPrompt, buildRerunUserPrompt, parseRerunVerdicts, type RerunVerdict } from "./prompt.js";
-import { chunk, rowsToDrop } from "./select.js";
+import {
+  buildNoveltySystemPrompt,
+  buildNoveltyUserPrompt,
+  parseNoveltyGrades,
+  type NoveltyCandidateBlock,
+  type NoveltyGrade,
+} from "./prompt.js";
+import { adjustedScore, chunk, effectOf, groupPriors, type PieceTier } from "./select.js";
 
 // The reader's day, as the publisher computes it: a paper is dated by where
 // its reader is, and "printed before today" means before that day.
 const PAPER_TIMEZONE = process.env["PAPER_TIMEZONE"] ?? "America/Los_Angeles";
 
+/** What the check did to one row that it kept but reduced. */
+export interface NoveltyReduction {
+  grade: NoveltyGrade;
+  penalty: number;
+  maxTier: PieceTier | null;
+}
+
 export interface RerunRunSummary {
   rerunRunId: number | null;
   candidatesIn: number;
+  /** Printed pieces retrieved across every candidate. */
   pairsJudged: number;
+  /** Candidates with at least one printed piece above the floor, so graded. */
+  rowsJudged: number;
   /** Row keys (C<n> / S<id>) to withhold from threading and the pile. */
   dropped: Set<string>;
+  /** Rows kept but reduced: graded minor or routine. */
+  reduced: Map<string, NoveltyReduction>;
   calls: number;
   failedCalls: number;
 }
 
-interface PriorPair {
+interface PriorPiece {
   rowKey: string;
   priorPieceId: string;
-  priorPublishedOn: string;
-  priorHeadline: string | null;
-  priorBody: string;
+  publishedOn: string;
+  headline: string | null;
+  body: string;
   similarity: number;
 }
 
-interface JudgedRow extends PriorPair {
-  verdict: RerunVerdict | null;
-  reason: string | null;
+interface Assessment {
+  rowKey: string;
+  grade: NoveltyGrade | null;
+  news: string | null;
+  closest: PriorPiece;
+  priorsShown: number;
   generationLogId: bigint | null;
 }
 
@@ -45,10 +66,20 @@ function localDay(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: PAPER_TIMEZONE }).format(new Date());
 }
 
+const EMPTY: Omit<RerunRunSummary, "rerunRunId"> = {
+  candidatesIn: 0,
+  pairsJudged: 0,
+  rowsJudged: 0,
+  dropped: new Set(),
+  reduced: new Map(),
+  calls: 0,
+  failedCalls: 0,
+};
+
 /**
- * Checks the top-scoring rows of a grouping-pass-1 run against the pieces the
- * paper printed in its last `lookback_editions` editions, and returns the rows
- * that are news the reader has already been given. See prompt.ts for why.
+ * Grades the top-scoring rows of a grouping-pass-1 run against the pieces the
+ * paper printed in its last `lookback_editions` editions. See prompt.ts for why
+ * it grades rather than decides, and select.ts for what each grade does.
  *
  * Retrieval is the lineage pass's: max pairwise cosine between any article
  * behind the row and any article behind a printed piece, over the embeddings
@@ -57,8 +88,8 @@ function localDay(): string {
  * construction.
  *
  * Fails open at every level. No prior papers, a failed call, an unreadable
- * line: the row stays, and the paper is what it would have been before this
- * check existed.
+ * line: the row stays, unreduced, and the paper is what it would have been
+ * before this check existed.
  */
 export async function runRerunCheck(options: {
   groupingPass1RunId: number;
@@ -75,11 +106,9 @@ export async function runRerunCheck(options: {
   const cfg = applyModelOverrides(loadModelConfig().rerun, options.overrides);
   const { groupingPass1RunId } = options;
 
-  if (!cfg.enabled) {
-    return { rerunRunId: null, candidatesIn: 0, pairsJudged: 0, dropped: new Set(), calls: 0, failedCalls: 0 };
-  }
+  if (!cfg.enabled) return { rerunRunId: null, ...EMPTY, dropped: new Set(), reduced: new Map() };
 
-  const candidates = await loadThreadCandidates(groupingPass1RunId, cfg.candidate_target, cfg.body_cap);
+  const candidates = await loadThreadCandidates(groupingPass1RunId, cfg.candidate_target, cfg.candidate_cap);
   const byKey = new Map<string, ThreadCandidate>(candidates.map((c) => [c.ref, c]));
 
   // Articles behind each row: a singleton is its own item, a cluster its digest
@@ -92,12 +121,12 @@ export async function runRerunCheck(options: {
   const members = new Map(
     parseGroupingDigest(digestRows[0]?.digest ?? "").map((c) => [c.clusterIndex, c.memberIds]),
   );
+  const itemsOf = (c: ThreadCandidate): number[] =>
+    c.itemType === "cluster" ? (members.get(c.clusterIndex!) ?? []) : [c.preprocessedItemId!];
   const rowKeys: string[] = [];
   const itemIds: number[] = [];
   for (const c of candidates) {
-    const ids =
-      c.itemType === "cluster" ? (members.get(c.clusterIndex!) ?? []) : [c.preprocessedItemId!];
-    for (const id of ids) {
+    for (const id of itemsOf(c)) {
       rowKeys.push(c.ref);
       itemIds.push(id);
     }
@@ -161,28 +190,54 @@ export async function runRerunCheck(options: {
     [rowKeys, itemIds, today, cfg.lookback_editions, cfg.top_k, cfg.candidate_floor],
   );
 
-  const pairs: PriorPair[] = pairRows.map((r) => ({
+  const priors: PriorPiece[] = pairRows.map((r) => ({
     rowKey: r.row_key,
     priorPieceId: r.prior_piece_id,
-    priorPublishedOn: r.prior_published_on,
-    priorHeadline: r.prior_headline,
-    priorBody: r.prior_body,
+    publishedOn: r.prior_published_on,
+    headline: r.prior_headline,
+    body: r.prior_body,
     similarity: r.similarity,
   }));
+  const priorsByRow = groupPriors(priors, cfg.bodies_shown);
+  // Judge in score order, so a partial failure costs the bottom of the paper.
+  const judgedKeys = candidates.map((c) => c.ref).filter((k) => priorsByRow.has(k));
 
   console.log(
-    `[rerun] run #${rerunRunId}: ${candidates.length} rows checked, ` +
-      `${pairs.length} pair(s) above ${cfg.candidate_floor} in the last ${cfg.lookback_editions} edition(s)`,
+    `[rerun] run #${rerunRunId}: ${candidates.length} rows checked, ${judgedKeys.length} with ` +
+      `printed pieces above ${cfg.candidate_floor} in the last ${cfg.lookback_editions} edition(s) ` +
+      `(${priors.length} pieces)`,
   );
 
-  const batches = chunk(pairs, cfg.batch_size);
+  const candidateText = await buildCandidateTexts(
+    judgedKeys.map((k) => byKey.get(k)!),
+    itemsOf,
+    cfg.candidate_cap,
+    cfg.candidate_articles,
+  );
+
+  const batches = chunk(judgedKeys, cfg.batch_size);
   const limit = pLimit(cfg.concurrency);
   let failedCalls = 0;
 
-  const judged: JudgedRow[] = (
+  const assessments: Assessment[] = (
     await Promise.all(
       batches.map((batch) =>
-        limit(async (): Promise<JudgedRow[]> => {
+        limit(async (): Promise<Assessment[]> => {
+          const blocks: NoveltyCandidateBlock[] = batch.map((key) => ({
+            date: today,
+            title: byKey.get(key)!.title,
+            text: candidateText.get(key) ?? "",
+            printed: priorsByRow.get(key)!.map((p) => ({
+              date: p.publishedOn,
+              headline: p.headline,
+              body: p.withBody || !p.headline ? excerpt(p.body, cfg.body_cap) : "",
+            })),
+          }));
+          const base = (key: string, i: number) => {
+            const list = priorsByRow.get(key)!;
+            const closest = [...list].sort((a, b) => b.similarity - a.similarity)[0]!;
+            return { rowKey: key, closest, priorsShown: list.length, index: i };
+          };
           try {
             const result = await callWithBackoff(
               () =>
@@ -190,20 +245,8 @@ export async function runRerunCheck(options: {
                   stage: "rerun",
                   stageRunId: rerunRunId,
                   model: cfg.model,
-                  systemPrompt: buildRerunSystemPrompt(),
-                  userPrompt: buildRerunUserPrompt(
-                    batch.map((p) => {
-                      const c = byKey.get(p.rowKey)!;
-                      return {
-                        candidateTitle: c.title,
-                        candidateText: c.summary,
-                        candidateDate: today,
-                        priorHeadline: p.priorHeadline ?? "(a one-sentence item; it follows)",
-                        priorBody: excerpt(p.priorBody, cfg.body_cap),
-                        priorDate: p.priorPublishedOn,
-                      };
-                    }),
-                  ),
+                  systemPrompt: buildNoveltySystemPrompt(),
+                  userPrompt: buildNoveltyUserPrompt(blocks),
                   temperature: cfg.temperature,
                   maxTokens: cfg.max_tokens,
                   reasoningEffort: cfg.reasoning_effort,
@@ -214,49 +257,61 @@ export async function runRerunCheck(options: {
               cfg,
               "rerun",
             );
-            const verdicts = parseRerunVerdicts(result.text, batch.length);
-            return batch.map((p, i) => ({
-              ...p,
-              verdict: verdicts.get(i)?.verdict ?? null,
-              reason: verdicts.get(i)?.reason ?? null,
+            const grades = parseNoveltyGrades(result.text, batch.length);
+            return batch.map((key, i) => ({
+              ...base(key, i),
+              grade: grades.get(i)?.grade ?? null,
+              news: grades.get(i)?.news ?? null,
               generationLogId: result.generationLogId,
             }));
           } catch (err) {
-            // Fail open: these rows stay in the paper, unjudged.
+            // Fail open: these rows stay in the paper, ungraded and unreduced.
             failedCalls++;
             console.warn(
-              `[rerun] judge call failed, ${batch.length} pair(s) kept unjudged: ` +
+              `[rerun] judge call failed, ${batch.length} row(s) kept ungraded: ` +
                 (err instanceof Error ? err.message : String(err)),
             );
-            return batch.map((p) => ({ ...p, verdict: null, reason: null, generationLogId: null }));
+            return batch.map((key, i) => ({ ...base(key, i), grade: null, news: null, generationLogId: null }));
           }
         }),
       ),
     )
   ).flat();
 
-  const dropped = rowsToDrop(judged);
+  const dropped = new Set<string>();
+  const reduced = new Map<string, NoveltyReduction>();
+  for (const a of assessments) {
+    const effect = effectOf(a.grade, cfg.grades);
+    if (effect.withhold) dropped.add(a.rowKey);
+    else if (effect.penalty > 0 || effect.maxTier !== null) {
+      reduced.set(a.rowKey, { grade: a.grade!, penalty: effect.penalty, maxTier: effect.maxTier });
+    }
+  }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    for (const j of judged) {
+    for (const a of assessments) {
+      const c = byKey.get(a.rowKey)!;
+      const effect = effectOf(a.grade, cfg.grades);
       await client.query(
-        `INSERT INTO rerun_verdicts
-           (rerun_run_id, row_key, row_title, prior_paper_piece_id, prior_published_on,
-            prior_headline, similarity, verdict, reason, generation_log_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        `INSERT INTO rerun_assessments
+           (rerun_run_id, row_key, row_title, grade, news, prior_paper_piece_id,
+            prior_published_on, prior_headline, similarity, priors_shown,
+            score_before, penalty, max_tier, generation_log_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
-          rerunRunId, j.rowKey, byKey.get(j.rowKey)!.title, j.priorPieceId, j.priorPublishedOn,
-          j.priorHeadline, j.similarity, j.verdict, j.reason, j.generationLogId,
+          rerunRunId, a.rowKey, c.title, a.grade, a.news, a.closest.priorPieceId,
+          a.closest.publishedOn, a.closest.headline, a.closest.similarity, a.priorsShown,
+          c.score, effect.penalty, effect.maxTier, a.generationLogId,
         ],
       );
     }
     await client.query(
-      `UPDATE rerun_runs SET completed_at = NOW(), pairs_judged = $1, rows_dropped = $2,
-              calls = $3, failed_calls = $4
-       WHERE id = $5`,
-      [judged.length, dropped.size, batches.length, failedCalls, rerunRunId],
+      `UPDATE rerun_runs SET completed_at = NOW(), pairs_judged = $1, rows_judged = $2,
+              rows_dropped = $3, rows_reduced = $4, calls = $5, failed_calls = $6
+       WHERE id = $7`,
+      [priors.length, assessments.length, dropped.size, reduced.size, batches.length, failedCalls, rerunRunId],
     );
     await client.query("COMMIT");
   } catch (err) {
@@ -266,25 +321,93 @@ export async function runRerunCheck(options: {
     client.release();
   }
 
-  for (const key of dropped) {
-    const why = judged.find((j) => j.rowKey === key && j.verdict === "rerun")!;
+  const byGrade = new Map<string, number>();
+  for (const a of assessments) byGrade.set(a.grade ?? "ungraded", (byGrade.get(a.grade ?? "ungraded") ?? 0) + 1);
+  for (const a of assessments) {
+    if (a.grade !== "rerun" && !reduced.has(a.rowKey)) continue;
+    const c = byKey.get(a.rowKey)!;
+    const r = reduced.get(a.rowKey);
+    const what = a.grade === "rerun"
+      ? "withheld"
+      : `${a.grade}, score ${c.score}→${adjustedScore(c.score, r!.penalty)}` +
+        (r!.maxTier ? `, at most ${r!.maxTier}` : "");
     console.log(
-      `[rerun] dropped ${key} "${byKey.get(key)!.title}" — printed ${why.priorPublishedOn}: ` +
-        `"${why.priorHeadline ?? "(line)"}" (${why.reason ?? "no reason given"})`,
+      `[rerun] ${a.rowKey} "${c.title}" — ${what}; printed ${a.closest.publishedOn}: ` +
+        `"${a.closest.headline ?? "(line)"}" (${a.news ?? "no sentence given"})`,
     );
   }
   console.log(
-    `[rerun] run #${rerunRunId} complete: ${dropped.size} of ${candidates.length} row(s) withheld ` +
-      `as reruns, ${batches.length} call(s), failed_calls=${failedCalls}`,
+    `[rerun] run #${rerunRunId} complete: ${[...byGrade].map(([g, n]) => `${g}=${n}`).join(" ")}; ` +
+      `${dropped.size} withheld, ${reduced.size} reduced, ${batches.length} call(s), failed_calls=${failedCalls}`,
   );
 
   return {
     rerunRunId,
     candidatesIn: candidates.length,
-    pairsJudged: judged.length,
+    pairsJudged: priors.length,
+    rowsJudged: assessments.length,
     dropped,
+    reduced,
     calls: batches.length,
     failedCalls,
   };
 }
 
+/**
+ * The text the judge reads for each candidate. A singleton is its own body. A
+ * cluster is its members' articles, not its describe-pass summary: the summary
+ * is a two-sentence label generated from every member, so it compresses away
+ * exactly the detail that makes today different -- and judged against 1,200
+ * characters of the printed piece, its "single most important fact" was usually
+ * the background both share. Eleven of the 34 drops the 2026-10-01 audit called
+ * wrong were clusters, the highest-ranked ones among them. The summary is the
+ * fallback only when no member carries any text.
+ */
+async function buildCandidateTexts(
+  candidates: ThreadCandidate[],
+  itemsOf: (c: ThreadCandidate) => number[],
+  cap: number,
+  articlesPerCluster: number,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const clusterIds = candidates.filter((c) => c.itemType === "cluster").flatMap(itemsOf);
+  const items = new Map<number, { source: string; title: string; body: string }>();
+  if (clusterIds.length > 0) {
+    const { rows } = await getPool().query<{
+      id: string;
+      source_name: string;
+      title: string;
+      english_title: string | null;
+      body_text: string | null;
+      english_body: string | null;
+    }>(
+      `SELECT id::text AS id, source_name, title, english_title, body_text, english_body
+       FROM preprocessed_items WHERE id = ANY($1::bigint[])`,
+      [clusterIds],
+    );
+    for (const r of rows) {
+      items.set(Number(r.id), { source: r.source_name, title: englishTitle(r), body: englishBody(r).trim() });
+    }
+  }
+  for (const c of candidates) {
+    if (c.itemType !== "cluster") {
+      out.set(c.ref, c.summary);
+      continue;
+    }
+    const chosen = itemsOf(c)
+      .map((id) => items.get(id))
+      .filter((i): i is { source: string; title: string; body: string } => i !== undefined && i.body.length > 0)
+      .sort((a, b) => b.body.length - a.body.length)
+      .slice(0, articlesPerCluster);
+    if (chosen.length === 0) {
+      out.set(c.ref, c.summary);
+      continue;
+    }
+    const each = Math.floor(cap / chosen.length);
+    out.set(
+      c.ref,
+      chosen.map((i) => `[${i.source}] ${i.title}\n${excerpt(i.body, each)}`).join("\n"),
+    );
+  }
+  return out;
+}

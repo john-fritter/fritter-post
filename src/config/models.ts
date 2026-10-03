@@ -341,6 +341,11 @@ const PublisherLineageConfigSchema = z.object({
   }),
 });
 
+const NoveltyEffectSchema = z.object({
+  penalty: z.number().int().nonnegative(),
+  max_tier: z.enum(["feature", "standard", "brief"]).nullable(),
+});
+
 // The rerun check. See src/pipeline/rerun/.
 const RerunConfigSchema = StageConfigSchema.extend({
   enabled: z.boolean(),
@@ -351,15 +356,29 @@ const RerunConfigSchema = StageConfigSchema.extend({
   lookback_editions: z.number().int().positive(),
   // Retrieval floor: which prior pieces are worth asking about. Not a decision.
   candidate_floor: z.number().min(-1).max(1),
-  // Prior pieces offered per row.
+  // Prior pieces offered per row. More than one, because "routine for this
+  // situation" can only be judged against the situation's recent history.
   top_k: z.number().int().positive(),
-  // Characters of today's summary and of the prior piece shown per pair.
+  // Characters of each printed piece shown with its body, and how many of the
+  // closest are shown with one (the rest appear as dated headlines).
   body_cap: z.number().int().nonnegative(),
-  // Pairs per judge call, and calls in flight.
+  bodies_shown: z.number().int().nonnegative(),
+  // Characters of today's candidate. A cluster gets real article text, split
+  // across up to `candidate_articles` of its members, not only its label.
+  candidate_cap: z.number().int().positive(),
+  candidate_articles: z.number().int().positive(),
+  // Candidates per judge call, and calls in flight.
   batch_size: z.number().int().positive(),
   concurrency: z.number().int().positive(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
+  // What a reducing grade does: points off the pass-1 score, and the largest
+  // piece the story may run as. `new` and `development` are never reduced and
+  // `rerun` is always withheld, so only these two are configurable.
+  grades: z.object({
+    minor: NoveltyEffectSchema,
+    routine: NoveltyEffectSchema,
+  }),
 });
 
 const PublisherConfigSchema = z.object({
@@ -404,6 +423,7 @@ export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
 export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
 export type RerunConfig = z.infer<typeof RerunConfigSchema>;
+export type NoveltyEffect = z.infer<typeof NoveltyEffectSchema>;
 export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
 export type WritersTierPacketConfig = z.infer<typeof WritersTierPacketConfigSchema>;
 export type WritersPacketConfig = z.infer<typeof WritersPacketConfigSchema>;

@@ -10,6 +10,7 @@ import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { mostPermissiveTier, withinCap, type PieceTier } from "../rerun/select.js";
 
 export type EditorTier = "feature" | "standard" | "brief" | "cut";
 
@@ -46,6 +47,8 @@ interface EditorPileItem {
   sourceCount: number; // distinct outlets in a cluster; 1 for singleton; sum(members) for a thread
   title: string;
   bodyText: string;    // cluster/thread summary or singleton body excerpt, for tie-break prompt
+  /** The largest piece it may run as, from the rerun check's grade; null is uncapped. */
+  maxTier: PieceTier | null;
 }
 
 // Text caps come from editor.tie_break.body_cap in models.yaml.
@@ -69,6 +72,42 @@ export function assignTier(rank0: number, featureCount: number, standardCount: n
   if (rank0 < featureCount) return "feature";
   if (rank0 < featureCount + standardCount) return "standard";
   return "brief";
+}
+
+/**
+ * Tiers for a ranked list in which some stories may not run above a size.
+ *
+ * The rerun check caps a minor update or a routine story at a smaller piece:
+ * the reader's ruling was that such a story is "reduced in significance", which
+ * means a lower score *and* a smaller piece. Its score penalty usually moves it
+ * below the feature line on its own; the cap covers the story strong enough to
+ * stay there anyway -- run #52's second Christa Pike piece would otherwise have
+ * run as a 500-word feature restating yesterday's.
+ *
+ * Slots still fill in rank order, so the paper keeps its shape: a capped story
+ * takes the largest slot it is allowed and the slot it skipped goes to the next
+ * story down. Ranks never move -- only the treatment does, which is the rule
+ * `resolveTiersByMaterial` follows for material. With no caps this is exactly
+ * `assignTier`.
+ */
+export function assignTiersWithCaps(
+  caps: Array<PieceTier | null>,
+  featureCount: number,
+  standardCount: number,
+): EditorTier[] {
+  let featuresLeft = featureCount;
+  let standardsLeft = standardCount;
+  return caps.map((cap) => {
+    if (featuresLeft > 0 && withinCap("feature", cap)) {
+      featuresLeft--;
+      return "feature";
+    }
+    if (standardsLeft > 0 && withinCap("standard", cap)) {
+      standardsLeft--;
+      return "standard";
+    }
+    return "brief";
+  });
 }
 
 /**
@@ -239,8 +278,9 @@ export async function runEditor(
   const { rows: pileRows } = await pool.query<{
     id: number;
     grouping_run_id: number | null;
+    rerun_run_id: number | null;
   }>(
-    "SELECT id, grouping_run_id FROM editor_piles WHERE id = $1",
+    "SELECT id, grouping_run_id, rerun_run_id FROM editor_piles WHERE id = $1",
     [pileId],
   );
   const pile = pileRows[0];
@@ -335,6 +375,7 @@ export async function runEditor(
         sourceCount: clusterOutletCounts.get(row.cluster_index) ?? detail.itemCount,
         title: detail.title,
         bodyText: excerpt(detail.summary, bodyCap),
+        maxTier: null,
       };
     })
     .filter((c): c is EditorPileItem => c !== null);
@@ -352,6 +393,7 @@ export async function runEditor(
     sourceCount: 1,
     title: englishTitle(row),
     bodyText: englishBodyExcerpt(row, bodyCap),
+    maxTier: null,
   }));
 
   // Threads carry their own title, summary, score and source count — the thread
@@ -382,9 +424,49 @@ export async function runEditor(
     sourceCount: row.source_count,
     title: row.title,
     bodyText: excerpt(row.summary, bodyCap),
+    maxTier: null,
   }));
 
   const pileItems: EditorPileItem[] = [...threadItems, ...clusterItems, ...singletonItems];
+
+  // 6b. Size caps from the rerun check's grades. A row carries its own; a thread
+  //     carries its least-capped member's, so a section with one real
+  //     development among routine members still runs at full size.
+  if (pile.rerun_run_id !== null) {
+    const { rows: capRows } = await pool.query<{ row_key: string; max_tier: PieceTier }>(
+      `SELECT row_key, max_tier FROM rerun_assessments
+       WHERE rerun_run_id = $1 AND max_tier IS NOT NULL`,
+      [pile.rerun_run_id],
+    );
+    const capByKey = new Map(capRows.map((r) => [r.row_key, r.max_tier]));
+    const threadIds = threadItems.map((t) => t.threadId!);
+    const { rows: memberRows } = await pool.query<{
+      thread_id: string;
+      item_type: string;
+      cluster_index: number | null;
+      preprocessed_item_id: string | null;
+    }>(
+      `SELECT thread_id::text AS thread_id, item_type, cluster_index,
+              preprocessed_item_id::text AS preprocessed_item_id
+       FROM thread_members WHERE thread_id = ANY($1::bigint[])`,
+      [threadIds],
+    );
+    const memberCaps = new Map<number, Array<PieceTier | null>>();
+    for (const m of memberRows) {
+      const key = m.item_type === "cluster" ? `C${m.cluster_index}` : `S${m.preprocessed_item_id}`;
+      const list = memberCaps.get(Number(m.thread_id)) ?? [];
+      list.push(capByKey.get(key) ?? null);
+      memberCaps.set(Number(m.thread_id), list);
+    }
+    for (const item of pileItems) {
+      item.maxTier =
+        item.itemType === "thread"
+          ? mostPermissiveTier(memberCaps.get(item.threadId!) ?? [])
+          : (capByKey.get(item.ref) ?? null);
+    }
+    const capped = pileItems.filter((i) => i.maxTier !== null).length;
+    if (capped > 0) console.log(`[editor] ${capped} item(s) size-capped by the rerun check`);
+  }
 
   if (pileItems.length === 0) {
     throw new Error(`Editor pile #${pileId} has no in-pile items`);
@@ -474,24 +556,26 @@ export async function runEditor(
 
     // 12. Assign tiers and persist stories in rank order (1-based).
     const tierCounts: Record<EditorTier, number> = { feature: 0, standard: 0, brief: 0, cut: 0 };
+    const tiers = assignTiersWithCaps(sorted.map((r) => r.maxTier), featureCount, standardCount);
     const INSERT_CHUNK = 500;
     for (let i = 0; i < sorted.length; i += INSERT_CHUNK) {
       const chunk = sorted.slice(i, i + INSERT_CHUNK);
       const placeholders = chunk
         .map((_r, j) => {
-          const base = j * 8;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
+          const base = j * 9;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`;
         })
         .join(", ");
       const params: Array<number | string | null> = [];
       chunk.forEach((r, j) => {
         const rank = i + j + 1;
-        const tier = assignTier(rank - 1, featureCount, standardCount);
+        const tier = tiers[rank - 1]!;
         tierCounts[tier]++;
         const tieRank = tieRanksByRef.get(r.ref);
         const reason =
           `combined=${r.combined.toFixed(2)} (score=${r.score}, sources=${r.sourceCount})` +
-          (tieRank !== undefined ? ` tie-rank:${tieRank}` : "");
+          (tieRank !== undefined ? ` tie-rank:${tieRank}` : "") +
+          (r.maxTier !== null ? ` max:${r.maxTier}` : "");
         params.push(
           runId,
           r.itemType,
@@ -501,11 +585,13 @@ export async function runEditor(
           tier,
           rank,
           reason,
+          r.maxTier,
         );
       });
       await pool.query(
         `INSERT INTO editor_stories
-           (run_id, item_type, cluster_index, preprocessed_item_id, thread_id, tier, rank, reason)
+           (run_id, item_type, cluster_index, preprocessed_item_id, thread_id, tier, rank, reason,
+            max_tier)
          VALUES ${placeholders}`,
         params,
       );

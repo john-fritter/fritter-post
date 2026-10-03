@@ -328,18 +328,36 @@ prefilter:
 #
 # A thread is a first-class row the editor ranks: relevance = max(member score),
 # sources = sum(member source counts), so the editor formula applies unchanged.
+# Both read today's news only: a member the rerun check reduced counts at its
+# reduced score and adds no sources (see deriveThreadScores).
 
 # The rerun check -- runs inside grouping-pass1, after scoring and before
-# threading. Asks of each top-scoring row: is this news the paper already
-# printed? A row the judge calls a RERUN is withheld from threading and the
-# pile, and the next row takes its slot. See src/pipeline/rerun/.
+# threading. It grades how new each top-scoring row is against what the paper
+# printed in its last editions, and the grade decides what happens to the row:
 #
-# Why: the Sep 5-22 audit found about 60 of 257 continuity links were the same
-# news printed again from a later outlet -- AfD's result on Sep 7, 8 and 10, LG
-# TVs Sep 7, 8 and 9, Australia's feed law Sep 6, 7 and 8 -- each under a
-# "previously" line. None shared a URL, item or title with its predecessor, so
-# cross-run dedup could never see them. The lineage judge accepted them on
-# purpose: its question is "same situation?", and a restatement is one.
+#   new          nothing like it was printed            -> unchanged
+#   development  something has changed since            -> unchanged; the writer
+#                                                          leads on what changed
+#   minor        the same news plus a small detail      -> score reduced, size capped,
+#                                                          writer leads on the detail
+#   routine      more of what this situation does daily -> score reduced further,
+#                                                          size capped at a brief
+#   rerun        nothing new                            -> withheld from the pile
+#
+# See src/pipeline/rerun/.
+#
+# Why rerun: the Sep 5-22 audit found about 60 of 257 continuity links were the
+# same news printed again from a later outlet -- AfD's result on Sep 7, 8 and 10,
+# LG TVs Sep 7, 8 and 9 -- each under a "previously" line.
+#
+# Why minor and routine: the 2026-10-02 audit read papers #43-52 by headline and
+# found about two repeats a day that the old two-way judge had kept, because a
+# day-later article always carries *some* detail the printed piece lacked -- six
+# of them in the top five (the US-China truce at rank 1 on 9/27, OpenAI's
+# training pause at rank 1 on 9/28, Christa Pike at rank 2 on 10/1 and 10/2).
+# And a war section reached the top ten on nine of ten days on the strength of
+# one more night of strikes. The reader's ruling (2026-10-03): reduce minor
+# updates, do not drop them; reduce routine war news the same way.
 rerun:
   enabled: true
   # Rows below this never reach the pile (pile_target 150, and threads absorb
@@ -348,15 +366,25 @@ rerun:
   # The lineage pass's window, for the same reason: what the reader last read is
   # the last editions, however long ago.
   lookback_editions: 7
-  # Retrieval floor. A rerun of the same event reads alike, so it clears this
-  # easily; the floor only has to keep the judge's input small. The lineage
-  # measurement found real same-situation pairs as low as 0.74.
-  candidate_floor: 0.74
-  top_k: 2
-  # Deciding "is there anything new" needs the facts on both sides, not the
-  # first paragraph: a standard piece runs ~1,200 characters.
+  # Retrieval floor, matched to the lineage pass's 0.72. It was 0.74, and eight
+  # of the fourteen restatements the 2026-10-01 audit traced sat between the two
+  # (0.7215-0.7389): linked as "previously" by lineage, never seen by this check.
+  candidate_floor: 0.72
+  # Printed pieces offered per candidate. Five, not two: whether today's strike
+  # is routine can only be judged against a week of the situation's headlines.
+  top_k: 5
+  # The closest printed pieces are shown with their bodies, the rest as dated
+  # headlines. Deciding "is there anything new" needs the facts on both sides,
+  # and a standard piece runs ~1,200 characters.
   body_cap: 1200
-  batch_size: 20
+  bodies_shown: 2
+  # Today's candidate. A cluster used to be judged on its two-sentence describe
+  # summary against 1,200 characters of printed body; 11 of the 34 drops the
+  # audit called wrong were clusters, and the summary is generated from every
+  # member, so it compresses away exactly what is new.
+  candidate_cap: 1500
+  candidate_articles: 2
+  batch_size: 10
   concurrency: 4
   model: zai-org/glm-5.2
   provider: nanogpt
@@ -367,6 +395,17 @@ rerun:
   timeout_ms: 180000
   retry_max_attempts: 5
   retry_base_ms: 2000
+  # Points off the pass-1 score, and the largest piece the story may run as.
+  # Scale: a typical day's feature line is ~15 combined points below its top
+  # story. FIRST SETTING, to be calibrated against the novelty-preview replay of
+  # papers #43-52 before it runs live.
+  grades:
+    minor:
+      penalty: 12
+      max_tier: standard
+    routine:
+      penalty: 20
+      max_tier: brief
 thread:
   enabled: true
   # Top-scored rows offered to the pass. A thread's members are spread across

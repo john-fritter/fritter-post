@@ -49,8 +49,9 @@
  */
 
 import type { WritersPacketConfig, WritersTierPacketConfig } from "../../config/models.js";
-import type { StoryMaterials, StoryArticle, StoryMember } from "./materials.js";
+import type { StoryMaterials, StoryArticle, StoryMember, Continuation } from "./materials.js";
 import { stripBoilerplate, isHeadlineEcho } from "./boilerplate.js";
+import { withinCap, type PieceTier } from "../rerun/select.js";
 
 /** Best available text for one article, and where it came from. */
 export interface ResolvedText {
@@ -153,6 +154,13 @@ export interface WriterPacket {
   /** Things the writer must know about the material, in plain language. */
   notes: string[];
   totalChars: number;
+  /**
+   * What the paper already printed about this story and what is new today,
+   * when the rerun check found it continuing. Null for a story the paper has
+   * not covered. A one-member packet only: a section's pieces each carry their
+   * own member's. Optional so packets built before migration 047 still type.
+   */
+  continuation?: Continuation | null;
 }
 
 const PARAGRAPH_SPLIT = /\n{2,}/;
@@ -691,6 +699,7 @@ export function assembleWriterPacket(
     omitted,
     notes,
     totalChars,
+    continuation: story.members.length === 1 ? (story.members[0]!.continuation ?? null) : null,
   };
 }
 
@@ -874,6 +883,12 @@ export interface TierCandidate {
   tier: string;
   /** Material level this story would have at each tier the resolver considers. */
   levels: Map<string, MaterialLevel>;
+  /**
+   * The largest tier the rerun check allows: a minor update or routine story
+   * must not be promoted back into a slot its grade took it out of. Null or
+   * absent is uncapped.
+   */
+  maxTier?: PieceTier | null;
 }
 
 /** A slot that changed hands, kept so the run can say what it did and why. */
@@ -946,6 +961,9 @@ export function resolveTiersByMaterial(
   };
   const canFill = (c: TierCandidate, tier: string) =>
     (c.levels.get(tier) ?? "headline-only") !== "headline-only";
+  // A taker must be allowed the slot as well as able to fill it.
+  const mayTake = (c: TierCandidate, tier: string) =>
+    canFill(c, tier) && withinCap(tier, c.maxTier ?? null);
 
   // Top-down, so a story demoted out of feature is reconsidered for the standard
   // slot it lands in and demoted again if it cannot fill that either. Each swap
@@ -957,7 +975,7 @@ export function resolveTiersByMaterial(
       // The nearest story below this tier that can fill it. Nearest, so the
       // promotion reaches as short a distance down the ranking as it can.
       const taker = byRank.find(
-        (c) => depth(tiers.get(c.ref)!) > depth(tier) && canFill(c, tier),
+        (c) => depth(tiers.get(c.ref)!) > depth(tier) && mayTake(c, tier),
       );
       // A day on which nothing below has material either. Leave the slot alone:
       // the packet's own ceiling still keeps the piece short and honest.

@@ -150,6 +150,11 @@ the judge's reason.
 
 ### 3c. Continuity is recorded but only the reader sees it
 
+**Half done 2026-10-03:** the writers now get yesterday's headline and the rerun
+check's statement of today's news, and lead on it (`continuationLines`). The
+thread-title consumer below is still open. The text is unchanged otherwise.
+
+
 The lineage pass writes `paper_piece_lineage` and the story page renders it. The
 two consumers that would fix the *headlines* rather than annotate them are not
 built:
@@ -166,6 +171,12 @@ recorded instances of a model relaying exactly that to the reader. Precision
 first, then the prompt.
 
 ### 3d. The rerun check: one retrieval miss and one prompt shape to watch
+
+**Superseded 2026-10-03 by the graded check** (`docs/decisions.md`): the
+two-fact shape fired live (nine wrong drops), so the prompt now grades the most
+significant *new* fact, and the floor moved to 0.72. Kept until the
+`novelty-preview` replay shows both settled.
+
 
 Backtested 2026-09-22 over seven days (see CLAUDE.md, *rerun*): 93 drops, none of
 eight must-keep developments withheld. Two things are not settled:
