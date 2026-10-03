@@ -6619,3 +6619,9 @@ nothing.
 that sentence goes to the writer. The judge's prompt now says not to, and
 `newsForWriter` cuts such a clause or drops the sentence — the paper's standing
 rule that a model relays what its prompt says about the paper.
+
+**Deployed the same day** at `6d3dcdf` (branch `ccr-621df9bb-r9xv44`): tests
+39/39, migration 047 already applied by the preview, only the app container
+recreated. The first live paper is 2026-10-04; Gizmo's read-only check of it —
+the "what the reader already knows" blocks the writers received, and any
+published piece talking about the paper's coverage — runs at 07:10 Pacific.

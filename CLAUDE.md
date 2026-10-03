@@ -421,8 +421,14 @@ matched on a printed background fact. A binary judge must pick one of those
 errors; a graded one keeps a small update and makes it small. The reader's
 ruling: minor updates are reduced, not dropped — a lower score, which may move
 them down or out of the pile, and a smaller piece — and routine war news is
-reduced the same way. Penalties are a first setting, calibrated by
-`novelty-preview`.
+reduced the same way. The penalties were checked with `novelty-preview` over
+papers #43–53 and kept (`docs/decisions.md`, 2026-10-03); live since that day.
+
+**The judge's sentence is cleaned before a writer sees it** (`newsForWriter`):
+the preview found 14 of 358 kept-story sentences ending by talking about the
+coverage ("adding detail to yesterday's report"), so such a clause is cut, or the
+sentence dropped. Extend its pattern from audit evidence, with a test for the cut
+and the near-miss, the junk filter's rule.
 
 **Routine needs history, so a candidate is judged against everything it
 resembles at once** (`top_k` 5, the two closest with their bodies, the rest as
