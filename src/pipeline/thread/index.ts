@@ -8,7 +8,7 @@ import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { applyModelOverrides, withModel, type ModelOverrides } from "../../config/overrides.js";
-import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { parseGroupingDigest } from "../score/index.js";
 import { buildThreadSystemPrompt, buildThreadUserPrompt } from "./prompt.js";
 
 const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");

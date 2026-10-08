@@ -7,7 +7,7 @@
  * of the paper's date, so it judges against the editions that existed that
  * morning. That writes rerun_runs / rerun_assessments / generation_logs rows,
  * which nothing in production reads (the pile records the run it used). Then
- * src/pipeline/rerun/preview.ts re-ranks the day twice from the stored pass-1
+ * src/pipeline/novelty/preview.ts re-ranks the day twice from the stored pass-1
  * scores and threads:
  *
  *   before  the old check's withholds, no reductions -- the day as it ran,
@@ -27,16 +27,16 @@ import { writeFileSync } from "node:fs";
 import { getPool } from "../src/db/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { englishTitle } from "../src/lib/text.js";
-import { parseGroupingDigest } from "../src/pipeline/editor-pass-1/index.js";
-import { runRerunCheck } from "../src/pipeline/rerun/index.js";
-import type { NoveltyGrade } from "../src/pipeline/rerun/prompt.js";
-import { effectOf, type NoveltyEffect, type PieceTier } from "../src/pipeline/rerun/select.js";
+import { parseGroupingDigest } from "../src/pipeline/score/index.js";
+import { runRerunCheck } from "../src/pipeline/novelty/index.js";
+import type { NoveltyGrade } from "../src/pipeline/novelty/prompt.js";
+import { effectOf, type NoveltyEffect, type PieceTier } from "../src/pipeline/novelty/select.js";
 import {
   previewRanking,
   type PreviewRow,
   type PreviewStory,
   type PreviewThread,
-} from "../src/pipeline/rerun/preview.js";
+} from "../src/pipeline/novelty/preview.js";
 
 const TOP = 30;
 

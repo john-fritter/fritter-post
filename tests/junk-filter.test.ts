@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyItem } from "../src/pipeline/preprocessor/junk-filter.js";
+import { classifyItem } from "../src/pipeline/preprocess/junk-filter.js";
 
 function item(title: string, body: string | null = null) {
   return { id: "1", source_name: "Test Source", title, body_text: body };

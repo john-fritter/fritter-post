@@ -14,18 +14,18 @@
 
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import { runCollector } from "../collector/index.js";
-import { runPreprocessor } from "../preprocessor/index.js";
-import { runPrefilter } from "../prefilter/index.js";
-import { runGrouping } from "../grouping/index.js";
-import { runGroupingPass1 } from "../editor-pass-1/index.js";
-import { assembleGroupingPile } from "../editor-pass-1/assemble-pile.js";
+import { runCollector } from "../collect/index.js";
+import { runPreprocessor } from "../preprocess/index.js";
+import { runPrefilter } from "../screen/index.js";
+import { runGrouping } from "../cluster/index.js";
+import { runGroupingPass1 } from "../score/index.js";
+import { assembleGroupingPile } from "../rank/pile.js";
 import { runThreading } from "../thread/index.js";
-import { runRerunCheck } from "../rerun/index.js";
-import { runEditor } from "../editor/index.js";
-import { runArticleFetch } from "../writers/fetch-text.js";
-import { runWriters, repairWriterRun } from "../writers/index.js";
-import { runPublisher } from "../publisher/index.js";
+import { runRerunCheck } from "../novelty/index.js";
+import { runEditor } from "../rank/index.js";
+import { runArticleFetch } from "../fetch/index.js";
+import { runWriters, repairWriterRun } from "../write/index.js";
+import { runPublisher } from "../publish/index.js";
 import {
   evaluate,
   gateCollector,

@@ -327,7 +327,7 @@ const PublisherLineageConfigSchema = z.object({
   enabled: z.boolean(),
   lookback_editions: z.number().int().positive(),
   // A retrieval floor, not a decision -- see the note in models.yaml and the
-  // header of src/pipeline/lineage/prompt.ts for why a threshold alone was
+  // header of src/pipeline/continuity/prompt.ts for why a threshold alone was
   // measured and found unable to make this call.
   candidate_floor: z.number().min(-1).max(1),
   top_k: z.number().int().positive(),
@@ -346,7 +346,7 @@ const NoveltyEffectSchema = z.object({
   max_tier: z.enum(["feature", "standard", "brief"]).nullable(),
 });
 
-// The rerun check. See src/pipeline/rerun/.
+// The rerun check. See src/pipeline/novelty/.
 const RerunConfigSchema = StageConfigSchema.extend({
   enabled: z.boolean(),
   // Top-scoring grouping-pass-1 rows checked. Rows below this never reach the

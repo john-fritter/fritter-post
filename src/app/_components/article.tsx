@@ -18,9 +18,9 @@ import {
   formatMarkerDate,
   paragraphs,
   readingMinutes,
-} from "@/pipeline/publisher/assemble";
-import { lineageLabel } from "@/pipeline/lineage/select";
-import type { PaperPiece } from "@/pipeline/publisher/read";
+} from "@/pipeline/publish/assemble";
+import { lineageLabel } from "@/pipeline/continuity/select";
+import type { PaperPiece } from "@/pipeline/publish/read";
 
 export function ArticleView({
   piece,

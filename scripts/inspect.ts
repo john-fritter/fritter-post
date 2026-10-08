@@ -18,12 +18,12 @@
 
 import "dotenv/config";
 import { Pool } from "pg";
-import { loadEditorRunMaterials } from "../src/pipeline/writers/materials.js";
+import { loadEditorRunMaterials } from "../src/pipeline/write/materials.js";
 import {
   summarizeMaterials,
   formatMaterialsReport,
-} from "../src/pipeline/writers/materials-report.js";
-import { buildEditorRunPackets, loadFetchedTexts } from "../src/pipeline/writers/packets.js";
+} from "../src/pipeline/write/materials-report.js";
+import { buildEditorRunPackets, loadFetchedTexts } from "../src/pipeline/write/packets.js";
 
 interface RawItemRow {
   id: string;

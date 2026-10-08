@@ -14,7 +14,7 @@ const RawSourceSchema = z.object({
   // How the collector reads this endpoint. `rss` is everything with a feed;
   // `news-sitemap` is a publisher's own Google News sitemap, which is a feed in
   // all but name and the only route to outlets that serve no RSS at all. See
-  // src/pipeline/collector/sitemap.ts.
+  // src/pipeline/collect/sitemap.ts.
   format: z.enum(["rss", "news-sitemap"]).optional(),
   // Drop items published longer ago than this. A sitemap carries a publisher's
   // whole recent index and is windowed by default (24h) because it has to be;

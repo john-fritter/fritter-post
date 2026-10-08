@@ -1,0 +1,79 @@
+import "dotenv/config";
+import { runGroupingPass1 } from "../src/pipeline/score/index.js";
+import { assembleGroupingPile } from "../src/pipeline/rank/pile.js";
+import { runThreading } from "../src/pipeline/thread/index.js";
+import { runRerunCheck } from "../src/pipeline/novelty/index.js";
+import { loadModelConfig } from "../src/config/models.js";
+import { overridesFromFlags, type ModelOverrides } from "../src/config/overrides.js";
+
+function parseArgs(argv: string[]) {
+  const args = argv.slice(2);
+  let groupingRunId: number | undefined;
+  const flags: Record<string, string> = {};
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--grouping-run-id" && i + 1 < args.length) {
+      groupingRunId = parseInt(args[++i]!, 10);
+    } else if (args[i]!.startsWith("--") && i + 1 < args.length) {
+      flags[args[i]!.slice(2)] = args[++i]!;
+    }
+  }
+
+  // --model / --provider / --reasoning-effort / --max-tokens / --timeout-ms
+  // apply to the scoring calls only; the rerun check and thread pass that
+  // follow run at production settings.
+  const overrides: ModelOverrides | undefined = overridesFromFlags(flags);
+  return { groupingRunId, overrides };
+}
+
+async function main() {
+  const { groupingRunId, overrides } = parseArgs(process.argv);
+
+  console.log("[grouping-pass-1] starting...");
+  const run = await runGroupingPass1({ groupingRunId, overrides });
+  console.log(
+    `[grouping-pass-1] run #${run.id} complete: ` +
+      `${run.itemsIn} items scored, model=${run.modelUsed}`,
+  );
+
+  // Thread pass runs between scoring and pile assembly: it needs the scores to
+  // pick candidates, and the pile needs its results so a threaded row does not
+  // also appear on its own.
+  // The rerun check first: news the paper has already printed is neither a
+  // thread member nor a pile row, and a minor update or routine news threads
+  // and ranks at a reduced score.
+  const rerun = await runRerunCheck({ groupingPass1RunId: run.id });
+
+  const { thread: threadConfig } = loadModelConfig();
+  let threadRunId: number | undefined;
+  if (threadConfig.enabled) {
+    const threadRun = await runThreading({
+      groupingPass1RunId: run.id,
+      exclude: rerun.dropped,
+      reductions: rerun.reduced,
+    });
+    threadRunId = threadRun.threadRunId;
+  } else {
+    console.log("[thread] disabled — pile will contain un-threaded rows");
+  }
+
+  const pile = await assembleGroupingPile(run.id, threadRunId, {
+    withheld: rerun.dropped,
+    reductions: rerun.reduced,
+    rerunRunId: rerun.rerunRunId,
+  });
+  console.log(
+    `[grouping-pass-1] pile #${pile.pileId}: ` +
+      `${pile.threadsInPile} threads + ${pile.clustersInPile} clusters + ` +
+      `${pile.singletonsInPile} singletons in pile ` +
+      `(target=${pile.pileTarget}, score_cutoff=${pile.scoreCutoff ?? "n/a"}, ` +
+      `below_line=${pile.itemsBelowLine})`,
+  );
+
+  process.exit(0);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

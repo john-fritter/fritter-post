@@ -18,7 +18,7 @@
  */
 
 import "dotenv/config";
-import { runPublisher } from "../src/pipeline/publisher/index.js";
+import { runPublisher } from "../src/pipeline/publish/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);

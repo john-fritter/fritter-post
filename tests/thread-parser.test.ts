@@ -4,7 +4,7 @@ import {
   deriveThreadScores,
   type ThreadCandidate,
 } from "../src/pipeline/thread/index.js";
-import { combinedScore } from "../src/pipeline/editor/index.js";
+import { combinedScore } from "../src/pipeline/rank/index.js";
 
 // The thread pass exists because run #43 published five separate Oregon wildfire
 // clusters, four of them in the top fifteen. Grouping was right by its own

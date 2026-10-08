@@ -7,7 +7,7 @@
  */
 
 import "dotenv/config";
-import { runPreprocessor } from "../src/pipeline/preprocessor/index.js";
+import { runPreprocessor } from "../src/pipeline/preprocess/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);

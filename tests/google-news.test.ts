@@ -4,7 +4,7 @@ import {
   googleNewsToken,
   decodeGoogleNewsToken,
   looksLikeArticleUrl,
-} from "../src/pipeline/collector/google-news.js";
+} from "../src/pipeline/collect/google-news.js";
 
 // AP Top News is the single largest contributor of material to the paper — 250
 // items reached editor runs over the 14 days to 2026-08-25, ahead of OPB and

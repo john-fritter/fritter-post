@@ -28,14 +28,14 @@ import {
   decodeGoogleNewsToken,
   isGoogleNewsLink,
   looksLikeArticleUrl,
-} from "../src/pipeline/collector/google-news.js";
+} from "../src/pipeline/collect/google-news.js";
 import {
   parseNewsSitemap,
   looksLikeSitemapIndex,
   withinWindow,
-} from "../src/pipeline/collector/sitemap.js";
-import { extractArticle } from "../src/pipeline/writers/extract.js";
-import { stripBoilerplate } from "../src/pipeline/writers/boilerplate.js";
+} from "../src/pipeline/collect/sitemap.js";
+import { extractArticle } from "../src/pipeline/fetch/extract.js";
+import { stripBoilerplate } from "../src/pipeline/write/boilerplate.js";
 
 const TIMEOUT_MS = 20000;
 const POLITE_DELAY_MS = 1500;

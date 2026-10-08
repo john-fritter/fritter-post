@@ -18,7 +18,7 @@
  */
 
 import "dotenv/config";
-import { runWriters, repairWriterRun } from "../src/pipeline/writers/index.js";
+import { runWriters, repairWriterRun } from "../src/pipeline/write/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 
 function parseArgs(argv: string[]) {

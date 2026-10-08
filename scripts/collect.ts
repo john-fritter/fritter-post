@@ -8,7 +8,7 @@
  */
 
 import "dotenv/config";
-import { runCollector } from "../src/pipeline/collector/index.js";
+import { runCollector } from "../src/pipeline/collect/index.js";
 
 function parseArgs(argv: string[]): { source?: string; concurrency?: number } {
   const args = argv.slice(2);

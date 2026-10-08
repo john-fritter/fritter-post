@@ -7,8 +7,8 @@
 
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { displayHeadline } from "@/pipeline/publisher/assemble";
-import { loadLatestPaper, loadPaperPiece } from "@/pipeline/publisher/read";
+import { displayHeadline } from "@/pipeline/publish/assemble";
+import { loadLatestPaper, loadPaperPiece } from "@/pipeline/publish/read";
 import { ArticleView } from "../../_components/article";
 
 export const dynamic = "force-dynamic";

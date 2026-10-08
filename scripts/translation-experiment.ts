@@ -33,7 +33,7 @@ import {
   detectLanguageCode,
   isEnglish,
   type BatchLLMCallFn,
-} from "../src/pipeline/preprocessor/translation.js";
+} from "../src/pipeline/preprocess/translation.js";
 
 const DEFAULT_LIMIT = 40;
 const REPORT_BODY_CHARS = 400;
