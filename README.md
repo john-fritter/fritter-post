@@ -11,6 +11,20 @@ engagement metrics. When you reach the end, you're done.
 
 It's a personal project, self-hosted on one box, and it's not a product.
 
+<p align="center">
+  <img src="docs/images/index.jpg" width="260" alt="The front page: a ranked list of headlines, each with its source count, and an ongoing story with four pieces inside it">
+  &nbsp;
+  <img src="docs/images/article.jpg" width="260" alt="An article page: the headline, a 'Previously' line naming the paper's earlier story, and the piece">
+  &nbsp;
+  <img src="docs/images/sources.jpg" width="260" alt="The foot of an article: its sources as blue links, and a link to discuss it on the board">
+</p>
+
+<p align="center"><sub>
+The front page is the whole paper, in rank order: rank 2 is an ongoing story that opens into four pieces.
+An article says what the paper ran on it before.
+Its sources sit at the foot, and they are the only colour on the page.
+</sub></p>
+
 ---
 
 ## How it works
