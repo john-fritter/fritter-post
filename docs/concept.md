@@ -1,6 +1,8 @@
-# The Fritter Post — Project Document
+# The Fritter Post — Concept
 
-A planning document for a personal newspaper project. The concept and the pipeline architecture are the load-bearing parts. Most other details below are starting points, written down so they're not lost, but subject to revision once implementation gets real.
+What the paper is for, and what it refuses to be. This document is the *why*.
+How it's built is in `design.md`, and the reasoning behind each choice, dated,
+is in `decisions.md`.
 
 ---
 
@@ -24,193 +26,84 @@ These are the things the project is *for*. Implementation details exist to serve
 - **Continuity matters.** Today's paper is aware of yesterday's. Stories develop or quietly don't recur.
 - **Finite artifact.** The reader can finish it.
 
-## Pipeline architecture
+## How it works, in one paragraph
 
-The paper is produced by a daily cron running nine stages.
+Every morning a pipeline collects about 1,400 items from 111 sources. It drops
+what this reader has no use for, and groups the rest into events and the events
+into ongoing situations. Each one is scored for how much it matters to the
+reader, graded for how new it is against recent papers, and ranked by a
+formula. About 150 pieces are then written in the paper's voice, and the paper
+is frozen with links to every source. Models make narrow judgments and software
+makes the decisions. `design.md` goes through it stage by stage.
 
-```
-1. Collector (software)
-   ↓
-2. Preprocessor (software)
-   ↓
-3. Prefilter (bio-aware relevance floor, LLM)
-   ↓
-4. Grouping (embedding-based clustering — same event?)
-   ↓
-5. Grouping-pass-1 (bio-aware scoring, LLM; then the rerun check withholds
-   news the paper already printed)
-   ↓
-6. Thread (same ongoing situation?, LLM)
-   ↓
-7. Editor (deterministic ranking + tiering, LLM tie-break only)
-   ↓
-8. Writers (parallel LLM calls)
-   ↓
-9. Publisher (software)
-```
+## How the concept changed
 
-All nine stages are built.
+The first plan was seven stages, with LLMs doing the editorial work: an LLM
+triage step summarizing the day, an agentic researcher, and an LLM editor
+assigning stories and writing a brief for each writer. Building it against real
+days of news moved the judgment into narrower questions and the decisions into
+software. In order:
 
-**This section has been reconciled with what was actually built.** The
-original conception had seven stages including an agentic *Researcher*
-between grouping and the editor. That stage was dropped — see
-`docs/decisions.md`. The editor's ranked, tiered output feeds the writers
-directly.
+- **The filter folded into the prefilter, now `screen`** (2026-06-13). Junk
+  removal and reader relevance turned out to be one judgment. Digests are cut by
+  deterministic rules as well, because a prompt alone let them through.
+- **LLM triage gave way to embeddings, now `cluster`** (2026-06-14). An LLM
+  clusterer (a wire seed, parallel topic spines, a semantic merge) was replaced
+  by cosine similarity plus union-find, with small LLM passes that split, attach
+  and describe. Clustering became cheap, repeatable and tunable with one knob.
+- **The LLM editor became a formula, now `rank`** (2026-06-16). Ranking and
+  tiering turned out to be a scoring problem: `score + 9·ln(outlets)`, with tiers
+  by position. The judgment lives in `screen` and `score`, which both read the
+  bio. A model only breaks exact ties.
+- **The researcher was dropped** (2026-07-25). The ranked, tiered output feeds
+  the writers directly. The writers are given the source articles themselves,
+  fetched in full where a feed carries only a teaser, which is what the
+  researcher was going to supply.
+- **Threads were added** (2026-07-28, 2026-08-15). One run printed five separate
+  Oregon wildfire stories. "Same event" and "same situation" proved to be
+  different questions. A situation is now ranked as one row and written as a
+  section: a lead, sidebars and one-line updates.
+- **The writer's package is assembled, not authored** (2026-08-13). An LLM step
+  writing a brief for each writer would have been a judgment stage with nothing
+  new to judge. Software selects, dedupes and budgets the material, and the
+  standing memo (`voice.md`) carries the voice.
+- **The paper became an index** (2026-08-28). A paper of 150 pieces runs to about
+  90 minutes of reading. A continuous scroll of all of it is a reading surface,
+  not a newspaper, so the front page is a list of headlines in rank order.
+- **Continuity became a judged link, and repeats became a novelty grade**
+  (2026-09-03 → 2026-10-03). "Continuity matching against yesterday's clusters"
+  was meant to live in the preprocessor. It became two things. One is a
+  "previously" marker under a headline, decided by retrieval plus a judge. The
+  other is a novelty grade that withholds yesterday's news restated by another
+  outlet and shrinks minor and routine updates.
+- **Comments went to a neighbour** (2026-09-26). Instead of a notes field on each
+  card, every piece links to Fritter Board, a separate app that reads the
+  published paper through a narrow set of views. The paper shows no counts.
 
-### Stage 1: Collector (software)
-
-Hits every configured source. RSS where available; direct fetches for places that don't publish feeds. Writes raw items to storage. Aggressively dumb — no judgment, no deduplication, no extraction. Failure-tolerant: a dead feed is logged and skipped.
-
-Cross-source duplication is preserved here because later stages use it as signal.
-
-### Stage 2: Preprocessor (software)
-
-Sits between collector and grouping. Does the obvious mechanical work the LLM shouldn't be wasting tokens on:
-
-- URL canonicalization (strip tracking params, normalize AMP, etc.)
-- Exact-URL deduplication
-- Title similarity clustering (token Jaccard or normalized Levenshtein)
-- Source-count aggregation per cluster (prominence signal)
-- Timestamp normalization
-- Category inheritance from source config
-- Continuity matching against yesterday's clusters
-
-The LLM should never be the first entity to notice that ten articles have nearly identical headlines. Software handles it deterministically.
-
-### Stage 3: Prefilter (bio-aware relevance floor)
-
-A relevance floor between the preprocessor and the clusterer, and the first stage that reads the bio. Each item gets one of three verdicts: `cut` for noise this reader has no interest in and non-article material, `news` for anything flowing into clustering, `opinion` for pieces routed out of clustering toward a Longer Reads section.
-
-Conservative by design: when unsure, keep. A low-interest topic becomes a keep the moment it carries a substantive angle.
-
-### Stage 4: Grouping (embedding-based clustering)
-
-Clusters the kept news items into same-story groups. Each item's title and body excerpt is embedded; a cosine-similarity graph plus union-find produces candidate clusters, an LLM attach pass pulls in near-miss singletons, and a final LLM describe pass writes a neutral title and summary for each multi-item cluster. The output is a flat digest of clusters and singletons.
-
-Mostly software, with two cheap bounded LLM passes (attach, describe). The primary tuning lever is the similarity threshold: higher means fewer, tighter groups; lower means more, looser groups.
-
-(This replaces the original conception of an LLM "triage" digest. The earlier LLM-based triage clusterer was removed once embedding-based grouping proved out — see `docs/decisions.md`.)
-
-### Stage 5: Grouping-pass-1 (bio-aware scoring)
-
-Scores every grouping output row — clusters and singletons on the same 0–100 scale — for relevance to this reader. Clusters are scored on their describe-pass title and summary; singletons on title plus body excerpt. Source count is deliberately withheld from the scorer: this judgment is purely about reader relevance, and prominence is applied later by the editor's formula.
-
-Sorts by score and takes the top `grouping.pile_target` rows as the editor pile.
-
-Before the pile is assembled, the **rerun check** compares the top rows with what the last seven editions printed and withholds any row that is news the reader has already been given, so the next row takes its slot. A continuing story that has moved on is kept and gets a "previously" line; a day-late restatement from another outlet is not printed at all. It errs toward keeping: a wrongly dropped story is one the reader never sees.
-
-### Stage 6: Thread (same ongoing situation?)
-
-Groups related clusters and singletons into one continuing story. Grouping asks whether two articles cover the same *event*; threading asks whether several events are the same *situation* — a state's fire emergency, one war, one city's fight over one project.
-
-Both questions are needed and neither can answer the other. That separation is what lets event clustering stay strict: grouping can split an over-merge without the paper losing the connection, because threading puts it back at the right level.
-
-A thread carries `max(member score)` as relevance and `sum(member sources)` as prominence, so it is a first-class row the editor ranks with the same formula as everything else — not presentation metadata.
-
-The line to hold is between a concrete situation anchored in a place and a time, and an abstract theme spanning unrelated places and actors. Fires in Oregon and fires in Spain are two threads. Data centers straining grids in three states is a topic, not a situation.
-
-### Stage 7: Editor (deterministic ranking + tiering)
-
-Not an LLM ranker. The editor combines the pass-1 relevance score with a prominence lift derived from cross-source pickup:
-
-```
-combined = relevance + source_weight * ln(sources)
-```
-
-Rows sort by combined score, and tiers are assigned by rank position from fixed counts (feature / standard / brief). The only LLM involvement is a bio-aware tie-break among items sharing an identical combined score.
-
-This replaced an earlier conception of the editor as an orchestrated multi-call LLM producing per-piece writer packages. Ranking and tiering turned out to be a scoring problem, not a judgment problem — the judgment lives in prefilter and grouping-pass-1, both of which read the bio. See `docs/decisions.md`.
-
-**Resolved (2026-08-13):** the writer package is assembled by software, not authored by a model. Tier sets the length target and register, the bio says who the piece is for, a standing memo carries the voice, and a materials resolver plus an article-text fetch supply the source material. A package-creation LLM step would be a judgment stage with nothing new to judge on — the bio-aware judgment already happened in the prefilter and grouping-pass-1. See `docs/decisions.md`.
-
-### Stage 8: Writers (parallel LLM calls)
-
-One call per piece. Writers run in parallel — no inter-dependencies. Each writer receives the source material for its story, a target length driven by tier, and the paper's voice.
-
-Writers don't see each other's work.
-
-The stage is three pieces, of which the first two are built:
-
-1. **Materials resolver** — walks a ranked story back to the articles underneath it, across threads, clusters and singletons.
-2. **Article-text fetch** — most feeds carry a teaser rather than a body (61% of run #112's articles were under 800 characters), so the articles the feed left short are fetched from the publisher and extracted. The text is used to write the paper and never published.
-3. **Prompt assembler** — selects, deduplicates and budgets that material into one prompt per piece, then makes the calls: one per feature and standard piece, briefs in batches. A failed call costs one piece, never the edition.
-
-A thread does not become one piece. It becomes a **section**: a lead, several sidebars at one tier below, and a one-sentence line for each remaining member, all under one heading. One slot cannot hold a situation — either the writer tours every event and produces a list, or it picks one and silently drops the rest. Because a thread's members are distinct events by construction, material partitions cleanly by member and the pieces of a section cannot overlap, so no writer needs to see another's work. Sections displace the lowest-ranked standalone stories, keeping the paper finite.
-
-### Stage 9: Publisher (software)
-
-Pure rendering. Takes the writer run and freezes it into a paper: the prose as
-written, plus the attribution resolved from the lineage underneath it. No
-judgment — every editorial decision was made upstream, and this stage reorders
-nothing and drops nothing except pieces the writers never produced.
-
-It exists as a stage rather than as a query because a paper is a daily artifact.
-Re-running grouping tomorrow must not change what yesterday's paper said, and
-`writer_pieces` cannot produce a source link on its own — the URLs are three
-joins away, through the walk the writers' materials resolver already does.
-
-The publisher is designed to be tolerant, and records what it tolerated: a
-failed writer piece is skipped and counted, and a piece whose lineage will not
-resolve is published without links and counted separately. Neither costs the
-edition.
-
-**One judgment does live here, and it is about yesterday rather than today.**
-After the paper is frozen, a continuity pass asks whether each piece continues a
-story a recent edition already ran, and records the answer as the "previously"
-marker the reader sees under the headline. It is not a tenth stage because it
-has no independent input — it reads the paper just written and the papers before
-it — and continuity belongs beside attribution, which is the other thing this
-stage adds that the pipeline never had.
-
-**It never suppresses a story.** A repeated *story* is a duplicate and is
-deleted upstream in the preprocessor; a repeated *situation* is a story still
-moving, and the fix for that is to say so. Nothing downstream reads these rows
-to drop anything.
-
----
-
-## Storage
-
-Postgres. Already running for Fritterflix on the same box, so this is a reuse rather than new infrastructure.
-
-Tables roughly: raw items (collector output), preprocessed items, grouping digests, pass-1 scores, editor piles, finished stories, papers, sources, feeds, feedback, generation logs. Raw items get a retention window (rolling deletion); everything else is durable.
-
-Schema details are not decided. The point is: structured data through the pipeline, full lineage from raw input to published story, every LLM call logged with model, prompts, outputs, token counts.
-
----
-
-## Models and configuration
-
-Every LLM stage is independently configurable via a config file. The pipeline is model-agnostic; any OpenAI-compatible provider works. Starting plan uses Ollama Cloud Pro.
-
-Current thinking on assignments (subject to revision once we see how each stage actually performs):
-
-- **Grouping:** embedding model (`qwen/qwen3-embedding-8b`) for clustering, plus a cheap LLM (GLM) for the attach and describe passes
-- **Prefilter and grouping-pass-1:** GLM — bio-aware judgment at batch scale; these carry the editorial weight that was once imagined for the editor
-- **Editor:** no primary model — the ranking is a deterministic formula. GLM handles only the tie-break calls
-- **Writers:** DeepSeek V4.1 Flash at reasoning `high`: chosen over GLM 5.2 and GLM 5.3 by three blind bake-offs on attribution accuracy (`docs/decisions.md`, 2026-09-23 and 2026-09-25). The judgment stages stay on GLM 5.2: Flash at `high` and GLM 5.3 were both tested on them and lost, each stage for its own reason (2026-09-25)
-
-All tunable. Per-stage parameters in config include model, token budgets, step limits for agentic loops, temperature, retry behavior.
-
----
+The stages were renamed for what they now do on 2026-10-08. The old names
+survive in older decision entries; `design.md` §6 has the map.
 
 ## Documents the system reads
 
-Several human-readable files travel through the pipeline. Each has a defined role; keeping them separate prevents any one from becoming a junk drawer.
+Several human-readable files travel through the pipeline. Each has one role,
+which keeps any of them from becoming a junk drawer.
 
-- **Bio file.** Slow-changing. Who the reader is — location, work, interests, projects, values, what they care about, what they don't.
-- **Standing memo.** The editorial document. Voice, stance, what the paper covers, how it sounds, how it handles register across sizes. Written as instructions to a new editor, not as a spec. Not currently written — an earlier draft was dissolved into the prefilter and editor prompts (see `docs/decisions.md`, 2026-06-13). Now that ranking is deterministic, its remaining job is *voice*, which makes it a writers-stage document rather than an editor one.
-- **Source policy.** Operational. Source tier list, how to handle police statements, press releases, social media claims, rumors, paywalled sources, primary-source preferences, cross-source verification thresholds. Lives with the writers.
-- **Pre-written preferences.** Human-maintained. Standing instructions from the reader: "I keep marking Apple launches not interesting, please honor that."
-- **Observed preferences.** Agent-updated based on reader comments. Dated entries so they can be pruned when they drift. Carries less weight than pre-written preferences.
+- **The bio** (`bio.md`). Slow-changing. Who the reader is: location, work,
+  interests, projects, values, what they care about and what they don't. Read
+  by every judgment stage and by the writers.
+- **The standing memo** (`voice.md`). The editorial document: voice, stance,
+  and how register changes with size. It is written as instructions to a new
+  writer, not as a spec. It is probably the single most consequential artifact
+  in the project, and it is iterated on against real output.
 
-The standing memo is probably the single most consequential artifact in the project. Worth writing carefully before the code, and worth iterating on as the paper produces output that reveals its gaps.
+Planned but not built: a **source policy** (how to treat police statements,
+press releases, social media claims, paywalls), **pre-written preferences** ("I
+keep marking Apple launches not interesting"), and **observed preferences**
+learned from the reader's comments.
 
----
+## Editorial principles
 
-## Editorial principles the standing memo will need to encode
-
-These came out of the planning conversations and should make it into the memo in some form. Not exhaustive, and exact wording is for the memo itself.
+These came out of the planning conversations. The standing memo, `docs/voice.md`, now carries them in its own words and is read verbatim into every writer call.
 
 - Anti-media-isms: no trailing-question headlines, no "what you need to know about," no "sparked outrage," no manufactured stakes, no hook-and-payoff cadence designed to drive scroll.
 - Active voice with named actors as default. "Police shot a man" not "an officer-involved shooting occurred."
@@ -223,21 +116,19 @@ These came out of the planning conversations and should make it into the memo in
 - Slow news days produce short papers. Don't pad.
 - Continuity: today's paper aware of yesterday's, develops or quietly drops threads.
 
----
-
 ## Reader interaction
 
-Starting simple, with room to grow.
+- **Every piece has a page**, with its sources listed and linked. Colour on
+  the page means a link out to someone else's reporting.
+- **"Discuss on the board"** links each piece to Fritter Board. Conversation
+  about the paper happens there, not inside it.
+- **No interactive AI inside the paper.** The original spec had a RAG-grounded
+  Q&A modal per story. Cutting it removed a lot of complexity and legal exposure
+  for marginal benefit.
 
-- **Comments per story.** A field on each card. The reader writes notes; the next day's editor stage reads them. Inline-collapsed in the UI (small "add note" link expanding to a textarea) so the reading view stays clean.
-- **"Copy as markdown" per card.** Exports the article with attribution header in a format suitable for pasting into another tool. The paper is the primary artifact; conversation about it happens elsewhere.
-- **Outside long-reads** are surfaced with substantial context paragraphs and prominent links. No reproduction of others' text.
-
-No interactive AI inside the paper for now. The original spec had a RAG-grounded Q&A modal per story; cutting it removes a lot of complexity and legal exposure for marginal benefit, and Gizmo can handle conversation about specific articles by being passed the markdown.
-
-Search, archive browsing, read-later integration, reaction buttons — all reasonable to add later, none needed for V1.
-
----
+Search, archive browsing, read-later integration and reaction buttons would all
+be reasonable to add later. None of them is needed, and reaction buttons never
+will be.
 
 ## Reading view
 
@@ -277,44 +168,38 @@ loads on cellular. The hard part is OG-image extraction, logo and tracker
 rejection, and whether to rehost or hotlink — a "curate, don't reproduce"
 question more than a technical one.
 
----
-
 ## Decided since
 
-- **Time-of-day for the cron.** 06:00 in the reader's timezone, set in
+- **Time of day for the run.** 06:00 in the reader's timezone, set in
   `pipeline.schedule` in `config/models.yaml` and generated into the systemd
-  timer from there. Constrained from both ends: the collector's window is 24h on
-  `fetched_at`, and the publisher dates the edition by the reader's local day.
-- **Failure-mode policy for catastrophically bad days.** The runner's gates
-  (`pipeline.gates.*`). Most sources down aborts at the collector; a provider
-  outage during scoring aborts at grouping-pass-1; writers below
-  `min_written_fraction` after an automatic repair pass do not publish, so
-  yesterday's paper stays up rather than today's being mostly holes. Everything
-  short of those publishes and records `degraded`, because the paper has a
-  deadline. See `docs/decisions.md`, 2026-08-29.
+  timer from there. It is constrained from both ends: the collector's window is
+  24h on `fetched_at`, and the publisher dates the edition by the reader's
+  local day.
+- **What happens on a catastrophically bad day.** The runner's gates
+  (`pipeline.gates.*`) decide. Most sources down aborts at collect. A provider
+  outage during scoring aborts at score. If the writers end up below
+  `min_written_fraction` after an automatic repair pass, nothing is published,
+  so yesterday's paper stays up rather than a paper that is mostly holes.
+  Everything short of that publishes and is recorded as `degraded`, because the
+  paper has a deadline (2026-08-29).
+- **Writing the client vs using a library.** A thin wrapper over the OpenAI SDK,
+  with our own logging, budgets, streaming and backoff (`src/llm/`).
 
 ## What we haven't decided
 
-- Schema details. Roughly known shape, but column-level decisions are for implementation time.
-- Exact source list. The structure of how sources are configured matters more than the initial picks; sources are a config file to be tuned over time.
-- Exact prompts for each stage. The hardest content work in the project, and worth doing iteratively with real output to evaluate.
-- Standing memo specifics. The memo itself needs to be written — these notes are not the memo.
-- Source policy specifics. Same — the operational document needs to be drafted.
-- UI specifics beyond rough layout principles.
-- Archive browsing UX — search box, calendar, tag filter, some mix.
-- LLM client library vs. writing it ourselves — leaning toward writing it, but not decided.
-- Whether yesterday's paper gets read in full or in distilled form by the editor.
-- Whether and when to add MCP layer for Gizmo to query the paper's database.
-
----
+- Archive browsing UX: a search box, a calendar, a tag filter, or some mix.
+- Images. They would go on article pages rather than as index thumbnails, and
+  whether to rehost or hotlink is a "curate, don't reproduce" question.
+- The Longer Reads section that opinion and analysis items are already routed
+  toward.
+- The source policy and preference documents above.
+- Whether and when to add an MCP layer so Gizmo can query the paper's database.
 
 ## What this is not
 
 Not a feed. Not a chatbot. Not a dashboard. Not a public product. Not trying to be Perplexity or Apple News or Google News. Not optimizing for engagement.
 
 It's a newspaper. It runs once a day. It produces a finite artifact. It respects the reader's time.
-
----
 
 ## North star
 

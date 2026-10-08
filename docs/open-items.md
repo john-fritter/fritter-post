@@ -2,7 +2,8 @@
 
 Known defects and deferred work, with the evidence for each. Append and remove
 freely — unlike `decisions.md` this file is not a log, it is a to-do list, and
-an item leaves it when it is fixed or deliberately dropped.
+an item leaves it when it is fixed or deliberately dropped. Entries written
+before 2026-10-08 may use the old stage names; `design.md` §6 has the map.
 
 Each entry says what is wrong, how we know, and what the fix looks like. An item
 with no evidence behind it does not belong here; speculation belongs in
@@ -25,7 +26,7 @@ trim it: every cheap way to find a first sentence is wrong on news prose, since
 a period plus a space ends "U.S." and "Adm." as readily as a clause.
 
 **Fix:** restore the headline field to the line contract in
-`src/pipeline/writers/prompt.ts` and `parseBriefBatchOutput`, so a line is
+`src/pipeline/write/prompt.ts` and `parseBriefBatchOutput`, so a line is
 `ref;;headline;;sentence`. Note the consequence: **a line with a headline is
 structurally a brief inside a section** — same shape, same fields — and the
 publisher would stop needing to tell them apart. `section_role` still earns its
@@ -117,7 +118,7 @@ could not show, and the first live papers must:
 - **One retrieval-shaped miss.** 9/27's rank-1 truce piece was compared against a
   9/24 piece at 0.786 and graded development, while 9/26 had already printed the
   truce extension and the AI channel. Whether 9/26's pieces were among its five
-  priors is not in the preview output; `inspect reruns --id 57 --all` and the
+  priors is not in the preview output; `inspect novelty --id 57 --all` and the
   `rerun_assessments.priors_shown` column say.
 - **Routine is rare** (1–4 a day). Right when war sections carry real
   developments; revisit if a section of plainly routine strikes still leads.
@@ -136,7 +137,7 @@ change and a build check, not a ride-along on another PR.
 
 ## Structural, no reader impact yet
 
-### 3b. One lineage false link the paper's own text cannot resolve
+### 3b. One continuity false link the paper's own text cannot resolve
 
 Measured three times. The judge with body text stands at **167 links, one
 obviously wrong (0.60%)**, against 1.75% for the threshold it replaced. The
@@ -197,7 +198,7 @@ work by putting text about the paper into a prompt, and this project has five
 recorded instances of a model relaying exactly that to the reader. Precision
 first, then the prompt.
 
-### 3d. The rerun check: one retrieval miss and one prompt shape to watch
+### 3d. Novelty: one retrieval miss and one prompt shape to watch
 
 **Superseded 2026-10-03 by the graded check** (`docs/decisions.md`): the
 two-fact shape fired live (nine wrong drops), so the prompt now grades the most
@@ -238,14 +239,14 @@ deliberately with a short timeout on a copy of the unit.
 
 ### 4. The outlet count is derived in two places
 
-`src/db/outlets.ts` is called from grouping-pass-1, which stores the count on
-`grouping_pass1_results`, and again from the editor, which re-derives it from
+`src/db/outlets.ts` is called from score, which stores the count on
+`grouping_pass1_results`, and again from rank, which re-derives it from
 the digest instead of reading the stored value. Both call the same helper, so
 they agree today. Two derivations of one number is two places to be wrong.
 
-**Fix:** have the editor read `grouping_pass1_results.source_count` through the
+**Fix:** have rank read `grouping_pass1_results.source_count` through the
 pile, and delete its own derivation. It is a bigger change than it sounds
-because the editor currently reaches the digest and not the pass-1 run.
+because rank currently reaches the digest and not the score run.
 
 ### 5. A thread's source count can still double-count an outlet
 
@@ -290,15 +291,15 @@ contamination — the case that motivated it — was fixed by swapping to a
 local-only feed instead, which is the better fix. Keep the option; it is the
 tool for a source that is worth having but publishes a section we do not want.
 
-### 7. No inspection view for grouping or grouping-pass-1
+### 7. No inspection view for cluster or score
 
 Named in `CLAUDE.md` and still true. The project's convention is that an LLM
 stage's feedback loop is its inspection view, and the two stages that decide
 what the reader sees have none — the local-coverage investigation ran on raw
-SQL because there was nothing else. `grouping.embedding.similarity_threshold` is
+SQL because there was nothing else. `cluster.embedding.similarity_threshold` is
 the pipeline's primary tuning lever and is inspected by hand.
 
-**Fix:** `inspect grouping-pass1 [--id <n>] [--source <name>]` — score
+**Fix:** `inspect score [--id <n>] [--source <name>]` — score
 distribution across both axes, the fail-safe count, and a source filter so
 "where does the local beat land" is one command.
 
@@ -338,7 +339,7 @@ that deserved it. Resist tuning them on one more good day — a threshold that h
 never been near a bad run has not been tested, only unused.
 
 **Still open on timing:** 14m 44s and 16m 43s across two runs, so 06:00 puts the
-paper up around 06:17. The variance is grouping-pass-1 tracking the day's row
+paper up around 06:17. The variance is the score stage tracking the day's row
 count. The timer has not been installed and no unattended run has happened.
 
 ### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
