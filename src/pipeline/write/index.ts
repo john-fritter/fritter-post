@@ -1,5 +1,5 @@
 /**
- * The writers stage: packets in, the paper's own prose out.
+ * Step 10, write: packets in, the paper's own prose out.
  *
  * One call per feature and standard piece; briefs go in batches, because 75
  * separate calls would each re-send the bio and the standing memo and the
@@ -22,7 +22,7 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
-import { loadModelConfig, type WritersStageConfig } from "../../config/models.js";
+import { loadModelConfig, type WriteStageConfig } from "../../config/models.js";
 import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
@@ -184,7 +184,7 @@ async function writeOnePiece(
   rendered: RenderedPacket,
   storyId: number | null,
   runId: number,
-  cfg: WritersStageConfig,
+  cfg: WriteStageConfig,
   breaker: FailureBreaker,
 ): Promise<{ piece: WrittenPiece; inputTokens: number; outputTokens: number; failed: boolean }> {
   const { packet } = rendered;
@@ -200,7 +200,7 @@ async function writeOnePiece(
     const result = await callWithBackoff(
       () =>
         callLLM({
-          stage: "writers",
+          stage: "write",
           stageRunId: runId,
           model: cfg.model,
           systemPrompt: rendered.systemPrompt,
@@ -220,7 +220,7 @@ async function writeOnePiece(
 
     const parsed = parseWriterOutput(result.text);
     if (!parsed) {
-      console.warn(`[writers] ${packet.ref}: output had no recognizable headline line`);
+      console.warn(`[write] ${packet.ref}: output had no recognizable headline line`);
       return {
         piece: failedPiece(packet, storyId, "unparseable output", result.generationLogId),
         inputTokens: result.inputTokens ?? 0,
@@ -260,7 +260,7 @@ async function writeOnePiece(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     breaker.record(false);
-    console.warn(`[writers] ${packet.ref}: call failed — ${msg}`);
+    console.warn(`[write] ${packet.ref}: call failed — ${msg}`);
     return {
       piece: failedPiece(packet, storyId, msg),
       inputTokens: 0,
@@ -306,7 +306,7 @@ async function writeBriefBatch(
   batchIndex: number,
   bio: string,
   runId: number,
-  cfg: WritersStageConfig,
+  cfg: WriteStageConfig,
   breaker: FailureBreaker,
   kind: BriefBatchKind = "brief",
 ): Promise<{ pieces: WrittenPiece[]; inputTokens: number; outputTokens: number; failed: boolean }> {
@@ -331,7 +331,7 @@ async function writeBriefBatch(
     const result = await callWithBackoff(
       () =>
         callLLM({
-          stage: "writers-briefs",
+          stage: "write-briefs",
           stageRunId: runId,
           model: cfg.model,
           systemPrompt,
@@ -361,14 +361,14 @@ async function writeBriefBatch(
     // answer.
     if (missing.length > 0) {
       console.warn(
-        `[writers] ${label} batch ${batchIndex}: ${missing.length} of ${refs.length} ${label}(s) missing — re-asking for those`,
+        `[write] ${label} batch ${batchIndex}: ${missing.length} of ${refs.length} ${label}(s) missing — re-asking for those`,
       );
       const stragglers = packets.filter((p) => missing.includes(p.ref));
       try {
         const retry = await callWithBackoff(
           () =>
             callLLM({
-              stage: "writers-briefs",
+              stage: "write-briefs",
               stageRunId: runId,
               model: cfg.model,
               systemPrompt,
@@ -391,7 +391,7 @@ async function writeBriefBatch(
         missing = refs.filter((r) => !parsed.has(r));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[writers] ${label} batch ${batchIndex}: straggler call failed — ${msg}`);
+        console.warn(`[write] ${label} batch ${batchIndex}: straggler call failed — ${msg}`);
       }
     }
 
@@ -430,7 +430,7 @@ async function writeBriefBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     breaker.record(false);
-    console.warn(`[writers] ${label} batch ${batchIndex}: call failed — ${msg}`);
+    console.warn(`[write] ${label} batch ${batchIndex}: call failed — ${msg}`);
     // A failed batch costs its briefs, not the paper.
     return {
       pieces: batch.map(({ rendered, storyId }) => failedPiece(rendered.packet, storyId, msg)),
@@ -464,7 +464,7 @@ export interface WriterRunSummary {
  */
 export async function repairWriterRun(runId: number): Promise<WriterRunSummary> {
   const pool = getPool();
-  const cfg = loadModelConfig().writers;
+  const cfg = loadModelConfig().write;
 
   const { rows: runRows } = await pool.query<{ editor_run_id: number; pieces_in: number }>(
     "SELECT editor_run_id, pieces_in FROM writer_runs WHERE id = $1",
@@ -478,7 +478,7 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
     [runId],
   );
   if (failedRows.length === 0) {
-    console.log(`[writers] run #${runId}: nothing to repair`);
+    console.log(`[write] run #${runId}: nothing to repair`);
     return fetchRunSummary(pool, runId);
   }
 
@@ -487,7 +487,7 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   const targets = all.filter((p) => failedRefs.has(p.packet.ref));
 
   console.log(
-    `[writers] repairing run #${runId}: ${targets.length} of ${failedRows.length} failed piece(s) resolved to packets`,
+    `[write] repairing run #${runId}: ${targets.length} of ${failedRows.length} failed piece(s) resolved to packets`,
   );
 
   const { bio } = loadWriterDocs();
@@ -518,7 +518,7 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   let repaired = 0;
   for (const { piece } of results) {
     if (piece.status !== "ok") {
-      console.warn(`[writers] repair ${piece.ref}: still failing — ${piece.detail ?? ""}`);
+      console.warn(`[write] repair ${piece.ref}: still failing — ${piece.detail ?? ""}`);
       continue;
     }
     // `tier` and `material_level` are rewritten, not just the body. Both are
@@ -559,11 +559,11 @@ export async function repairWriterRun(runId: number): Promise<WriterRunSummary> 
   );
 
   console.log(
-    `[writers] repair of run #${runId}: ${repaired} piece(s) recovered, ${counts[0]!.failed} still missing`,
+    `[write] repair of run #${runId}: ${repaired} piece(s) recovered, ${counts[0]!.failed} still missing`,
   );
   if (breaker.isOpen) {
     console.warn(
-      `[writers] repair ABORTED after ${cfg.abort_after_consecutive_failures} consecutive failures — ` +
+      `[write] repair ABORTED after ${cfg.abort_after_consecutive_failures} consecutive failures — ` +
         `the provider is still failing. Try again later; repair is safe to re-run.`,
     );
   }
@@ -616,9 +616,9 @@ export interface RunWritersOptions {
   overrides?: ModelOverrides;
 }
 
-export async function runWriters(options: RunWritersOptions): Promise<WriterRunSummary> {
+export async function runWrite(options: RunWritersOptions): Promise<WriterRunSummary> {
   const pool = getPool();
-  const cfg = applyModelOverrides(loadModelConfig().writers, options.overrides);
+  const cfg = applyModelOverrides(loadModelConfig().write, options.overrides);
   const { tier, limit, ranks } = options;
   const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 
@@ -646,7 +646,7 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   const { longform, briefs, lines } = partitionByCallShape(selected);
 
   console.log(
-    `[writers] run #${runId}: ${selected.length} piece(s) from editor run #${editorRunId} — ` +
+    `[write] run #${runId}: ${selected.length} piece(s) from editor run #${editorRunId} — ` +
       `${longform.length} individual call(s), ${briefs.length} brief(s) and ${lines.length} ` +
       `section line(s) in batches of ${cfg.brief_batch_size}`,
   );
@@ -727,18 +727,18 @@ export async function runWriters(options: RunWritersOptions): Promise<WriterRunS
   );
 
   console.log(
-    `[writers] run #${runId} complete: ${written} written, ${failed} failed, ` +
+    `[write] run #${runId} complete: ${written} written, ${failed} failed, ` +
       `${calls} call(s), ${failedCalls} failed call(s)`,
   );
   if (breaker.isOpen) {
     console.warn(
-      `[writers] ABORTED: ${cfg.abort_after_consecutive_failures} consecutive call failures — ` +
+      `[write] ABORTED: ${cfg.abort_after_consecutive_failures} consecutive call failures — ` +
         `the provider is failing, not the material. ${written} piece(s) written. ` +
         `Run \`npm run write -- --repair ${runId}\` once it recovers; it re-writes only what is missing.`,
     );
   }
   if (failed > 0) {
-    console.warn(`[writers] WARNING: ${failed} piece(s) have no text — the paper is short by that many`);
+    console.warn(`[write] WARNING: ${failed} piece(s) have no text — the paper is short by that many`);
   }
 
   return {

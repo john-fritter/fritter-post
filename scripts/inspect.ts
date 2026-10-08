@@ -6,13 +6,13 @@
  *   npm run inspect -- count --source "AP Top News"
  *   npm run inspect -- list
  *   npm run inspect -- list --source "ProPublica" --limit 20
- *   npm run inspect -- collector
- *   npm run inspect -- collector --id 3
- *   npm run inspect -- preprocessor
- *   npm run inspect -- preprocessor --id 1
- *   npm run inspect -- prefilter
- *   npm run inspect -- prefilter --id 1
- *   npm run inspect -- editor --id 112
+ *   npm run inspect -- collect
+ *   npm run inspect -- collect --id 3
+ *   npm run inspect -- preprocess
+ *   npm run inspect -- preprocess --id 1
+ *   npm run inspect -- screen
+ *   npm run inspect -- screen --id 1
+ *   npm run inspect -- rank --id 112
  *   npm run inspect -- materials --editor-run 112
  */
 
@@ -187,6 +187,16 @@ function parseClusterDigest(digest: string): ClusterDigest | null {
   return clusters.length > 0 ? { clusters } : null;
 }
 
+const RENAMED_COMMANDS: Record<string, string> = {
+  collector: "collect",
+  preprocessor: "preprocess",
+  prefilter: "screen",
+  editor: "rank",
+  writers: "write",
+  publisher: "publish",
+  reruns: "novelty",
+};
+
 function parseArgs(argv: string[]) {
   const args = argv.slice(2); // strip node + script path
   const command = args[0];
@@ -218,7 +228,10 @@ async function main() {
     process.exit(1);
   }
 
-  const { command, flags } = parseArgs(process.argv);
+  const { command: given, flags } = parseArgs(process.argv);
+  // The stages were renamed on 2026-10-08; the old subcommands still answer, so
+  // older notes and Gizmo prompts keep working.
+  const command = given !== undefined ? (RENAMED_COMMANDS[given] ?? given) : given;
 
   const pool = new Pool({ connectionString: url });
 
@@ -274,7 +287,7 @@ async function main() {
         break;
       }
 
-      case "collector": {
+      case "collect": {
         if (flags["id"]) {
           // Detail view for one run.
           const runId = parseInt(flags["id"], 10);
@@ -361,7 +374,7 @@ async function main() {
         break;
       }
 
-      case "preprocessor": {
+      case "preprocess": {
         if (flags["id"]) {
           // Detail view for one run.
           const runId = parseInt(flags["id"], 10);
@@ -430,7 +443,7 @@ async function main() {
         break;
       }
 
-      case "prefilter": {
+      case "screen": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
           const { rows: runRows } = await pool.query<PrefilterRunRow>(
@@ -528,7 +541,7 @@ async function main() {
         break;
       }
 
-      case "editor": {
+      case "rank": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
           const { rows: runRows } = await pool.query<EditorRunRow>(
@@ -775,14 +788,14 @@ async function main() {
       // asking has just produced.
       case "timing": {
         const stages: Array<{ label: string; table: string }> = [
-          { label: "collector", table: "collector_runs" },
-          { label: "preprocessor", table: "preprocessor_runs" },
-          { label: "prefilter", table: "prefilter_runs" },
-          { label: "grouping", table: "grouping_runs" },
-          { label: "grouping-pass-1", table: "grouping_pass1_runs" },
+          { label: "collect", table: "collector_runs" },
+          { label: "preprocess", table: "preprocessor_runs" },
+          { label: "screen", table: "prefilter_runs" },
+          { label: "cluster", table: "grouping_runs" },
+          { label: "score", table: "grouping_pass1_runs" },
           { label: "thread", table: "thread_runs" },
-          { label: "editor", table: "editor_runs" },
-          { label: "writers", table: "writer_runs" },
+          { label: "rank", table: "editor_runs" },
+          { label: "write", table: "writer_runs" },
         ];
 
         const rows: Array<{
@@ -922,10 +935,10 @@ async function main() {
           }
         }
 
-        // fetch-text has no run table of its own; article_texts is where it
+        // the fetch stage has no run table of its own; article_texts is where it
         // leaves a trace, and the spread of one editor run's fetched_at is the
         // closest thing to its duration.
-        // fetch-text has no run table, so its only trace is when its rows were
+        // the fetch stage has no run table, so its only trace is when its rows were
         // written. Scoped to the same window as the lineage above: over 24 hours
         // this spans several runs and reads as one very slow stage — the first
         // version reported "127m 59s" for 31 rows written across a whole day.
@@ -940,7 +953,7 @@ async function main() {
         const fr = fetchRows[0];
         if (fr && Number(fr.n) > 0 && fr.seconds !== null) {
           console.log(
-            `\n  fetch-text has no run table. ${fr.n} row(s) written in the last ` +
+            `\n  the fetch stage has no run table. ${fr.n} row(s) written in the last ` +
               `${LINEAGE_WINDOW_MS / 3600_000}h, spanning ${clock(Number(fr.seconds))} — ` +
               `an approximation, and one that covers every fetch in the window.`,
           );
@@ -1222,7 +1235,7 @@ async function main() {
       }
 
       // Written pieces: the paper as the reader will see it.
-      case "writers": {
+      case "write": {
         if (flags["id"]) {
           const runId = parseInt(flags["id"], 10);
           const { rows: runRows } = await pool.query<{
@@ -1316,7 +1329,7 @@ async function main() {
       // links — so this view leads on how many of them there are, and on the two
       // ways a paper can be holed: pieces the writers never delivered, and
       // pieces with nothing behind them to link to.
-      case "publisher": {
+      case "publish": {
         const id = flags["id"] ? parseInt(flags["id"], 10) : undefined;
 
         if (id === undefined) {
@@ -1432,7 +1445,7 @@ async function main() {
         break;
       }
 
-      case "reruns": {
+      case "novelty": {
         // The rerun check withholds and reduces stories before the reader can see
         // them, so this is the only place a wrong call is visible. Every graded
         // row is kept, whatever the grade; without --all, only the rows the check
@@ -1446,7 +1459,7 @@ async function main() {
                FROM rerun_runs ORDER BY id DESC LIMIT 20`,
           );
           if (rows.length === 0) {
-            console.log("No rerun runs yet. The check runs inside grouping-pass1.");
+            console.log("No novelty checks yet. The check runs inside the score stage.");
             break;
           }
           console.log("  id  started           pass1  checked  graded  withheld  reduced  calls  failed");
@@ -1580,15 +1593,15 @@ async function main() {
 
         console.log("\n  Lineage");
         const lineage: [string, unknown][] = [
-          ["collector", run.collector_run_id],
-          ["preprocessor", run.preprocessor_run_id],
-          ["prefilter", run.prefilter_run_id],
-          ["grouping", run.grouping_run_id],
-          ["grouping-pass1", run.grouping_pass1_run_id],
+          ["collect", run.collector_run_id],
+          ["preprocess", run.preprocessor_run_id],
+          ["screen", run.prefilter_run_id],
+          ["cluster", run.grouping_run_id],
+          ["score", run.grouping_pass1_run_id],
           ["thread", run.thread_run_id],
           ["pile", run.pile_id],
-          ["editor", run.editor_run_id],
-          ["writer", run.writer_run_id],
+          ["rank", run.editor_run_id],
+          ["write", run.writer_run_id],
           ["paper", run.paper_id],
         ];
         for (const [name, value] of lineage) {
@@ -1627,14 +1640,14 @@ async function main() {
 Commands:
   count                    Count raw_items rows
   list                     List recent raw_items
-  collector                List recent collector runs
-  collector --id <n>       Show full detail for one collector run
-  preprocessor             List recent preprocessor runs
-  preprocessor --id <n>    Show full stats for one preprocessor run
-  prefilter                List recent prefilter runs
-  prefilter --id <n>       Show detail and per-item cut/news/opinion verdicts with reasons
-  editor                   List recent editor runs
-  editor --id <n>          Show ranked/tiered list with resolved titles and fail-safe flags
+  collect                  List recent collector runs
+  collect --id <n>         Show full detail for one collector run
+  preprocess               List recent preprocessor runs
+  preprocess --id <n>      Show full stats for one preprocessor run
+  screen                   List recent screen runs
+  screen --id <n>          Show detail and per-item cut/news/opinion verdicts with reasons
+  rank                     List recent rank (editor) runs
+  rank --id <n>            Show ranked/tiered list with resolved titles and fail-safe flags
   materials --editor-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
@@ -1642,8 +1655,8 @@ Commands:
                            plus wall clock across the lineage and how much of it
                            was spent between stages rather than inside them
   fetch [--days <n>]       Per-source article fetch outcomes from article_texts
-  publisher                List published papers
-  publisher --id <n>       Show one paper's pieces, how many sources resolved,
+  publish                  List published papers
+  publish --id <n>         Show one paper's pieces, how many sources resolved,
                            and each piece's "previously" link with its similarity
                            (default 14 days): what a writer ends up with per
                            outlet, why we did not ask, and which sources have
@@ -1651,10 +1664,10 @@ Commands:
   packet --editor-run <n>  Writer packet sizes for every story of an editor run
   packet --editor-run <n> --rank <n>
                            Print the full assembled prompt for one story
-  writers                  List recent writer runs
-  writers --id <n>         Show every written piece; add --full for bodies
-  reruns                   List recent rerun checks: rows checked, withheld, failed calls
-  reruns --id <n> [--all]  Show the rows withheld as reruns or reduced as minor
+  write                    List recent writer runs
+  write --id <n>           Show every written piece; add --full for bodies
+  novelty                  List recent novelty checks: rows checked, withheld, failed calls
+  novelty --id <n> [--all] Show the rows withheld as reruns or reduced as minor
                            updates and routine news, with the printed piece and
                            the judge's sentence; --all adds every graded row
   pipeline                 List recent daily pipeline runs and how each ended
@@ -1667,7 +1680,10 @@ Options:
   --editor-run <n>         Editor run id (materials)
   --sources <n>            Rows in the per-source table (materials, default 40)
   --rank <n>               Story rank (packet)
-  --full                   Print piece bodies (writers --id)
+  --full                   Print piece bodies (write --id)
+
+The pre-2026-10-08 names (collector, preprocessor, prefilter, editor, writers,
+publisher, reruns) still work.
 `);
         process.exit(1);
     }

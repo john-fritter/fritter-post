@@ -95,7 +95,7 @@ async function fetchFeedText(url: string): Promise<string> {
     const retry = await requestOnce(url, BROWSER_USER_AGENT, true);
     if (retry.ok) {
       console.warn(
-        `[collector] ${url}: 403 for the FritterPost UA, served with a browser UA — ` +
+        `[collect] ${url}: 403 for the FritterPost UA, served with a browser UA — ` +
           `CDN bot rule. Note it in sources.yaml.`,
       );
       res = retry;
@@ -105,7 +105,7 @@ async function fetchFeedText(url: string): Promise<string> {
       // — exactly the ambiguity run #48's report hit. A 403 here means the
       // block is not UA-based and no header set will get past it.
       console.warn(
-        `[collector] ${url}: 403 for the FritterPost UA, and ${retry.status} for the ` +
+        `[collect] ${url}: 403 for the FritterPost UA, and ${retry.status} for the ` +
           `browser UA too — not a UA rule. Consider dropping the source.`,
       );
       // Report the original refusal; the retry told us nothing new.
@@ -125,7 +125,7 @@ async function fetchFeedText(url: string): Promise<string> {
 
   if (recovered) {
     console.warn(
-      `[collector] ${url}: declared charset did not decode cleanly; ` +
+      `[collect] ${url}: declared charset did not decode cleanly; ` +
         `recovered as ${charset}`,
     );
   }
@@ -155,10 +155,10 @@ async function parseFeedText(sourceName: string, text: string) {
       const lines = text.split(/\r?\n/);
       const from = Math.max(0, line - 3);
       const to = Math.min(lines.length, line + 4);
-      console.error(`[collector] ${sourceName}: XML parse failed — ${msg.replace(/\n/g, " ")}`);
+      console.error(`[collect] ${sourceName}: XML parse failed — ${msg.replace(/\n/g, " ")}`);
       for (let i = from; i < to; i++) {
         const marker = i === line ? ">>" : "  ";
-        console.error(`[collector]   ${marker} ${i}: ${lines[i]?.slice(0, 300) ?? ""}`);
+        console.error(`[collect]   ${marker} ${i}: ${lines[i]?.slice(0, 300) ?? ""}`);
       }
     }
     throw err;
@@ -294,7 +294,7 @@ export async function fetchFeed(source: Source): Promise<FetchedItem[]> {
 
   if (kept.length < results.length) {
     console.log(
-      `[collector] ${source.name}: ${results.length - kept.length} of ${results.length} ` +
+      `[collect] ${source.name}: ${results.length - kept.length} of ${results.length} ` +
         `item(s) dropped by source window/exclusions`,
     );
   }

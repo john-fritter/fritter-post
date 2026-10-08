@@ -1,5 +1,5 @@
 /**
- * The daily run: nine stages in order, with a decision between each pair.
+ * The daily run: every stage in order, with a decision between each pair.
  *
  * The ordering is the least of it. A shell script can call nine commands, and
  * for most of the pipeline it would even thread the ids correctly, because the

@@ -1,3 +1,15 @@
+/**
+ * Step 6, novelty: how new is each story to someone who read the last papers?
+ *
+ * Grades the top scored rows against what recent editions printed: new,
+ * development, minor, routine or rerun. Minor and routine are reduced (a lower
+ * score and a tier cap); a rerun is withheld. Fails open: an ungraded row is
+ * left alone. Runs inside the score stage, before threading. Formerly the
+ * "rerun check". Writes `rerun_runs` / `rerun_assessments`.
+ *
+ * See docs/design.md, "novelty".
+ */
+
 import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
@@ -28,7 +40,7 @@ export interface NoveltyReduction {
   maxTier: PieceTier | null;
 }
 
-export interface RerunRunSummary {
+export interface NoveltyRunSummary {
   rerunRunId: number | null;
   candidatesIn: number;
   /** Printed pieces retrieved across every candidate. */
@@ -66,7 +78,7 @@ function localDay(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: PAPER_TIMEZONE }).format(new Date());
 }
 
-const EMPTY: Omit<RerunRunSummary, "rerunRunId"> = {
+const EMPTY: Omit<NoveltyRunSummary, "rerunRunId"> = {
   candidatesIn: 0,
   pairsJudged: 0,
   rowsJudged: 0,
@@ -91,7 +103,7 @@ const EMPTY: Omit<RerunRunSummary, "rerunRunId"> = {
  * line: the row stays, unreduced, and the paper is what it would have been
  * before this check existed.
  */
-export async function runRerunCheck(options: {
+export async function runNovelty(options: {
   groupingPass1RunId: number;
   /**
    * The paper day to check as of (YYYY-MM-DD); only papers before it count as
@@ -101,9 +113,9 @@ export async function runRerunCheck(options: {
   asOf?: string;
   /** Model comparison only: replaces the judge's model settings for this run. */
   overrides?: ModelOverrides;
-}): Promise<RerunRunSummary> {
+}): Promise<NoveltyRunSummary> {
   const pool = getPool();
-  const cfg = applyModelOverrides(loadModelConfig().rerun, options.overrides);
+  const cfg = applyModelOverrides(loadModelConfig().novelty, options.overrides);
   const { groupingPass1RunId } = options;
 
   if (!cfg.enabled) return { rerunRunId: null, ...EMPTY, dropped: new Set(), reduced: new Map() };
@@ -203,7 +215,7 @@ export async function runRerunCheck(options: {
   const judgedKeys = candidates.map((c) => c.ref).filter((k) => priorsByRow.has(k));
 
   console.log(
-    `[rerun] run #${rerunRunId}: ${candidates.length} rows checked, ${judgedKeys.length} with ` +
+    `[novelty] run #${rerunRunId}: ${candidates.length} rows checked, ${judgedKeys.length} with ` +
       `printed pieces above ${cfg.candidate_floor} in the last ${cfg.lookback_editions} edition(s) ` +
       `(${priors.length} pieces)`,
   );
@@ -242,7 +254,7 @@ export async function runRerunCheck(options: {
             const result = await callWithBackoff(
               () =>
                 callLLM({
-                  stage: "rerun",
+                  stage: "novelty",
                   stageRunId: rerunRunId,
                   model: cfg.model,
                   systemPrompt: buildNoveltySystemPrompt(),
@@ -255,7 +267,7 @@ export async function runRerunCheck(options: {
                   stream: cfg.stream,
                 }),
               cfg,
-              "rerun",
+              "novelty",
             );
             const grades = parseNoveltyGrades(result.text, batch.length);
             return batch.map((key, i) => ({
@@ -268,7 +280,7 @@ export async function runRerunCheck(options: {
             // Fail open: these rows stay in the paper, ungraded and unreduced.
             failedCalls++;
             console.warn(
-              `[rerun] judge call failed, ${batch.length} row(s) kept ungraded: ` +
+              `[novelty] judge call failed, ${batch.length} row(s) kept ungraded: ` +
                 (err instanceof Error ? err.message : String(err)),
             );
             return batch.map((key, i) => ({ ...base(key, i), grade: null, news: null, generationLogId: null }));
@@ -332,12 +344,12 @@ export async function runRerunCheck(options: {
       : `${a.grade}, score ${c.score}→${adjustedScore(c.score, r!.penalty)}` +
         (r!.maxTier ? `, at most ${r!.maxTier}` : "");
     console.log(
-      `[rerun] ${a.rowKey} "${c.title}" — ${what}; printed ${a.closest.publishedOn}: ` +
+      `[novelty] ${a.rowKey} "${c.title}" — ${what}; printed ${a.closest.publishedOn}: ` +
         `"${a.closest.headline ?? "(line)"}" (${a.news ?? "no sentence given"})`,
     );
   }
   console.log(
-    `[rerun] run #${rerunRunId} complete: ${[...byGrade].map(([g, n]) => `${g}=${n}`).join(" ")}; ` +
+    `[novelty] run #${rerunRunId} complete: ${[...byGrade].map(([g, n]) => `${g}=${n}`).join(" ")}; ` +
       `${dropped.size} withheld, ${reduced.size} reduced, ${batches.length} call(s), failed_calls=${failedCalls}`,
   );
 

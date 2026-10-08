@@ -48,7 +48,7 @@
  * than to fill the gap.
  */
 
-import type { WritersPacketConfig, WritersTierPacketConfig } from "../../config/models.js";
+import type { WritePacketConfig, WriteTierPacketConfig } from "../../config/models.js";
 import type { StoryMaterials, StoryArticle, StoryMember, Continuation } from "./materials.js";
 import { stripBoilerplate, isHeadlineEcho } from "./boilerplate.js";
 import { withinCap, type PieceTier } from "../novelty/select.js";
@@ -357,7 +357,7 @@ export function trimToBoundary(text: string, cap: number): string {
  */
 export function allocateBudget(
   lengths: number[],
-  cfg: WritersTierPacketConfig,
+  cfg: WriteTierPacketConfig,
 ): number[] {
   // No cap: every article arrives whole. This is the normal case — see the
   // schema note in src/config/models.ts on why source material is not rationed.
@@ -395,7 +395,7 @@ export function allocateBudget(
  * with a single threshold, run #112 labelled a Guardian standard story
  * "headline-only" while it carried four usable facts.
  */
-function materialLevelOf(chars: number, cfg: WritersTierPacketConfig): MaterialLevel {
+function materialLevelOf(chars: number, cfg: WriteTierPacketConfig): MaterialLevel {
   if (chars >= cfg.full_material_chars) return "full";
   if (chars >= cfg.thin_material_chars) return "partial";
   return "headline-only";
@@ -450,7 +450,7 @@ export function pageMatchesTitle(title: string, pageText: string): boolean {
 export function assembleWriterPacket(
   story: StoryMaterials,
   textsById: Map<number, ResolvedText>,
-  cfg: WritersPacketConfig,
+  cfg: WritePacketConfig,
   budgetTier?: string,
 ): WriterPacket {
   // `budgetTier` decouples the budget from the piece's published tier, which
@@ -733,7 +733,7 @@ function tierBelow(tier: string): string {
 export function assembleSectionPackets(
   story: StoryMaterials,
   textsById: Map<number, ResolvedText>,
-  cfg: WritersPacketConfig,
+  cfg: WritePacketConfig,
 ): WriterPacket[] {
   const members = story.members.filter((m) => m.articles.length > 0);
   if (members.length === 0) return [assembleWriterPacket(story, textsById, cfg)];
@@ -866,7 +866,7 @@ export function assembleSectionPackets(
 export function materialLevelAtTier(
   story: StoryMaterials,
   textsById: Map<number, ResolvedText>,
-  cfg: WritersPacketConfig,
+  cfg: WritePacketConfig,
   tier: string,
 ): MaterialLevel {
   const at =

@@ -1,10 +1,23 @@
+/**
+ * Step 8, rank: the front page, by formula.
+ *
+ *   combined = score + source_weight * ln(distinct outlets)
+ *
+ * Sorts the pile by that, assigns tiers (feature / standard / brief) by rank
+ * position, honours the novelty caps, and asks a model only to break exact
+ * ties. Formerly "editor": the editorial judgment happens in screen and score,
+ * and this stage only combines it. Writes `editor_runs` / `editor_stories`.
+ *
+ * See docs/design.md, "rank".
+ */
+
 import "dotenv/config";
 import { readFileSync } from "fs";
 import path from "path";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { outletCountsByCluster } from "../../db/outlets.js";
-import { loadModelConfig, type EditorTieBreakConfig } from "../../config/models.js";
+import { loadModelConfig, type RankTieBreakConfig } from "../../config/models.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
@@ -168,7 +181,7 @@ async function callTieBreakForGroup(
   groupIndex: number,
   bio: string,
   runId: number,
-  tieCfg: EditorTieBreakConfig,
+  tieCfg: RankTieBreakConfig,
 ): Promise<{ ranks: Map<string, number>; failed: boolean }> {
   const groupRefs = group.map((item) => item.ref);
   try {
@@ -187,7 +200,7 @@ async function callTieBreakForGroup(
     const result = await callWithBackoff(
       () =>
         callLLM({
-          stage: "editor-tie-break",
+          stage: "rank-tie-break",
           stageRunId: runId,
           model: tieCfg.model,
           systemPrompt: buildTieBreakSystemPrompt(),
@@ -207,10 +220,10 @@ async function callTieBreakForGroup(
     const missing = groupRefs.filter((r) => !tieRanks.has(r));
     if (missing.length > 0) {
       console.warn(
-        `[editor] tie-break group ${groupIndex}: LLM omitted ${missing.length} ref(s), falling back to ref order for: ${missing.join(", ")}`,
+        `[rank] tie-break group ${groupIndex}: LLM omitted ${missing.length} ref(s), falling back to ref order for: ${missing.join(", ")}`,
       );
     } else {
-      console.log(`[editor] tie-break group ${groupIndex}: ranked ${groupRefs.length} items`);
+      console.log(`[rank] tie-break group ${groupIndex}: ranked ${groupRefs.length} items`);
     }
     // A model that answered but omitted refs gave a partial ordering, which is
     // a worse answer, not a lost call. Only a thrown call counts as failed.
@@ -218,7 +231,7 @@ async function callTieBreakForGroup(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[editor] tie-break group ${groupIndex}: call failed (${msg}) — falling back to ref order for all ${group.length} items`,
+      `[rank] tie-break group ${groupIndex}: call failed (${msg}) — falling back to ref order for all ${group.length} items`,
     );
     // empty → all items get Infinity → fall back to ref order
     return { ranks: new Map(), failed: true };
@@ -255,7 +268,7 @@ interface EditorRunRow {
 
 const FORMULA_MODEL_SENTINEL = "formula:combined-score";
 
-export async function runEditor(
+export async function runRank(
   options: {
     pileId?: number;
   } = {},
@@ -309,7 +322,7 @@ export async function runEditor(
 
   // 4. Load formula config. Needed before the item list is built because the
   //    tie-break text cap comes from it.
-  const { editor: cfg } = loadModelConfig();
+  const { rank: cfg } = loadModelConfig();
   const W = cfg.source_weight;
   const featureCount = cfg.tiers.feature;
   const standardCount = cfg.tiers.standard;
@@ -361,7 +374,7 @@ export async function runEditor(
       const detail = clusterByIndex.get(row.cluster_index);
       if (!detail) {
         console.warn(
-          `[editor] pile cluster_index ${row.cluster_index} not found in digest — skipping`,
+          `[rank] pile cluster_index ${row.cluster_index} not found in digest — skipping`,
         );
         return null;
       }
@@ -465,7 +478,7 @@ export async function runEditor(
           : (capByKey.get(item.ref) ?? null);
     }
     const capped = pileItems.filter((i) => i.maxTier !== null).length;
-    if (capped > 0) console.log(`[editor] ${capped} item(s) size-capped by the rerun check`);
+    if (capped > 0) console.log(`[rank] ${capped} item(s) size-capped by the rerun check`);
   }
 
   if (pileItems.length === 0) {
@@ -488,7 +501,7 @@ export async function runEditor(
   const tiedGroups = [...byScore.values()].filter((g) => g.length >= 2);
 
   console.log(
-    `[editor] pile #${pileId}: ${threadItems.length} threads, ${clusterItems.length} clusters, ` +
+    `[rank] pile #${pileId}: ${threadItems.length} threads, ${clusterItems.length} clusters, ` +
       `${singletonItems.length} singletons, ${pileItems.length} items total — ` +
       `formula W=${W}, tiers=${featureCount}/${standardCount}/..., ` +
       `${tiedGroups.length} tied group(s)`,
@@ -538,7 +551,7 @@ export async function runEditor(
           .map((r, i) => (r.failed ? tiedGroups[i]!.length : 0))
           .reduce((a, b) => a + b, 0);
         console.warn(
-          `[editor] tie-break: ${tieBreakFailedCalls}/${tieBreakCalls} call(s) failed ` +
+          `[rank] tie-break: ${tieBreakFailedCalls}/${tieBreakCalls} call(s) failed ` +
             `after backoff — ${lost} item(s) ranked by ref order rather than by ` +
             `reader relevance`,
         );
@@ -620,7 +633,7 @@ export async function runEditor(
     );
 
     console.log(
-      `[editor] run #${runId}: feature=${tierCounts.feature}, standard=${tierCounts.standard}, brief=${tierCounts.brief}`,
+      `[rank] run #${runId}: feature=${tierCounts.feature}, standard=${tierCounts.standard}, brief=${tierCounts.brief}`,
     );
 
     return await fetchEditorRun(pool, runId);

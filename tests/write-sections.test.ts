@@ -15,14 +15,14 @@ import type {
   StoryMember,
   StoryArticle,
 } from "../src/pipeline/write/materials.js";
-import type { WritersPacketConfig } from "../src/config/models.js";
+import type { WritePacketConfig } from "../src/config/models.js";
 
 // Run #3's T1 carried twelve members into one 500-word slot. Told to find a
 // spine, the writer kept one and dropped eleven — including a story scoring 81,
 // while the paper ran a 35-word brief on one scoring 56. A thread is a section
 // now: a lead, sidebars, and a line for every remaining member.
 
-const CFG: WritersPacketConfig = {
+const CFG: WritePacketConfig = {
   section: { max_sidebars: 3 },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,

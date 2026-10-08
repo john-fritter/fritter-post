@@ -2,12 +2,12 @@
  * CLI entry point for the editor stage (deterministic combined-score formula).
  *
  * Usage:
- *   npm run editor
- *   npm run editor -- --pile-id 3
+ *   npm run rank
+ *   npm run rank -- --pile-id 3
  */
 
 import "dotenv/config";
-import { runEditor } from "../src/pipeline/rank/index.js";
+import { runRank } from "../src/pipeline/rank/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -43,7 +43,7 @@ async function main() {
   }
   console.log("");
 
-  const run = await runEditor({ pileId });
+  const run = await runRank({ pileId });
 
   console.log(`\nEditor run #${run.id} complete.`);
   console.log(`  Pile:         #${run.pileId}`);

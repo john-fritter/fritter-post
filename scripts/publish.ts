@@ -18,7 +18,7 @@
  */
 
 import "dotenv/config";
-import { runPublisher } from "../src/pipeline/publish/index.js";
+import { runPublish } from "../src/pipeline/publish/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -52,7 +52,7 @@ async function main() {
     process.exit(1);
   }
 
-  const summary = await runPublisher({
+  const summary = await runPublish({
     ...(writerRunId !== undefined ? { writerRunId } : {}),
     ...(flags["force"] === "true" ? { force: true } : {}),
     ...(flags["date"] ? { date: flags["date"] } : {}),

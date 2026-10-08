@@ -3,13 +3,13 @@
  * step of the pipeline. Inspect results with `npm run inspect -- grouping`.
  *
  * Usage:
- *   npm run grouping
- *   npm run grouping -- --preprocessor-run-id 3
- *   npm run grouping -- --model alibaba/qwen3.6-27b:thinking
+ *   npm run cluster
+ *   npm run cluster -- --preprocessor-run-id 3
+ *   npm run cluster -- --model alibaba/qwen3.6-27b:thinking
  */
 
 import "dotenv/config";
-import { runGrouping } from "../src/pipeline/cluster/index.js";
+import { runCluster } from "../src/pipeline/cluster/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 
 function parseArgs(argv: string[]) {
@@ -46,8 +46,8 @@ async function main() {
   const modelOverride = flags["model"];
 
   const modelConfig = loadModelConfig();
-  const effectiveModel = modelOverride ?? modelConfig.grouping.model;
-  const cfg = modelConfig.grouping;
+  const effectiveModel = modelOverride ?? modelConfig.cluster.model;
+  const cfg = modelConfig.cluster;
 
   console.log("Starting grouping…");
   if (preprocessorRunId !== undefined) {
@@ -58,7 +58,7 @@ async function main() {
   console.log(`  top_k:                ${cfg.embedding.top_k}`);
   console.log(`  embed_body_cap:       ${cfg.embedding.body_cap} chars`);
 
-  const run = await runGrouping({ preprocessorRunId, modelOverride });
+  const run = await runCluster({ preprocessorRunId, modelOverride });
 
   console.log(`\nGrouping run #${run.id} complete.`);
   console.log(`  Preprocessor run:  #${run.preprocessorRunId}`);

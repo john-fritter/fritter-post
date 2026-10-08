@@ -1,5 +1,5 @@
 /**
- * Stage 9: the publisher.
+ * Step 11, publish: the publisher.
  *
  * Takes a writer run and freezes it into a paper — the prose as written, plus
  * the attribution resolved from the lineage underneath it. No judgment: every
@@ -24,7 +24,7 @@ import "dotenv/config";
 import { getPool } from "../../db/index.js";
 import { latestWriterRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig } from "../../config/models.js";
-import { buildPaperLineage } from "../continuity/index.js";
+import { buildContinuity } from "../continuity/index.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "../write/materials.js";
 import {
   buildIndex,
@@ -108,7 +108,7 @@ export interface RunPublisherOptions {
   force?: boolean;
 }
 
-export async function runPublisher(options: RunPublisherOptions): Promise<PaperSummary> {
+export async function runPublish(options: RunPublisherOptions): Promise<PaperSummary> {
   const pool = getPool();
   const writerRunId = await resolveRunId(options.writerRunId, latestWriterRunId, "writer run");
 
@@ -171,7 +171,7 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
   const existingPieceCount = existingRows[0]?.piece_count ?? null;
 
   if (existingPieceCount !== null && !options.force) {
-    const floor = loadModelConfig().pipeline.gates.publisher.min_replacement_fraction;
+    const floor = loadModelConfig().pipeline.gates.publish.min_replacement_fraction;
     const short = replacementShortfall(existingPieceCount, pieces.length, floor);
     if (short !== null) {
       throw new Error(
@@ -265,7 +265,7 @@ export async function runPublisher(options: RunPublisherOptions): Promise<PaperS
   // find them must not roll back an edition that is otherwise ready to read.
   let lineageLinked = 0;
   try {
-    const lineage = await buildPaperLineage(paperId, publishedOn);
+    const lineage = await buildContinuity(paperId, publishedOn);
     lineageLinked = lineage.linked;
     if (!lineage.skipped) {
       console.log(

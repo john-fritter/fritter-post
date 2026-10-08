@@ -1,3 +1,12 @@
+/**
+ * The pile: the rows the rank stage chooses from.
+ *
+ * Scored rows and threads together, by score, top `cluster.pile_target`. A
+ * row absorbed into a thread is withheld so it cannot also appear on its own,
+ * and a row the novelty pass withheld never arrives. Called at the end of the
+ * score stage. Writes `editor_piles` / `editor_pile_items`.
+ */
+
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
 import type { ScoreReductions } from "../thread/index.js";
@@ -96,7 +105,7 @@ export interface PileNovelty {
   rerunRunId?: number | null;
 }
 
-export async function assembleGroupingPile(
+export async function assemblePile(
   groupingPass1RunId: number,
   threadRunId?: number,
   novelty: PileNovelty = {},
@@ -166,7 +175,7 @@ export async function assembleGroupingPile(
   //    apply the pile target. A thread carries max(member score), so it sorts
   //    where its strongest member would have.
   const modelConfig = loadModelConfig();
-  const pileTarget = modelConfig.grouping.pile_target;
+  const pileTarget = modelConfig.cluster.pile_target;
 
   const ranked: PileCandidate[] = [
     ...threads.map((t) => ({

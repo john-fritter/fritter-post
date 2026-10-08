@@ -10,7 +10,7 @@ import type {
   StoryMember,
   StoryArticle,
 } from "../src/pipeline/write/materials.js";
-import type { WritersPacketConfig } from "../src/config/models.js";
+import type { WritePacketConfig } from "../src/config/models.js";
 
 // Run #42 published 37 of its 150 pieces on headline-only material, three of
 // them features. Rank 7 ran one sentence and then, under a horizontal rule, a
@@ -20,7 +20,7 @@ import type { WritersPacketConfig } from "../src/config/models.js";
 // hundred words. The editor tiers by rank alone and cannot see whether any text
 // exists behind a story; this is the correction.
 
-const CFG: WritersPacketConfig = {
+const CFG: WritePacketConfig = {
   section: { max_sidebars: 3 },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,

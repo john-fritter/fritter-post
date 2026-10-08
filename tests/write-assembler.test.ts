@@ -14,13 +14,13 @@ import {
   buildWriterSystemPrompt,
 } from "../src/pipeline/write/prompt.js";
 import type { StoryMaterials, StoryArticle } from "../src/pipeline/write/materials.js";
-import type { WritersPacketConfig } from "../src/config/models.js";
+import type { WritePacketConfig } from "../src/config/models.js";
 
 // The shapes here are run #112's: T3 carried 27 articles across 12 members, T1
 // carried 18 across 12, and 9 articles in the paper came from hosts that blocked
 // every request — so a packet has to survive both too much material and none.
 
-const CFG: WritersPacketConfig = {
+const CFG: WritePacketConfig = {
   section: { max_sidebars: 3 },
   min_dedup_paragraph_chars: 120,
   min_article_chars: 60,

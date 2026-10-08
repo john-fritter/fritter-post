@@ -146,7 +146,7 @@ async function main() {
     process.exit(1);
   }
 
-  const prodConfig = loadModelConfig().preprocessor.translation;
+  const prodConfig = loadModelConfig().preprocess.translation;
   const sample = await loadSample(runId, limit);
   console.log(
     `[translation-experiment] preprocessor run #${sample.runId}: ${sample.eligible} non-English ` +

@@ -1,5 +1,7 @@
 /**
- * The nine stages, as one ordered list the runner can walk.
+ * The runner's stages, as one ordered list it can walk. Novelty and thread run
+ * inside `score`, and continuity inside `publish`, so eleven steps make nine
+ * runner stages.
  *
  * Each entry knows three things: how to run its stage, which ids it contributes
  * to the lineage, and which counters its gate reads. Nothing else -- the gate
@@ -14,43 +16,43 @@
 
 import { getPool } from "../../db/index.js";
 import { loadModelConfig } from "../../config/models.js";
-import { runCollector } from "../collect/index.js";
-import { runPreprocessor } from "../preprocess/index.js";
-import { runPrefilter } from "../screen/index.js";
-import { runGrouping } from "../cluster/index.js";
-import { runGroupingPass1 } from "../score/index.js";
-import { assembleGroupingPile } from "../rank/pile.js";
-import { runThreading } from "../thread/index.js";
-import { runRerunCheck } from "../novelty/index.js";
-import { runEditor } from "../rank/index.js";
-import { runArticleFetch } from "../fetch/index.js";
-import { runWriters, repairWriterRun } from "../write/index.js";
-import { runPublisher } from "../publish/index.js";
+import { runCollect } from "../collect/index.js";
+import { runPreprocess } from "../preprocess/index.js";
+import { runScreen } from "../screen/index.js";
+import { runCluster } from "../cluster/index.js";
+import { runScore } from "../score/index.js";
+import { assemblePile } from "../rank/pile.js";
+import { runThread } from "../thread/index.js";
+import { runNovelty } from "../novelty/index.js";
+import { runRank } from "../rank/index.js";
+import { runFetch } from "../fetch/index.js";
+import { runWrite, repairWriterRun } from "../write/index.js";
+import { runPublish } from "../publish/index.js";
 import {
   evaluate,
-  gateCollector,
+  gateCollect,
   gateFetch,
   newlyCooled,
-  gateEditor,
-  gateGrouping,
-  gateGroupingPass1,
-  gatePrefilter,
-  gatePreprocessor,
-  gatePublisher,
-  gateRerun,
+  gateRank,
+  gateCluster,
+  gateScore,
+  gateScreen,
+  gatePreprocess,
+  gatePublish,
+  gateNovelty,
   gateThread,
-  gateWriters,
+  gateWrite,
   type GateResult,
 } from "./gates.js";
 
 export const STAGE_NAMES = [
   "collect",
   "preprocess",
-  "prefilter",
-  "grouping",
-  "grouping-pass1",
-  "editor",
-  "fetch-text",
+  "screen",
+  "cluster",
+  "score",
+  "rank",
+  "fetch",
   "write",
   "publish",
 ] as const;
@@ -165,7 +167,7 @@ async function cooldownBaseline(
 ): Promise<Set<string> | null> {
   const { rows } = await getPool().query<{ metrics: { cooldownHosts?: unknown } | null }>(
     `SELECT metrics FROM pipeline_stage_runs
-      WHERE stage = 'fetch-text'
+      WHERE stage = 'fetch'
         AND pipeline_run_id <> $1
         AND metrics IS NOT NULL
         AND started_at >= NOW() - ($2::int || ' days')::interval
@@ -196,8 +198,8 @@ export const STAGES: Stage[] = [
   {
     name: "collect",
     async run() {
-      const cfg = loadModelConfig().pipeline.gates.collector;
-      const r = await runCollector();
+      const cfg = loadModelConfig().pipeline.gates.collect;
+      const r = await runCollect();
       const metrics = {
         sourcesAttempted: r.sourcesAttempted,
         sourcesSucceeded: r.sourcesSucceeded,
@@ -207,7 +209,7 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.runId,
         metrics,
-        gate: gateCollector(metrics, cfg),
+        gate: gateCollect(metrics, cfg),
         lineage: { collectorRunId: r.runId },
       };
     },
@@ -216,13 +218,13 @@ export const STAGES: Stage[] = [
   {
     name: "preprocess",
     async run(ctx) {
-      const cfg = loadModelConfig().pipeline.gates.preprocessor;
+      const cfg = loadModelConfig().pipeline.gates.preprocess;
       // The collector run id is recorded on the preprocessor row as provenance
       // and is NOT a filter: the preprocessor selects raw_items by a fixed
       // fetched_at window. Passed anyway so the lineage says which collection
       // this run was meant to follow, which is the only honest thing it can
       // mean here.
-      const r = await runPreprocessor({
+      const r = await runPreprocess({
         ...(ctx.lineage.collectorRunId !== null
           ? { collectorRunId: ctx.lineage.collectorRunId }
           : {}),
@@ -242,17 +244,17 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.id,
         metrics,
-        gate: gatePreprocessor(metrics, cfg),
+        gate: gatePreprocess(metrics, cfg),
         lineage: { preprocessorRunId: r.id },
       };
     },
   },
 
   {
-    name: "prefilter",
+    name: "screen",
     async run(ctx) {
-      const cfg = loadModelConfig().pipeline.gates.prefilter;
-      const r = await runPrefilter(
+      const cfg = loadModelConfig().pipeline.gates.screen;
+      const r = await runScreen(
         ctx.lineage.preprocessorRunId !== null
           ? { preprocessorRunId: ctx.lineage.preprocessorRunId }
           : {},
@@ -261,17 +263,17 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.id,
         metrics,
-        gate: gatePrefilter(metrics, cfg),
+        gate: gateScreen(metrics, cfg),
         lineage: { prefilterRunId: r.id, preprocessorRunId: r.preprocessorRunId },
       };
     },
   },
 
   {
-    name: "grouping",
+    name: "cluster",
     async run(ctx) {
       const pool = getPool();
-      const cfg = loadModelConfig().pipeline.gates.grouping;
+      const cfg = loadModelConfig().pipeline.gates.cluster;
 
       // Grouping must not start before the prefilter has finished for this
       // preprocessor run. getClusteringItems tolerates a missing prefilter run
@@ -294,7 +296,7 @@ export const STAGES: Stage[] = [
         }
       }
 
-      const r = await runGrouping(
+      const r = await runCluster(
         ctx.lineage.preprocessorRunId !== null
           ? { preprocessorRunId: ctx.lineage.preprocessorRunId }
           : {},
@@ -327,7 +329,7 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.id,
         metrics,
-        gate: gateGrouping(metrics, cfg),
+        gate: gateCluster(metrics, cfg),
         lineage: { groupingRunId: r.id, preprocessorRunId: r.preprocessorRunId },
       };
     },
@@ -337,13 +339,13 @@ export const STAGES: Stage[] = [
     // Scoring, threading and pile assembly are one stage because the script has
     // always run them together and the pile needs the thread results: a threaded
     // row must not also appear on its own.
-    name: "grouping-pass1",
+    name: "score",
     async run(ctx) {
       const pool = getPool();
       const config = loadModelConfig();
       const cfg = config.pipeline.gates;
 
-      const r = await runGroupingPass1(
+      const r = await runScore(
         ctx.lineage.groupingRunId !== null ? { groupingRunId: ctx.lineage.groupingRunId } : {},
       );
 
@@ -359,7 +361,7 @@ export const STAGES: Stage[] = [
       // The rerun check runs before threading, so news the paper has already
       // printed is neither a thread member nor a pile row, and a minor update
       // or routine news threads and ranks at a reduced score.
-      const rerun = await runRerunCheck({ groupingPass1RunId: r.id });
+      const rerun = await runNovelty({ groupingPass1RunId: r.id });
       const rerunMetrics = {
         rerunEnabled: rerun.rerunRunId !== null,
         rerunRunId: rerun.rerunRunId,
@@ -370,16 +372,16 @@ export const STAGES: Stage[] = [
         rerunRowsReduced: rerun.reduced.size,
         rerunFailedCalls: rerun.failedCalls,
       };
-      const rerunGate = gateRerun(
+      const rerunGate = gateNovelty(
         { candidatesIn: rerun.candidatesIn, rowsDropped: rerun.dropped.size, failedCalls: rerun.failedCalls },
-        cfg.rerun,
+        cfg.novelty,
       );
 
       let threadRunId: number | null = null;
       let threadGate: GateResult = { verdict: "ok", reasons: [] };
       let threadMetrics: Record<string, unknown> = { threadEnabled: false };
       if (config.thread.enabled) {
-        const t = await runThreading({
+        const t = await runThread({
           groupingPass1RunId: r.id,
           exclude: rerun.dropped,
           reductions: rerun.reduced,
@@ -402,7 +404,7 @@ export const STAGES: Stage[] = [
         );
       }
 
-      const pile = await assembleGroupingPile(r.id, threadRunId ?? undefined, {
+      const pile = await assemblePile(r.id, threadRunId ?? undefined, {
         withheld: rerun.dropped,
         reductions: rerun.reduced,
         rerunRunId: rerun.rerunRunId,
@@ -422,7 +424,7 @@ export const STAGES: Stage[] = [
           singletonsInPile: pile.singletonsInPile,
           scoreCutoff: pile.scoreCutoff,
         },
-        gate: merge(gateGroupingPass1(pass1Metrics, cfg.grouping_pass1), rerunGate, threadGate),
+        gate: merge(gateScore(pass1Metrics, cfg.score), rerunGate, threadGate),
         lineage: {
           groupingPass1RunId: r.id,
           threadRunId,
@@ -434,11 +436,11 @@ export const STAGES: Stage[] = [
   },
 
   {
-    name: "editor",
+    name: "rank",
     async run(ctx) {
       const pool = getPool();
-      const cfg = loadModelConfig().pipeline.gates.editor;
-      const r = await runEditor(ctx.lineage.pileId !== null ? { pileId: ctx.lineage.pileId } : {});
+      const cfg = loadModelConfig().pipeline.gates.rank;
+      const r = await runRank(ctx.lineage.pileId !== null ? { pileId: ctx.lineage.pileId } : {});
 
       // Migration 040. NULL means a run before it, where the console was the
       // only record -- which is the state this whole runner exists to end.
@@ -459,21 +461,21 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.id,
         metrics,
-        gate: gateEditor(metrics, cfg),
+        gate: gateRank(metrics, cfg),
         lineage: { editorRunId: r.id, pileId: r.pileId, groupingRunId: r.groupingRunId },
       };
     },
   },
 
   {
-    name: "fetch-text",
+    name: "fetch",
     async run(ctx) {
       if (ctx.lineage.editorRunId === null) {
         return abortBecause("no editor run to fetch article text for");
       }
       const config = loadModelConfig();
       const cfg = config.pipeline.gates.fetch;
-      const r = await runArticleFetch({ editorRunId: ctx.lineage.editorRunId });
+      const r = await runFetch({ editorRunId: ctx.lineage.editorRunId });
 
       // What recent runs found in cooldown, so the gate reports the change
       // rather than the condition. This is the metrics column earning its keep:
@@ -482,7 +484,7 @@ export const STAGES: Stage[] = [
       // cooldown window, because that is what sets the oscillation's period.
       const baseline = await cooldownBaseline(
         ctx.pipelineRunId,
-        config.writers.fetch.cooldown.window_days,
+        config.fetch.cooldown.window_days,
       );
       const newlyCooledHosts = newlyCooled(baseline, r.cooldownHosts);
 
@@ -528,10 +530,10 @@ export const STAGES: Stage[] = [
         return abortBecause("no editor run to write");
       }
       const config = loadModelConfig();
-      const cfg = config.pipeline.gates.writers;
-      const { repair_attempts, repair_delay_ms } = config.pipeline.writers;
+      const cfg = config.pipeline.gates.write;
+      const { repair_attempts, repair_delay_ms } = config.pipeline.write;
 
-      let summary = await runWriters({ editorRunId: ctx.lineage.editorRunId });
+      let summary = await runWrite({ editorRunId: ctx.lineage.editorRunId });
 
       // The breaker trips on a provider outage, not on hard material, and
       // --repair exists for exactly this: run #35 lost 32 pieces to five
@@ -560,7 +562,7 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: summary.runId,
         metrics,
-        gate: gateWriters(metrics, cfg),
+        gate: gateWrite(metrics, cfg),
         lineage: { writerRunId: summary.runId },
       };
     },
@@ -572,8 +574,8 @@ export const STAGES: Stage[] = [
       if (ctx.lineage.writerRunId === null) {
         return abortBecause("no writer run to publish");
       }
-      const cfg = loadModelConfig().pipeline.gates.publisher;
-      const r = await runPublisher({ writerRunId: ctx.lineage.writerRunId });
+      const cfg = loadModelConfig().pipeline.gates.publish;
+      const r = await runPublish({ writerRunId: ctx.lineage.writerRunId });
       const metrics = {
         publishedOn: r.publishedOn,
         storyCount: r.storyCount,
@@ -588,7 +590,7 @@ export const STAGES: Stage[] = [
       return {
         stageRunId: r.paperId,
         metrics,
-        gate: gatePublisher(
+        gate: gatePublish(
           {
             pieceCount: r.pieceCount,
             piecesSkipped: r.piecesSkipped,

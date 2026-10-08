@@ -1,3 +1,14 @@
+/**
+ * Step 3, screen: a bio-aware relevance floor, one verdict per item.
+ *
+ * `cut` (noise this reader has no use for, non-articles, digests), `news`
+ * (flows on to clustering) or `opinion` (kept, routed out of clustering).
+ * Conservative: when unsure, keep. Formerly "prefilter", named for a filter
+ * stage that no longer exists. Writes `prefilter_runs` / `prefilter_results`.
+ *
+ * See docs/design.md, "screen".
+ */
+
 import "dotenv/config";
 import { readFileSync } from "fs";
 import path from "path";
@@ -147,7 +158,7 @@ export function parseBatchOutput(
       keep = false;
       kind = "news";
     } else {
-      console.warn(`[prefilter] invalid verdict "${verdictField}" for ${id} — fail-safe to keep as news`);
+      console.warn(`[screen] invalid verdict "${verdictField}" for ${id} — fail-safe to keep as news`);
       keep = true;
       kind = "news";
     }
@@ -199,7 +210,7 @@ async function processBatch(
     const llmResult = await callWithBackoff(
       () =>
         callLLM({
-          stage: "prefilter",
+          stage: "screen",
           stageRunId: runId,
           model,
           systemPrompt,
@@ -216,14 +227,14 @@ async function processBatch(
           stream: callOpts.stream,
         }),
       backoff,
-      "prefilter",
+      "screen",
     );
 
     const expectedIds = batch.map((item) => Number(item.id));
     const parsed = parseBatchOutput(llmResult.text, expectedIds);
 
     const log =
-      `[prefilter] batch ${batchIndex + 1}/${batchCount}: ` +
+      `[screen] batch ${batchIndex + 1}/${batchCount}: ` +
       `parsed-lines=${parsed.parsedLineCount}/${batch.length}; ` +
       `fail-safe-kept=${parsed.failSafeCount}`;
     if (parsed.failSafeCount > 0) {
@@ -236,7 +247,7 @@ async function processBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[prefilter] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — keeping all ${batch.length} items as news`,
+      `[screen] batch ${batchIndex + 1}/${batchCount}: LLM call failed (${msg}) — keeping all ${batch.length} items as news`,
     );
     return batch.map((item) => ({
       id: Number(item.id),
@@ -247,7 +258,7 @@ async function processBatch(
   }
 }
 
-export async function runPrefilter(
+export async function runScreen(
   options: {
     preprocessorRunId?: number;
     modelOverride?: string;
@@ -271,7 +282,7 @@ export async function runPrefilter(
   // 2. Load model config.
   const modelConfig = loadModelConfig();
   const stageConfig = applyModelOverrides(
-    modelConfig.prefilter,
+    modelConfig.screen,
     withModel(options.overrides, options.modelOverride),
   );
   const model = stageConfig.model;
@@ -359,7 +370,7 @@ export async function runPrefilter(
       if (!result.keep) {
         const item = itemMap.get(result.id);
         console.log(
-          `[prefilter] CUT [${result.id}] ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
+          `[screen] CUT [${result.id}] ${item?.source_name ?? "?"} | ${result.reason} | ${item?.title ?? "?"}`,
         );
         itemsCut++;
       } else if (result.kind === "opinion") {
@@ -370,7 +381,7 @@ export async function runPrefilter(
     }
     const itemsKept = allResults.length - itemsCut;
     console.log(
-      `[prefilter] split: ${allResults.length} in, ${itemsCut} cut, ` +
+      `[screen] split: ${allResults.length} in, ${itemsCut} cut, ` +
       `${itemsNews} kept-news, ${itemsOpinion} kept-opinion`,
     );
 

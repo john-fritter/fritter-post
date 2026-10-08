@@ -9,9 +9,9 @@
  * generation_logs rows every call writes are written (stage 'lineage-check', so
  * the production judge's logs stay clean for `inspect publisher`).
  *
- *   npm run lineage-check -- --last 7 [--model <id>] [--provider nanogpt] \
+ *   npm run continuity-check -- --last 7 [--model <id>] [--provider nanogpt] \
  *     [--reasoning-effort none|low|omit] [--max-tokens <n>] [--out <path>]
- *   npm run lineage-check -- --papers 41,42,43 ...
+ *   npm run continuity-check -- --papers 41,42,43 ...
  *
  * Run it once with no --model first: the production judge re-asked is the
  * noise control, and a verdict or two flips run to run (1 of 71 on 2026-09-05).
@@ -22,7 +22,7 @@ import { writeFileSync } from "node:fs";
 import { getPool } from "../src/db/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 import { loadModelConfig } from "../src/config/models.js";
-import { buildPaperLineage, type JudgedPair } from "../src/pipeline/continuity/index.js";
+import { buildContinuity, type JudgedPair } from "../src/pipeline/continuity/index.js";
 
 const REPORT_BODY_CHARS = 300;
 
@@ -49,7 +49,7 @@ async function main() {
   // A bare --help used to fall through to a full default replay.
   if (process.argv.includes("--help")) {
     console.log(
-      "Usage: npm run lineage-check -- (--last <n> | --papers <a,b,…>) [--out <file.md>]\n" +
+      "Usage: npm run continuity-check -- (--last <n> | --papers <a,b,…>) [--out <file.md>]\n" +
         "         [--model <id>] [--provider nanogpt] [--reasoning-effort <level|omit>]\n" +
         "         [--max-tokens <n>] [--timeout-ms <n>]",
     );
@@ -83,7 +83,7 @@ async function main() {
   }
   if (papers.length === 0) throw new Error("No papers selected");
 
-  const judgeModel = overrides?.model ?? loadModelConfig().publisher.lineage.adjudicate.model;
+  const judgeModel = overrides?.model ?? loadModelConfig().publish.continuity.adjudicate.model;
   console.log(
     `[lineage-check] ${papers.length} paper(s), judge ${judgeModel}` +
       (overrides?.reasoningEffort !== undefined ? `, reasoning ${overrides.reasoningEffort ?? "omitted"}` : ""),
@@ -98,7 +98,7 @@ async function main() {
   let totals = { pairs: 0, yes: 0, failed: 0, replayLinks: 0, prodLinks: 0, both: 0 };
 
   for (const paper of papers) {
-    const result = await buildPaperLineage(paper.id, paper.published_on, {
+    const result = await buildContinuity(paper.id, paper.published_on, {
       dryRun: true,
       ...(overrides ? { overrides } : {}),
     });
@@ -175,7 +175,7 @@ async function main() {
   const report = [
     `# Lineage replay — judge ${judgeModel}`,
     "",
-    `Replayed with dryRun: nothing written but generation_logs (stage 'lineage-check').`,
+    `Replayed with dryRun: nothing written but generation_logs (stage 'continuity-check').`,
     "",
     "| paper | date | pairs judged | YES | replay links | printed links | both | replay only | printed only | |",
     "|---|---|---|---|---|---|---|---|---|---|",

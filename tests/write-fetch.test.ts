@@ -14,14 +14,14 @@ import {
 import { extractArticle } from "../src/pipeline/fetch/extract.js";
 import { hostOf } from "../src/lib/http.js";
 import type { StoryMaterials, StoryArticle } from "../src/pipeline/write/materials.js";
-import type { WritersFetchConfig } from "../src/config/models.js";
+import type { FetchConfig } from "../src/config/models.js";
 
 // The policy these tests pin down comes from the audit of editor run #112:
 // 61% of the paper's articles were under 800 chars of feed body, thinness was
 // concentrated by outlet, and two hosts (nytimes.com, oregonlive.com) refused
 // every request including the browser-agent retry.
 
-const CFG: WritersFetchConfig = {
+const CFG: FetchConfig = {
   enabled: true,
   tiers: ["feature", "standard"],
   feed_chars_floor: 800,

@@ -246,7 +246,7 @@ async function translateBatchWithSplit(
   let rawText: string;
   try {
     rawText = await callWithBackoff(
-      () => callBatchLLM(batch, config, "preprocessor", runId),
+      () => callBatchLLM(batch, config, "preprocess", runId),
       { retry_max_attempts: config.retry_max_attempts, retry_base_ms: config.retry_base_ms },
       "translation",
     );

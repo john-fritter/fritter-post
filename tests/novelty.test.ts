@@ -17,7 +17,7 @@ import { assignTier, assignTiersWithCaps } from "../src/pipeline/rank/index.js";
 import { deriveThreadScores, type ThreadCandidate } from "../src/pipeline/thread/index.js";
 import { resolveTiersByMaterial, type TierCandidate, type WriterPacket } from "../src/pipeline/write/assembler.js";
 import { buildWriterUserPrompt, buildBriefBatchUserPrompt, continuationLines, newsForWriter } from "../src/pipeline/write/prompt.js";
-import { gateRerun } from "../src/pipeline/runner/gates.js";
+import { gateNovelty } from "../src/pipeline/runner/gates.js";
 import { loadModelConfig } from "../src/config/models.js";
 
 // The rerun check grades how new a story is to a reader who read the paper's
@@ -355,20 +355,20 @@ function packet(continuation: WriterPacket["continuation"]): WriterPacket {
 // --- gate ---
 
 {
-  const cfg = loadModelConfig().pipeline.gates.rerun;
-  assert.equal(gateRerun({ candidatesIn: 250, rowsDropped: 6, failedCalls: 0 }, cfg).verdict, "ok",
+  const cfg = loadModelConfig().pipeline.gates.novelty;
+  assert.equal(gateNovelty({ candidatesIn: 250, rowsDropped: 6, failedCalls: 0 }, cfg).verdict, "ok",
     "about six a day is the audited rate, and is the check working, not news");
-  assert.equal(gateRerun({ candidatesIn: 250, rowsDropped: 6, failedCalls: 1 }, cfg).verdict, "warn");
-  assert.equal(gateRerun({ candidatesIn: 250, rowsDropped: 90, failedCalls: 0 }, cfg).verdict, "warn",
+  assert.equal(gateNovelty({ candidatesIn: 250, rowsDropped: 6, failedCalls: 1 }, cfg).verdict, "warn");
+  assert.equal(gateNovelty({ candidatesIn: 250, rowsDropped: 90, failedCalls: 0 }, cfg).verdict, "warn",
     "a judge dropping a third of the paper is the failure a reader cannot see");
-  assert.equal(gateRerun({ candidatesIn: 0, rowsDropped: 0, failedCalls: 0 }, cfg).verdict, "ok");
+  assert.equal(gateNovelty({ candidatesIn: 0, rowsDropped: 0, failedCalls: 0 }, cfg).verdict, "ok");
 }
 
 // --- config ---
 
 {
-  const cfg = loadModelConfig().rerun;
-  assert.equal(cfg.candidate_floor, loadModelConfig().publisher.lineage.candidate_floor,
+  const cfg = loadModelConfig().novelty;
+  assert.equal(cfg.candidate_floor, loadModelConfig().publish.continuity.candidate_floor,
     "the rerun floor matches lineage's: a pair lineage links as 'previously' must be one this check saw");
   assert.ok(cfg.grades.routine.penalty >= cfg.grades.minor.penalty, "routine is reduced at least as much as minor");
 }

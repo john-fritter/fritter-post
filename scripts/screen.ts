@@ -2,13 +2,13 @@
  * CLI entry point for the prefilter stage (bio-aware relevance floor).
  *
  * Usage:
- *   npm run prefilter
- *   npm run prefilter -- --preprocessor-run-id 3
- *   npm run prefilter -- --model glm-5.1
+ *   npm run screen
+ *   npm run screen -- --preprocessor-run-id 3
+ *   npm run screen -- --model glm-5.1
  */
 
 import "dotenv/config";
-import { runPrefilter } from "../src/pipeline/screen/index.js";
+import { runScreen } from "../src/pipeline/screen/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 import { loadModelConfig } from "../src/config/models.js";
 
@@ -46,22 +46,22 @@ async function main() {
   const modelOverride = flags["model"];
 
   const modelConfig = loadModelConfig();
-  const effectiveModel = modelOverride ?? modelConfig.prefilter.model;
+  const effectiveModel = modelOverride ?? modelConfig.screen.model;
 
   console.log("Starting prefilter…");
   if (preprocessorRunId !== undefined) {
     console.log(`  preprocessor-run-id: ${preprocessorRunId}`);
   }
   console.log(`  model: ${effectiveModel}${modelOverride ? " (override)" : " (default)"}`);
-  console.log(`  batch_size: ${modelConfig.prefilter.batch_size}`);
-  console.log(`  concurrency: ${modelConfig.prefilter.concurrency}`);
+  console.log(`  batch_size: ${modelConfig.screen.batch_size}`);
+  console.log(`  concurrency: ${modelConfig.screen.concurrency}`);
   console.log("");
 
   // --provider / --reasoning-effort / --max-tokens / --timeout-ms, for model
   // comparisons; --model alone behaves as it always has.
   const overrides = overridesFromFlags(flags);
   if (overrides) console.log(`  overrides: ${JSON.stringify(overrides)}`);
-  const run = await runPrefilter({ preprocessorRunId, modelOverride, overrides });
+  const run = await runScreen({ preprocessorRunId, modelOverride, overrides });
 
   console.log(`\nPrefilter run #${run.id} complete.`);
   console.log(`  Preprocessor run:  #${run.preprocessorRunId}`);

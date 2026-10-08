@@ -9,7 +9,7 @@
  * which is the half that has rules worth pinning down.
  */
 
-export interface LineageCandidate {
+export interface ContinuityCandidate {
   /** Today's piece. */
   paperPieceId: string;
   ref: string;
@@ -54,15 +54,15 @@ export interface SelectOptions {
  * Two of today's pieces are allowed to point at the same prior piece: one day's
  * coverage can genuinely split into two the next.
  */
-export function selectLineageLinks(
-  candidates: LineageCandidate[],
+export function selectContinuityLinks(
+  candidates: ContinuityCandidate[],
   opts: SelectOptions,
-): LineageCandidate[] {
-  const best = new Map<string, LineageCandidate>();
+): ContinuityCandidate[] {
+  const best = new Map<string, ContinuityCandidate>();
 
   for (const c of candidates) {
     if (c.similarity < opts.threshold) continue;
-    // A prior *section line* has no headline, so `lineageLabel` renders nothing
+    // A prior *section line* has no headline, so `continuityLabel` renders nothing
     // for it — and a candidate that cannot become a marker must not take the
     // slot. It used to: one link per piece means an unrenderable winner
     // silently discarded a perfectly good second-place link, and the reader saw
@@ -76,7 +76,7 @@ export function selectLineageLinks(
   return [...best.values()].sort((a, b) => a.ref.localeCompare(b.ref));
 }
 
-function beats(c: LineageCandidate, held: LineageCandidate): boolean {
+function beats(c: ContinuityCandidate, held: ContinuityCandidate): boolean {
   if (c.similarity !== held.similarity) return c.similarity > held.similarity;
   if (c.priorPublishedOn !== held.priorPublishedOn) {
     return c.priorPublishedOn > held.priorPublishedOn;
@@ -92,8 +92,8 @@ function beats(c: LineageCandidate, held: LineageCandidate): boolean {
  * same call the reading view makes for a line's own row, one step further on:
  * a pointer to a pointer is not worth the reader's attention.
  */
-export function lineageLabel(
-  link: Pick<LineageCandidate, "priorPublishedOn" | "priorHeadline">,
+export function continuityLabel(
+  link: Pick<ContinuityCandidate, "priorPublishedOn" | "priorHeadline">,
   formatDate: (iso: string) => string,
 ): string | null {
   const headline = link.priorHeadline?.trim();

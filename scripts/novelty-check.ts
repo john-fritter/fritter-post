@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { runRerunCheck } from "../src/pipeline/novelty/index.js";
+import { runNovelty } from "../src/pipeline/novelty/index.js";
 import { getPool } from "../src/db/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 
@@ -8,12 +8,12 @@ import { overridesFromFlags } from "../src/config/overrides.js";
 // no pile, no thread run, no paper. `--as-of` makes an old grouping-pass-1 run
 // judge against the papers that existed on its day rather than those made since.
 //
-//   npm run rerun-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD
+//   npm run novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD
 //
 // Model comparison: the same run judged by another model, with every other
 // setting production's. rerun_runs.model_used records which.
 //
-//   npm run rerun-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD \
+//   npm run novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD \
 //     --model <id> [--provider nanogpt] [--reasoning-effort none|low|omit] [--max-tokens <n>]
 
 function parseArgs(argv: string[]) {
@@ -36,14 +36,14 @@ function parseArgs(argv: string[]) {
 async function main() {
   const { groupingPass1RunId, asOf, overrides } = parseArgs(process.argv);
   if (groupingPass1RunId === undefined || !Number.isFinite(groupingPass1RunId)) {
-    console.error("Usage: npm run rerun-check -- --grouping-pass1-run <n> [--as-of YYYY-MM-DD]");
+    console.error("Usage: npm run novelty-check -- --grouping-pass1-run <n> [--as-of YYYY-MM-DD]");
     process.exit(1);
   }
   if (asOf !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
     console.error(`--as-of must be YYYY-MM-DD, got "${asOf}"`);
     process.exit(1);
   }
-  const r = await runRerunCheck({
+  const r = await runNovelty({
     groupingPass1RunId,
     ...(asOf ? { asOf } : {}),
     ...(overrides ? { overrides } : {}),

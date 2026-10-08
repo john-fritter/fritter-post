@@ -146,11 +146,11 @@ The reason is one short phrase, under fifteen words, naming what decides it — 
 
 Use every number exactly once.`;
 
-export function buildLineageSystemPrompt(): string {
+export function buildContinuitySystemPrompt(): string {
   return LINEAGE_SYSTEM_PROMPT;
 }
 
-export interface LineagePairBlock {
+export interface ContinuityPairBlock {
   todayHeadline: string;
   todayDate: string;
   todayBody: string;
@@ -159,7 +159,7 @@ export interface LineagePairBlock {
   priorBody: string;
 }
 
-export function buildLineageUserPrompt(pairs: LineagePairBlock[]): string {
+export function buildContinuityUserPrompt(pairs: ContinuityPairBlock[]): string {
   const blocks = pairs.map((p, i) => {
     const lines = [`${i + 1}.`, `  TODAY (${p.todayDate}): ${p.todayHeadline}`];
     if (p.todayBody) lines.push(`    ${p.todayBody}`);
@@ -192,7 +192,7 @@ export function buildLineageUserPrompt(pairs: LineagePairBlock[]): string {
  * reason the threshold was set toward precision: an unjudged link would print in
  * the paper, where an unjudged brief merely goes missing and gets re-asked.
  */
-export function parseLineageVerdicts(
+export function parseContinuityVerdicts(
   text: string,
   pairCount: number,
 ): Map<number, string | null> {

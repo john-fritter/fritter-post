@@ -117,7 +117,7 @@ export function previewRanking(
     });
   }
 
-  // The pile: top `pileTarget` by score, as assembleGroupingPile cuts it.
+  // The pile: top `pileTarget` by score, as assemblePile cuts it.
   const pile = [...pending]
     .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key))
     .slice(0, cfg.pileTarget);

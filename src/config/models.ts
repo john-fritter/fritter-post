@@ -23,7 +23,7 @@ const TranslationConfigSchema = z.object({
 
 // Deterministic preprocessor tuning (recency window + dedup lookback) plus
 // per-item translation config for non-English items.
-const PreprocessorConfigSchema = z.object({
+const PreprocessConfigSchema = z.object({
   recency: z.object({
     window_hours: z.number().int().positive(),
     max_age_days: z.number().int().positive().nullable(),
@@ -57,7 +57,7 @@ const BatchStageConfigSchema = StageConfigSchema.extend({
   retry_base_ms: z.number().int().optional(),
 });
 
-const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
+const ScoreStageConfigSchema = BatchStageConfigSchema.extend({
   singleton_pile_target: z.number().int(),
   // Items per call when re-asking for scores that came back missing. Small on
   // purpose: the commonest fail-safe is the model dropping one line from a batch
@@ -69,7 +69,7 @@ const EditorPass1StageConfigSchema = BatchStageConfigSchema.extend({
   summary_cap: z.number().int().nonnegative(),
 });
 
-const EditorTieBreakConfigSchema = z.object({
+const RankTieBreakConfigSchema = z.object({
   model: z.string(),
   provider: ProviderSchema.optional(),
   temperature: z.number(),
@@ -84,14 +84,14 @@ const EditorTieBreakConfigSchema = z.object({
   retry_base_ms: z.number().int().optional(),
 });
 
-const EditorStageConfigSchema = z.object({
+const RankStageConfigSchema = z.object({
   source_weight: z.number(),
   tiers: z.object({
     feature: z.number().int().positive(),
     standard: z.number().int().positive(),
     brief: z.number().int().positive(),
   }),
-  tie_break: EditorTieBreakConfigSchema,
+  tie_break: RankTieBreakConfigSchema,
 });
 
 const EmbeddingsConfigSchema = z.object({
@@ -102,13 +102,13 @@ const EmbeddingsConfigSchema = z.object({
   timeout_ms: z.number().int().optional(),
 });
 
-const GroupingEmbeddingConfigSchema = z.object({
+const ClusterEmbeddingConfigSchema = z.object({
   body_cap: z.number().int(),
   similarity_threshold: z.number().min(0).max(1),
   top_k: z.number().int(),
 });
 
-const GroupingAttachConfigSchema = z.object({
+const ClusterAttachConfigSchema = z.object({
   enabled: z.boolean(),
   candidate_floor: z.number().min(0).max(1),
   model: z.string(),
@@ -123,7 +123,7 @@ const GroupingAttachConfigSchema = z.object({
   retry_base_ms: z.number().int().optional(),
 });
 
-const GroupingDescribeConfigSchema = z.object({
+const ClusterDescribeConfigSchema = z.object({
   model: z.string(),
   provider: ProviderSchema.optional(),
   temperature: z.number(),
@@ -137,7 +137,7 @@ const GroupingDescribeConfigSchema = z.object({
   retry_base_ms: z.number().int().optional(),
 });
 
-const GroupingSplitConfigSchema = z.object({
+const ClusterSplitConfigSchema = z.object({
   enabled: z.boolean(),
   // Components below this connectedness are treated as possibly chained.
   density_floor: z.number().min(0).max(1),
@@ -155,18 +155,18 @@ const GroupingSplitConfigSchema = z.object({
   retry_base_ms: z.number().int().optional(),
 });
 
-const GroupingStageConfigSchema = StageConfigSchema.extend({
-  embedding: GroupingEmbeddingConfigSchema,
-  split: GroupingSplitConfigSchema,
-  attach: GroupingAttachConfigSchema,
-  describe: GroupingDescribeConfigSchema,
+const ClusterStageConfigSchema = StageConfigSchema.extend({
+  embedding: ClusterEmbeddingConfigSchema,
+  split: ClusterSplitConfigSchema,
+  attach: ClusterAttachConfigSchema,
+  describe: ClusterDescribeConfigSchema,
   pile_target: z.number().int(),
 });
 
 const ThreadStageConfigSchema = StageConfigSchema.extend({
   enabled: z.boolean(),
   // Top-scoring grouping-pass-1 rows offered to the pass. Bounded by what one
-  // LLM call can hold, not by cost — see runThreading on why it is one call.
+  // LLM call can hold, not by cost — see runThread on why it is one call.
   candidate_target: z.number().int(),
   // Characters of cluster summary / singleton body shown per candidate. One
   // call holds the whole candidate set, so this multiplies by candidate_target.
@@ -177,7 +177,7 @@ const ThreadStageConfigSchema = StageConfigSchema.extend({
 
 // Article text fetch for the writers stage. Every threshold here is a policy
 // the audit of a real run set, so none of them are allowed to be implicit.
-const WritersFetchConfigSchema = z.object({
+const FetchConfigSchema = z.object({
   enabled: z.boolean(),
   // Tiers whose pieces get fetched. Briefs are one-liners and stay out.
   tiers: z.array(z.enum(["feature", "standard", "brief"])),
@@ -212,7 +212,7 @@ const WritersFetchConfigSchema = z.object({
 // Both remain settable because a run may one day meet a page that would blow a
 // context window, and a number in config beats a crash. Setting either is an
 // editorial decision, not a tuning knob: it discards reporting.
-const WritersTierPacketConfigSchema = z.object({
+const WriteTierPacketConfigSchema = z.object({
   max_articles: z.number().int().positive().nullable(),
   total_chars: z.number().int().positive().nullable(),
   per_article_chars: z.number().int().positive(),
@@ -233,7 +233,7 @@ const WritersSectionConfigSchema = z.object({
   max_sidebars: z.number().int().nonnegative(),
 });
 
-const WritersPacketConfigSchema = z.object({
+const WritePacketConfigSchema = z.object({
   section: WritersSectionConfigSchema,
   min_dedup_paragraph_chars: z.number().int().nonnegative(),
   // Sources with less usable text than this are left out of the packet.
@@ -245,18 +245,18 @@ const WritersPacketConfigSchema = z.object({
   // rule and restores the editor's rank-only tiering. See resolveTiersByMaterial.
   tiers_requiring_material: z.array(z.string()),
   tiers: z.object({
-    feature: WritersTierPacketConfigSchema,
-    standard: WritersTierPacketConfigSchema,
-    brief: WritersTierPacketConfigSchema,
+    feature: WriteTierPacketConfigSchema,
+    standard: WriteTierPacketConfigSchema,
+    brief: WriteTierPacketConfigSchema,
     // Section pieces. A sidebar under a standard lead would otherwise take the
     // brief tier's numbers, and a line the brief tier's material; both are the
     // wrong job. See assembleSectionPackets.
-    sidebar: WritersTierPacketConfigSchema,
-    line: WritersTierPacketConfigSchema,
+    sidebar: WriteTierPacketConfigSchema,
+    line: WriteTierPacketConfigSchema,
   }),
 });
 
-const WritersStageConfigSchema = StageConfigSchema.extend({
+const WriteStageConfigSchema = StageConfigSchema.extend({
   // In-flight writer calls. Each one is a whole piece of prose, so this is the
   // knob that decides how long the stage takes and how hard the provider is hit.
   concurrency: z.number().int().positive(),
@@ -267,33 +267,32 @@ const WritersStageConfigSchema = StageConfigSchema.extend({
   abort_after_consecutive_failures: z.number().int().nonnegative(),
   retry_max_attempts: z.number().int().optional(),
   retry_base_ms: z.number().int().optional(),
-  fetch: WritersFetchConfigSchema,
-  packet: WritersPacketConfigSchema,
+  packet: WritePacketConfigSchema,
 });
 
 // The daily runner. Thresholds, not code: the whole point of the gates is that
 // what counts as "too holed to publish" is a policy decision the reader makes,
 // and re-tuning it must not mean editing a stage.
 const PipelineGatesConfigSchema = z.object({
-  collector: z.object({
+  collect: z.object({
     min_sources_succeeded_fraction: z.number().min(0).max(1),
     warn_failed_sources_fraction: z.number().min(0).max(1),
     min_items_inserted: z.number().int().nonnegative(),
   }),
-  preprocessor: z.object({
+  preprocess: z.object({
     min_items_kept: z.number().int().nonnegative(),
     warn_translation_fallback_fraction: z.number().min(0).max(1),
   }),
-  prefilter: z.object({
+  screen: z.object({
     min_items_kept: z.number().int().nonnegative(),
     max_cut_fraction: z.number().min(0).max(1),
   }),
-  grouping: z.object({
+  cluster: z.object({
     min_rows: z.number().int().nonnegative(),
     warn_attach_unrecovered: z.number().int().nonnegative(),
     warn_split_failed_calls: z.number().int().nonnegative(),
   }),
-  grouping_pass1: z.object({
+  score: z.object({
     max_unscored_fraction: z.number().min(0).max(1),
     abort_unscored_fraction: z.number().min(0).max(1),
     min_pile_items: z.number().int().nonnegative(),
@@ -301,29 +300,29 @@ const PipelineGatesConfigSchema = z.object({
   thread: z.object({
     warn_failed_calls: z.number().int().nonnegative(),
   }),
-  rerun: z.object({
+  novelty: z.object({
     warn_failed_calls: z.number().int().nonnegative(),
     // A day that drops more than this share of what it checked is more likely a
     // judge gone wrong than a news cycle gone quiet.
     warn_dropped_fraction: z.number().min(0).max(1),
   }),
-  editor: z.object({
+  rank: z.object({
     min_items_ranked: z.number().int().nonnegative(),
     warn_tie_break_failed_calls: z.number().int().nonnegative(),
   }),
-  writers: z.object({
+  write: z.object({
     min_written_fraction: z.number().min(0).max(1),
   }),
   fetch: z.object({
     warn_on_newly_cooled_hosts: z.boolean(),
   }),
-  publisher: z.object({
+  publish: z.object({
     max_unsourced_fraction: z.number().min(0).max(1),
     min_replacement_fraction: z.number().min(0).max(1),
   }),
 });
 
-const PublisherLineageConfigSchema = z.object({
+const ContinuityConfigSchema = z.object({
   enabled: z.boolean(),
   lookback_editions: z.number().int().positive(),
   // A retrieval floor, not a decision -- see the note in models.yaml and the
@@ -347,7 +346,7 @@ const NoveltyEffectSchema = z.object({
 });
 
 // The rerun check. See src/pipeline/novelty/.
-const RerunConfigSchema = StageConfigSchema.extend({
+const NoveltyConfigSchema = StageConfigSchema.extend({
   enabled: z.boolean(),
   // Top-scoring grouping-pass-1 rows checked. Rows below this never reach the
   // pile, so there is nothing to protect there.
@@ -381,8 +380,8 @@ const RerunConfigSchema = StageConfigSchema.extend({
   }),
 });
 
-const PublisherConfigSchema = z.object({
-  lineage: PublisherLineageConfigSchema,
+const PublishConfigSchema = z.object({
+  continuity: ContinuityConfigSchema,
 });
 
 const PipelineConfigSchema = z.object({
@@ -393,7 +392,7 @@ const PipelineConfigSchema = z.object({
     timezone: z.string().min(1),
   }),
   max_duration_minutes: z.number().int().positive(),
-  writers: z.object({
+  write: z.object({
     repair_attempts: z.number().int().nonnegative(),
     repair_delay_ms: z.number().int().nonnegative(),
   }),
@@ -402,40 +401,41 @@ const PipelineConfigSchema = z.object({
 
 const ModelsConfigSchema = z.object({
   pipeline: PipelineConfigSchema,
-  preprocessor: PreprocessorConfigSchema,
-  prefilter: BatchStageConfigSchema,
-  editor: EditorStageConfigSchema,
-  thread: ThreadStageConfigSchema,
-  rerun: RerunConfigSchema,
-  writers: WritersStageConfigSchema,
-  editor_pass_1: EditorPass1StageConfigSchema,
+  preprocess: PreprocessConfigSchema,
+  screen: BatchStageConfigSchema,
   embeddings: EmbeddingsConfigSchema,
-  grouping: GroupingStageConfigSchema,
-  publisher: PublisherConfigSchema,
+  cluster: ClusterStageConfigSchema,
+  score: ScoreStageConfigSchema,
+  novelty: NoveltyConfigSchema,
+  thread: ThreadStageConfigSchema,
+  rank: RankStageConfigSchema,
+  fetch: FetchConfigSchema,
+  write: WriteStageConfigSchema,
+  publish: PublishConfigSchema,
 });
 
 export type TranslationConfig = z.infer<typeof TranslationConfigSchema>;
-export type PreprocessorConfig = z.infer<typeof PreprocessorConfigSchema>;
+export type PreprocessConfig = z.infer<typeof PreprocessConfigSchema>;
 export type StageConfig = z.infer<typeof StageConfigSchema>;
 export type BatchStageConfig = z.infer<typeof BatchStageConfigSchema>;
-export type EditorPass1StageConfig = z.infer<typeof EditorPass1StageConfigSchema>;
-export type EditorTieBreakConfig = z.infer<typeof EditorTieBreakConfigSchema>;
-export type EditorStageConfig = z.infer<typeof EditorStageConfigSchema>;
+export type ScoreStageConfig = z.infer<typeof ScoreStageConfigSchema>;
+export type RankTieBreakConfig = z.infer<typeof RankTieBreakConfigSchema>;
+export type RankStageConfig = z.infer<typeof RankStageConfigSchema>;
 export type ThreadStageConfig = z.infer<typeof ThreadStageConfigSchema>;
-export type RerunConfig = z.infer<typeof RerunConfigSchema>;
+export type NoveltyConfig = z.infer<typeof NoveltyConfigSchema>;
 export type NoveltyEffect = z.infer<typeof NoveltyEffectSchema>;
-export type WritersFetchConfig = z.infer<typeof WritersFetchConfigSchema>;
-export type WritersTierPacketConfig = z.infer<typeof WritersTierPacketConfigSchema>;
-export type WritersPacketConfig = z.infer<typeof WritersPacketConfigSchema>;
-export type WritersStageConfig = z.infer<typeof WritersStageConfigSchema>;
+export type FetchConfig = z.infer<typeof FetchConfigSchema>;
+export type WriteTierPacketConfig = z.infer<typeof WriteTierPacketConfigSchema>;
+export type WritePacketConfig = z.infer<typeof WritePacketConfigSchema>;
+export type WriteStageConfig = z.infer<typeof WriteStageConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof EmbeddingsConfigSchema>;
-export type GroupingEmbeddingConfig = z.infer<typeof GroupingEmbeddingConfigSchema>;
-export type GroupingAttachConfig = z.infer<typeof GroupingAttachConfigSchema>;
-export type GroupingSplitConfig = z.infer<typeof GroupingSplitConfigSchema>;
-export type GroupingDescribeConfig = z.infer<typeof GroupingDescribeConfigSchema>;
-export type GroupingStageConfig = z.infer<typeof GroupingStageConfigSchema>;
-export type PublisherLineageConfig = z.infer<typeof PublisherLineageConfigSchema>;
-export type PublisherConfig = z.infer<typeof PublisherConfigSchema>;
+export type ClusterEmbeddingConfig = z.infer<typeof ClusterEmbeddingConfigSchema>;
+export type ClusterAttachConfig = z.infer<typeof ClusterAttachConfigSchema>;
+export type ClusterSplitConfig = z.infer<typeof ClusterSplitConfigSchema>;
+export type ClusterDescribeConfig = z.infer<typeof ClusterDescribeConfigSchema>;
+export type ClusterStageConfig = z.infer<typeof ClusterStageConfigSchema>;
+export type ContinuityConfig = z.infer<typeof ContinuityConfigSchema>;
+export type PublishConfig = z.infer<typeof PublishConfigSchema>;
 export type PipelineGatesConfig = z.infer<typeof PipelineGatesConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;

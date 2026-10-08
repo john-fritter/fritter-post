@@ -1,3 +1,14 @@
+/**
+ * Step 2, preprocess: the mechanical work no model should spend tokens on.
+ *
+ * Unwraps redirectors, canonicalizes URLs, removes exact and cross-run
+ * duplicates, strips aggregator title suffixes and translates non-English
+ * items. Writes `preprocessor_runs` / `preprocessed_items`. The deterministic
+ * junk filter is applied when the kept set is read (`assembler.ts`).
+ *
+ * See docs/design.md, "preprocess".
+ */
+
 import "dotenv/config";
 import { loadSources } from "../../config/sources.js";
 import { loadModelConfig } from "../../config/models.js";
@@ -40,7 +51,7 @@ interface RawItemRow {
   fetched_at: string;
 }
 
-export async function runPreprocessor(options: { collectorRunId?: number; skipCrossRunDedup?: boolean } = {}): Promise<PreprocessorRun> {
+export async function runPreprocess(options: { collectorRunId?: number; skipCrossRunDedup?: boolean } = {}): Promise<PreprocessorRun> {
   const pool = getPool();
 
   // Build source-type, source-parent, source-track, and source-group lookup
@@ -60,7 +71,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
 
   if (skipCrossRunDedup) {
     console.warn(
-      "[preprocessor] CROSS-RUN DEDUP DISABLED — testing mode, not for production",
+      "[preprocess] CROSS-RUN DEDUP DISABLED — testing mode, not for production",
     );
   }
 
@@ -73,7 +84,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
   );
   const runId = runRows[0]!.id;
 
-  const { recency, dedup } = loadModelConfig().preprocessor;
+  const { recency, dedup } = loadModelConfig().preprocess;
 
   try {
     // 1. Fixed recency window: select all raw_items fetched in the last window_hours.
@@ -101,12 +112,12 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
     const totalConsidered = allRows.length > 0 ? parseInt(allRows[0]!.total_count, 10) : 0;
 
     console.log(
-      `[preprocessor] window: ${windowStart.toISOString()} → ${windowEnd.toISOString()} ` +
+      `[preprocess] window: ${windowStart.toISOString()} → ${windowEnd.toISOString()} ` +
       `(${totalConsidered} raw items selected)`,
     );
     if (totalConsidered === 0) {
       console.warn(
-        `[preprocessor] WARNING: 0 raw items in window ` +
+        `[preprocess] WARNING: 0 raw items in window ` +
         `${windowStart.toISOString()} → ${windowEnd.toISOString()} — nothing to process`,
       );
     }
@@ -194,7 +205,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
         const seenBefore = isCrossRunDuplicate(item, historyKeys, getParent);
         if (seenBefore) {
           console.log(
-            `[preprocessor] cross-run dedup: dropped "${item.sourceName}" | already processed within ${dedup.lookback_days}d | "${item.title}"`,
+            `[preprocess] cross-run dedup: dropped "${item.sourceName}" | already processed within ${dedup.lookback_days}d | "${item.title}"`,
           );
           droppedCrossRun++;
           return false;
@@ -256,7 +267,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
 
       if (winner) {
         console.log(
-          `[preprocessor] parent-dedup [${matchType}]: kept "${winner.sourceName}" over "${item.sourceName}" | parent: ${parent} | "${item.title}"`
+          `[preprocess] parent-dedup [${matchType}]: kept "${winner.sourceName}" over "${item.sourceName}" | parent: ${parent} | "${item.title}"`
         );
         winner.alsoAppearedIn.push(item.sourceName);
         // Register winner under the duplicate's keys too (handles 3-way dedup).
@@ -275,7 +286,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
     //    every surviving item. English items are copied through; non-English items
     //    are translated in batches. Failures fall back to the original text so no
     //    item is ever lost.
-    const { translation: translationConfig } = loadModelConfig().preprocessor;
+    const { translation: translationConfig } = loadModelConfig().preprocess;
     const itemsForTranslation = finalSurviving.map((item) => ({
       id: item.rawItemId,
       title: item.title,
@@ -290,7 +301,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
 
     if (translationStats.nonEnglish > 0) {
       console.log(
-        `[preprocessor] translation: ${translationStats.nonEnglish} non-English → ` +
+        `[preprocess] translation: ${translationStats.nonEnglish} non-English → ` +
         `${translationStats.batches} batch(es), ${translationStats.translated} translated, ` +
         `${translationStats.splitRetries} split-retries ` +
         `(${translationStats.callSplits} from call failures), ` +
@@ -303,13 +314,13 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
     }
     if (translationStats.breakerTripped !== null) {
       console.warn(
-        `[preprocessor] WARNING: translation stopped asking — ${translationStats.breakerTripped}. ` +
+        `[preprocess] WARNING: translation stopped asking — ${translationStats.breakerTripped}. ` +
         `${translationStats.skippedByBreaker} item(s) kept their original text without a call`,
       );
     }
     if (translationStats.fallbacks > 0) {
       console.warn(
-        `[preprocessor] WARNING: ${translationStats.fallbacks} item(s) fell back to ` +
+        `[preprocess] WARNING: ${translationStats.fallbacks} item(s) fell back to ` +
         `original-language text for embedding`,
       );
     }
@@ -369,7 +380,7 @@ export async function runPreprocessor(options: { collectorRunId?: number; skipCr
     const analysisCount = finalSurviving.filter((i) => i.track === "analysis").length;
     const crossRunNote = skipCrossRunDedup ? " [cross-run dedup SKIPPED]" : "";
     console.log(
-      `[preprocessor] track split: ${newsCount} news, ${analysisCount} analysis ` +
+      `[preprocess] track split: ${newsCount} news, ${analysisCount} analysis ` +
       `(of ${finalSurviving.length} kept)${crossRunNote}`,
     );
 

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import {
-  selectLineageLinks,
-  lineageLabel,
-  type LineageCandidate,
+  selectContinuityLinks,
+  continuityLabel,
+  type ContinuityCandidate,
 } from "../src/pipeline/continuity/select.js";
 
 const THRESHOLD = { threshold: 0.8 };
 
-function candidate(over: Partial<LineageCandidate> = {}): LineageCandidate {
+function candidate(over: Partial<ContinuityCandidate> = {}): ContinuityCandidate {
   return {
     paperPieceId: "1",
     ref: "C71",
@@ -27,19 +27,19 @@ function candidate(over: Partial<LineageCandidate> = {}): LineageCandidate {
 // --- threshold ---
 
 function testKeepsCandidateAtOrAboveThreshold() {
-  const links = selectLineageLinks([candidate({ similarity: 0.8 })], THRESHOLD);
+  const links = selectContinuityLinks([candidate({ similarity: 0.8 })], THRESHOLD);
   assert.equal(links.length, 1, "a candidate exactly at the threshold must be kept");
 }
 
 function testDropsCandidateBelowThreshold() {
-  const links = selectLineageLinks([candidate({ similarity: 0.799 })], THRESHOLD);
+  const links = selectContinuityLinks([candidate({ similarity: 0.799 })], THRESHOLD);
   assert.equal(links.length, 0, "below the threshold must produce no link");
 }
 
 // --- one link per piece ---
 
 function testOneLinkPerPieceAndHighestSimilarityWins() {
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [
       candidate({ priorRef: "C23", priorPaperPieceId: "10", similarity: 0.84 }),
       candidate({ priorRef: "S65873", priorPaperPieceId: "11", similarity: 0.91 }),
@@ -53,7 +53,7 @@ function testOneLinkPerPieceAndHighestSimilarityWins() {
 function testTieBreaksTowardTheMoreRecentPrior() {
   // A story running several days straight would otherwise anchor to its first
   // appearance forever; the useful thing to say is what the paper said last.
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [
       candidate({ priorPublishedOn: "2026-08-27", priorRef: "C23", priorPaperPieceId: "10", similarity: 0.88 }),
       candidate({ priorPublishedOn: "2026-09-02", priorRef: "C27", priorPaperPieceId: "11", similarity: 0.88 }),
@@ -66,14 +66,14 @@ function testTieBreaksTowardTheMoreRecentPrior() {
 
 function testTieBreaksDeterministicallyOnRefWhenDateAlsoTies() {
   const shared = { priorPublishedOn: "2026-09-02", similarity: 0.88 };
-  const a = selectLineageLinks(
+  const a = selectContinuityLinks(
     [
       candidate({ ...shared, priorRef: "S9", priorPaperPieceId: "11" }),
       candidate({ ...shared, priorRef: "C1", priorPaperPieceId: "12" }),
     ],
     THRESHOLD,
   );
-  const b = selectLineageLinks(
+  const b = selectContinuityLinks(
     [
       candidate({ ...shared, priorRef: "C1", priorPaperPieceId: "12" }),
       candidate({ ...shared, priorRef: "S9", priorPaperPieceId: "11" }),
@@ -86,7 +86,7 @@ function testTieBreaksDeterministicallyOnRefWhenDateAlsoTies() {
 
 function testTwoPiecesMayContinueTheSamePriorPiece() {
   // One day's coverage can legitimately split into two the next.
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [
       candidate({ paperPieceId: "1", ref: "C5" }),
       candidate({ paperPieceId: "2", ref: "C6" }),
@@ -97,7 +97,7 @@ function testTwoPiecesMayContinueTheSamePriorPiece() {
 }
 
 function testOutputIsOrderedByTodaysRef() {
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [
       candidate({ paperPieceId: "2", ref: "S70701" }),
       candidate({ paperPieceId: "1", ref: "C21" }),
@@ -108,10 +108,10 @@ function testOutputIsOrderedByTodaysRef() {
 }
 
 function testAPriorSectionLineNeverTakesTheSlot() {
-  // A prior line has no headline, so lineageLabel renders nothing for it. It
+  // A prior line has no headline, so continuityLabel renders nothing for it. It
   // used to win the one slot per piece anyway and silently discard a
   // renderable second place, so the reader saw no marker where one existed.
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [
       candidate({ priorRef: "S99", priorPaperPieceId: "10", priorHeadline: null, similarity: 0.95 }),
       candidate({ priorRef: "C23", priorPaperPieceId: "11", similarity: 0.84 }),
@@ -123,7 +123,7 @@ function testAPriorSectionLineNeverTakesTheSlot() {
 }
 
 function testAPriorWithABlankHeadlineIsAlsoSkipped() {
-  const links = selectLineageLinks(
+  const links = selectContinuityLinks(
     [candidate({ priorHeadline: "   ", similarity: 0.95 })],
     THRESHOLD,
   );
@@ -131,7 +131,7 @@ function testAPriorWithABlankHeadlineIsAlsoSkipped() {
 }
 
 function testEmptyCandidatesProduceNoLinks() {
-  assert.deepEqual(selectLineageLinks([], THRESHOLD), []);
+  assert.deepEqual(selectContinuityLinks([], THRESHOLD), []);
 }
 
 // --- label ---
@@ -140,15 +140,15 @@ const stubDate = (iso: string) => iso.slice(5);
 
 function testLabelCarriesDateAndHeadline() {
   assert.equal(
-    lineageLabel({ priorPublishedOn: "2026-08-27", priorHeadline: "Nvidia moves to acquire Hugging Face" }, stubDate),
+    continuityLabel({ priorPublishedOn: "2026-08-27", priorHeadline: "Nvidia moves to acquire Hugging Face" }, stubDate),
     "08-27 — Nvidia moves to acquire Hugging Face",
   );
 }
 
 function testLabelIsNullForAPriorSectionLine() {
   // A prior line has no headline of its own — a pointer to a pointer.
-  assert.equal(lineageLabel({ priorPublishedOn: "2026-08-27", priorHeadline: null }, stubDate), null);
-  assert.equal(lineageLabel({ priorPublishedOn: "2026-08-27", priorHeadline: "   " }, stubDate), null);
+  assert.equal(continuityLabel({ priorPublishedOn: "2026-08-27", priorHeadline: null }, stubDate), null);
+  assert.equal(continuityLabel({ priorPublishedOn: "2026-08-27", priorHeadline: "   " }, stubDate), null);
 }
 
 testKeepsCandidateAtOrAboveThreshold();

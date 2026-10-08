@@ -112,7 +112,7 @@ async function main() {
     `SELECT stage_run_id, count(*)::int AS calls, count(error)::int AS errors,
             sum(duration_ms)::text AS duration_ms, max(output_tokens) AS max_out
      FROM generation_logs
-     WHERE stage IN ('writers', 'writers-briefs') AND stage_run_id = ANY($1)
+     WHERE stage IN ('write', 'write-briefs') AND stage_run_id = ANY($1)
      GROUP BY stage_run_id`,
     [runs],
   );
@@ -206,7 +206,7 @@ async function main() {
   const firstRun = runs[0]!;
   const { rows: prompts } = await pool.query<{ id: string; stage: string; system_prompt: string; user_prompt: string }>(
     `SELECT id::text, stage, system_prompt, user_prompt FROM generation_logs
-     WHERE stage IN ('writers', 'writers-briefs') AND stage_run_id = $1 AND error IS NULL
+     WHERE stage IN ('write', 'write-briefs') AND stage_run_id = $1 AND error IS NULL
      ORDER BY id`,
     [firstRun],
   );

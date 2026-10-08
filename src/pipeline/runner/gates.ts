@@ -2,7 +2,7 @@
  * The gates: pure functions from a stage's own counters to a verdict.
  *
  * A stage exiting 0 is not evidence that it worked, and every expensive lesson
- * in this project is a variant of that. `runWriters` returns a normal summary
+ * in this project is a variant of that. `runWrite` returns a normal summary
  * after its circuit breaker trips. A failed attach call returns an empty set,
  * which is what the model declining every candidate also returns. The editor's
  * tie-break catch returns an empty rank map, which is what a tie group the
@@ -83,9 +83,9 @@ export interface CollectorMetrics {
   itemsInserted: number;
 }
 
-export function gateCollector(
+export function gateCollect(
   m: CollectorMetrics,
-  cfg: PipelineGatesConfig["collector"],
+  cfg: PipelineGatesConfig["collect"],
 ): GateResult {
   const succeeded = fraction(m.sourcesSucceeded, m.sourcesAttempted);
   return evaluate([
@@ -134,9 +134,9 @@ export interface PreprocessorMetrics {
   translationBreaker: string | null;
 }
 
-export function gatePreprocessor(
+export function gatePreprocess(
   m: PreprocessorMetrics,
-  cfg: PipelineGatesConfig["preprocessor"],
+  cfg: PipelineGatesConfig["preprocess"],
 ): GateResult {
   return evaluate([
     {
@@ -185,9 +185,9 @@ export interface PrefilterMetrics {
   itemsCut: number;
 }
 
-export function gatePrefilter(
+export function gateScreen(
   m: PrefilterMetrics,
-  cfg: PipelineGatesConfig["prefilter"],
+  cfg: PipelineGatesConfig["screen"],
 ): GateResult {
   const cut = fraction(m.itemsCut, m.itemsIn);
   return evaluate([
@@ -218,9 +218,9 @@ export interface GroupingMetrics {
   resplitFailedCalls: number | null;
 }
 
-export function gateGrouping(
+export function gateCluster(
   m: GroupingMetrics,
-  cfg: PipelineGatesConfig["grouping"],
+  cfg: PipelineGatesConfig["cluster"],
 ): GateResult {
   const rows = (m.clusterCount ?? 0) + (m.singletonCount ?? 0);
   return evaluate([
@@ -268,9 +268,9 @@ export interface GroupingPass1Metrics {
   pileItems: number;
 }
 
-export function gateGroupingPass1(
+export function gateScore(
   m: GroupingPass1Metrics,
-  cfg: PipelineGatesConfig["grouping_pass1"],
+  cfg: PipelineGatesConfig["score"],
 ): GateResult {
   const unscored = fraction(m.unscored, m.itemsIn);
   return evaluate([
@@ -330,7 +330,7 @@ export interface RerunMetrics {
   failedCalls: number;
 }
 
-export function gateRerun(m: RerunMetrics, cfg: PipelineGatesConfig["rerun"]): GateResult {
+export function gateNovelty(m: RerunMetrics, cfg: PipelineGatesConfig["novelty"]): GateResult {
   const dropped = fraction(m.rowsDropped, m.candidatesIn);
   return evaluate([
     {
@@ -363,7 +363,7 @@ export interface EditorMetrics {
   tieBreakFailedCalls: number | null;
 }
 
-export function gateEditor(m: EditorMetrics, cfg: PipelineGatesConfig["editor"]): GateResult {
+export function gateRank(m: EditorMetrics, cfg: PipelineGatesConfig["rank"]): GateResult {
   const ranked = m.itemsFeature + m.itemsStandard + m.itemsBrief;
   return evaluate([
     {
@@ -393,7 +393,7 @@ export interface WritersMetrics {
   repairAttempts: number;
 }
 
-export function gateWriters(m: WritersMetrics, cfg: PipelineGatesConfig["writers"]): GateResult {
+export function gateWrite(m: WritersMetrics, cfg: PipelineGatesConfig["write"]): GateResult {
   const written = fraction(m.piecesWritten, m.piecesIn);
   return evaluate([
     {
@@ -510,9 +510,9 @@ export interface PublisherMetrics {
   piecesUnsourced: number;
 }
 
-export function gatePublisher(
+export function gatePublish(
   m: PublisherMetrics,
-  cfg: PipelineGatesConfig["publisher"],
+  cfg: PipelineGatesConfig["publish"],
 ): GateResult {
   const unsourced = fraction(m.piecesUnsourced, m.pieceCount);
   return evaluate([

@@ -1,11 +1,11 @@
 /**
- * Cross-day story lineage — "what this paper already said about this story".
+ * Continuity: the "previously" marker -- what this paper already said about
+ * this story. Formerly "lineage".
  *
- * Runs inside the publisher, after the paper is frozen. It is not a stage of its
- * own because it has no independent input: it reads the paper that was just
- * written and the papers before it, and the publisher is already the place that
- * turns a writer run into an artifact with attribution attached. Adding
- * continuity there keeps the pipeline at nine stages.
+ * Runs inside the publish stage, after the paper is frozen. It is not a stage
+ * of its own because it has no independent input: it reads the paper that was
+ * just written and the papers before it, and publish is already the place that
+ * turns a writer run into an artifact with attribution attached.
  *
  * THE DATA WAS ALREADY THERE. `item_embeddings` is keyed on
  * `preprocessed_item_id`, is upserted by every grouping run, and — unlike
@@ -27,14 +27,14 @@ import { loadModelConfig } from "../../config/models.js";
 import { applyModelOverrides, type ModelOverrides } from "../../config/overrides.js";
 import { callLLM } from "../../llm/index.js";
 import { callWithBackoff } from "../../llm/backoff.js";
-import { selectLineageLinks, type LineageCandidate } from "./select.js";
+import { selectContinuityLinks, type ContinuityCandidate } from "./select.js";
 import {
-  buildLineageSystemPrompt,
-  buildLineageUserPrompt,
-  parseLineageVerdicts,
+  buildContinuitySystemPrompt,
+  buildContinuityUserPrompt,
+  parseContinuityVerdicts,
 } from "./prompt.js";
 
-export interface LineageResult {
+export interface ContinuityResult {
   linked: number;
   /** Pairs the retrieval floor admitted and the judge was asked about. */
   candidates: number;
@@ -46,17 +46,17 @@ export interface LineageResult {
   /** Every pair the judge was asked about, with its verdict. Null when the call failed. */
   judged: JudgedPair[];
   /** The links selected from the YES verdicts — what the paper prints. */
-  links: LineageCandidate[];
+  links: ContinuityCandidate[];
 }
 
 export interface JudgedPair {
-  candidate: LineageCandidate;
+  candidate: ContinuityCandidate;
   /** True for YES; null when the judge call failed. */
   verdict: boolean | null;
   reason: string | null;
 }
 
-export interface LineageOptions {
+export interface ContinuityOptions {
   /** Model comparison only: replaces the judge's model settings for this run. */
   overrides?: ModelOverrides;
   /**
@@ -91,12 +91,12 @@ interface CandidateRow {
  * is a complete paper, and a failure here must not roll back an edition that is
  * otherwise ready to read.
  */
-export async function buildPaperLineage(
+export async function buildContinuity(
   paperId: number,
   publishedOn: string,
-  options: LineageOptions = {},
-): Promise<LineageResult> {
-  const base = loadModelConfig().publisher.lineage;
+  options: ContinuityOptions = {},
+): Promise<ContinuityResult> {
+  const base = loadModelConfig().publish.continuity;
   const cfg = { ...base, adjudicate: applyModelOverrides(base.adjudicate, options.overrides) };
   if (!cfg.enabled) {
     return {
@@ -179,7 +179,7 @@ export async function buildPaperLineage(
     [paperId, publishedOn, cfg.lookback_editions, cfg.top_k],
   );
 
-  const candidates: LineageCandidate[] = rows.map((r) => ({
+  const candidates: ContinuityCandidate[] = rows.map((r) => ({
     paperPieceId: r.paper_piece_id,
     ref: r.ref,
     headline: r.headline,
@@ -202,7 +202,7 @@ export async function buildPaperLineage(
   // links the 2026-09-04 measurement found, so it is worth the tokens.
   const pairs = candidates.filter((c) => c.similarity >= cfg.candidate_floor);
 
-  let links: LineageCandidate[] = [];
+  let links: ContinuityCandidate[] = [];
   let judgeFailed = false;
   let judged: JudgedPair[] = pairs.map((candidate) => ({ candidate, verdict: null, reason: null }));
 
@@ -213,11 +213,11 @@ export async function buildPaperLineage(
           callLLM({
             // A replay logs apart from the production judge, whose calls
             // `inspect publisher` and the lineage audits read by stage.
-            stage: options.dryRun ? "lineage-check" : "lineage",
+            stage: options.dryRun ? "continuity-check" : "continuity",
             stageRunId: paperId,
             model: cfg.adjudicate.model,
-            systemPrompt: buildLineageSystemPrompt(),
-            userPrompt: buildLineageUserPrompt(
+            systemPrompt: buildContinuitySystemPrompt(),
+            userPrompt: buildContinuityUserPrompt(
               pairs.map((c) => ({
                 todayHeadline: c.headline ?? "(section line — the sentence follows)",
                 todayDate: publishedOn,
@@ -235,15 +235,15 @@ export async function buildPaperLineage(
             stream: cfg.adjudicate.stream,
           }),
         cfg.adjudicate,
-        "lineage",
+        "continuity",
       );
-      const confirmed = parseLineageVerdicts(result.text, pairs.length);
+      const confirmed = parseContinuityVerdicts(result.text, pairs.length);
       judged = pairs.map((candidate, i) => ({
         candidate,
         verdict: confirmed.has(i),
         reason: confirmed.get(i) ?? null,
       }));
-      links = selectLineageLinks(
+      links = selectContinuityLinks(
         pairs
           .map((c, i) => ({ ...c, judgeReason: confirmed.get(i) ?? null }))
           .filter((_, i) => confirmed.has(i)),
@@ -254,7 +254,7 @@ export async function buildPaperLineage(
       // a paper with unjudged ones is the defect this pass exists to fix.
       judgeFailed = true;
       console.warn(
-        `[lineage] judge call failed, no continuity markers recorded for this ` +
+        `[continuity] judge call failed, no continuity markers recorded for this ` +
           `paper: ${err instanceof Error ? err.message : String(err)}`,
       );
     }

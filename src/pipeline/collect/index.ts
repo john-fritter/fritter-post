@@ -1,3 +1,14 @@
+/**
+ * Step 1, collect: every configured source into `raw_items`.
+ *
+ * RSS/Atom feeds and Google News sitemaps, per `config/sources.yaml`. No
+ * judgment and no deduplication: the same story from two outlets is kept
+ * twice, because cross-source pickup is the prominence signal the rank stage
+ * uses later. A dead feed is logged and skipped. Writes `collector_runs`.
+ *
+ * See docs/design.md, "collect".
+ */
+
 import pLimit from "p-limit";
 import { loadSources } from "../../config/sources.js";
 import { fetchFeed } from "./fetch-feed.js";
@@ -34,7 +45,7 @@ export interface CollectorRunSummary {
   itemsInserted: number;
 }
 
-export async function runCollector(
+export async function runCollect(
   options: CollectorOptions = {}
 ): Promise<CollectorRunSummary> {
   const { sourceFilter, concurrency = 10 } = options;

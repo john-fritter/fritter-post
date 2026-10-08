@@ -1,5 +1,10 @@
 /**
- * Article text fetcher for the writers stage.
+ * Step 9, fetch: publisher article text for the pieces that need it.
+ *
+ * Feature and standard pieces whose feed body is short or truncated get their
+ * article fetched and extracted (Readability, no whole-page fallback) into
+ * `article_texts` -- the only table holding third-party full text, used to
+ * write the paper and never published. See docs/design.md, "fetch".
  *
  * The audit of editor run #112 made this the writers' critical path rather than
  * a nicety: 61% of the paper's 305 underlying articles carried under 800
@@ -29,7 +34,7 @@ import "dotenv/config";
 import pLimit from "p-limit";
 import { getPool } from "../../db/index.js";
 import { latestEditorRunId, resolveRunId } from "../../db/latest.js";
-import { loadModelConfig, type WritersFetchConfig } from "../../config/models.js";
+import { loadModelConfig, type FetchConfig } from "../../config/models.js";
 import { decodeHtmlBytes } from "../collect/charset.js";
 import {
   HONEST_USER_AGENT,
@@ -128,7 +133,7 @@ export function hostsInCooldown(
  */
 export function planFetch(
   stories: StoryMaterials[],
-  cfg: WritersFetchConfig,
+  cfg: FetchConfig,
   cooldownHosts: Set<string>,
   recentlyAttempted: Set<number> = new Set(),
 ): FetchPlan {
@@ -297,7 +302,7 @@ export function isTransportError(err: unknown): boolean {
  */
 async function requestWithTransportRetry(
   url: string,
-  cfg: WritersFetchConfig,
+  cfg: FetchConfig,
 ): Promise<Response> {
   try {
     return await requestOnce(url, HONEST_USER_AGENT, cfg.timeout_ms);
@@ -311,7 +316,7 @@ async function requestWithTransportRetry(
 /** One article: honest request, one browser retry on 403 only, decode, extract. */
 export async function fetchArticleText(
   url: string,
-  cfg: WritersFetchConfig,
+  cfg: FetchConfig,
 ): Promise<FetchOutcome> {
   const empty = { text: "", textChars: 0, extractor: null };
   let res: Response;
@@ -381,7 +386,7 @@ export async function fetchArticleText(
   const { text: html } = decodeHtmlBytes(bytes, contentType);
   const extracted = extractArticle(html);
   if (extracted.nulsRemoved > 0) {
-    console.warn(`[fetch-text] removed ${extracted.nulsRemoved} NUL character(s) from the body of ${url}`);
+    console.warn(`[fetch] removed ${extracted.nulsRemoved} NUL character(s) from the body of ${url}`);
   }
   const { status, detail } = classifyResponse(
     res.status,
@@ -474,7 +479,7 @@ async function upsert(pool: import("pg").Pool, input: ArticleTextRow): Promise<v
   const { row, nulFields } = sanitizeArticleTextRow(input);
   if (nulFields.length > 0) {
     console.warn(
-      `[fetch-text] removed NUL characters from item ${row.preprocessedItemId} ` +
+      `[fetch] removed NUL characters from item ${row.preprocessedItemId} ` +
         `(${row.host}): ${nulFields.join(", ")}`,
     );
   }
@@ -521,14 +526,14 @@ export interface RunFetchOptions {
   limit?: number;
 }
 
-export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRunSummary> {
+export async function runFetch(options: RunFetchOptions): Promise<FetchRunSummary> {
   const pool = getPool();
-  const cfg = loadModelConfig().writers.fetch;
+  const cfg = loadModelConfig().fetch;
   const { dryRun = false, limit } = options;
   const editorRunId = await resolveRunId(options.editorRunId, latestEditorRunId, "editor run");
 
   if (!cfg.enabled) {
-    throw new Error("writers.fetch.enabled is false in config/models.yaml");
+    throw new Error("fetch.enabled is false in config/models.yaml");
   }
 
   // Retention sweep first: this table holds third-party full text and is the
@@ -541,7 +546,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
     );
     pruned = rowCount ?? 0;
     if (pruned > 0) {
-      console.log(`[fetch-text] retention: deleted ${pruned} row(s) older than ${cfg.retention_days}d`);
+      console.log(`[fetch] retention: deleted ${pruned} row(s) older than ${cfg.retention_days}d`);
     }
   }
 
@@ -556,7 +561,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
     ? hostsInCooldown(historyRows, cfg.cooldown.min_attempts)
     : new Set<string>();
   if (cooldownHosts.size > 0) {
-    console.log(`[fetch-text] cooldown: skipping ${[...cooldownHosts].join(", ")}`);
+    console.log(`[fetch] cooldown: skipping ${[...cooldownHosts].join(", ")}`);
   }
 
   // Items already requested inside the refetch window, whatever the outcome.
@@ -576,7 +581,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
 
   const considered = targets.length + plan.skips.length;
   console.log(
-    `[fetch-text] editor run #${editorRunId}: ${considered} article(s) in scope — ` +
+    `[fetch] editor run #${editorRunId}: ${considered} article(s) in scope — ` +
       `${targets.length} to fetch across ${byHost.length} host(s), ${plan.skips.length} skipped` +
       (dryRun ? " [DRY RUN]" : ""),
   );
@@ -609,7 +614,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
       summary.storeFailed++;
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
-        `[fetch-text] STORE FAILED item ${row.preprocessedItemId} ${row.host} ` +
+        `[fetch] STORE FAILED item ${row.preprocessedItemId} ${row.host} ` +
           `status=${row.status} textChars=${row.textChars} — ${msg} (${row.canonicalUrl})`,
       );
     }
@@ -617,7 +622,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
 
   if (dryRun) {
     for (const [host, hostTargets] of byHost) {
-      console.log(`[fetch-text]   ${host}: ${hostTargets.length}`);
+      console.log(`[fetch]   ${host}: ${hostTargets.length}`);
     }
     return summary;
   }
@@ -670,7 +675,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
 
           if (outcome.status !== "ok") {
             console.log(
-              `[fetch-text] ${outcome.status.toUpperCase()} ${host} — ${outcome.detail ?? ""} ` +
+              `[fetch] ${outcome.status.toUpperCase()} ${host} — ${outcome.detail ?? ""} ` +
                 `(${target.canonicalUrl})`,
             );
           }
@@ -680,7 +685,7 @@ export async function runArticleFetch(options: RunFetchOptions): Promise<FetchRu
   );
 
   console.log(
-    `[fetch-text] done: ok=${summary.ok} thin=${summary.thin} blocked=${summary.blocked} ` +
+    `[fetch] done: ok=${summary.ok} thin=${summary.thin} blocked=${summary.blocked} ` +
       `error=${summary.error} skipped=${summary.skipped}` +
       (summary.storeFailed > 0 ? ` STORE-FAILED=${summary.storeFailed}` : "") +
       ` — body text ${summary.charsBefore} → ${summary.charsAfter} chars`,

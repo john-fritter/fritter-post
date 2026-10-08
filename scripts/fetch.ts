@@ -2,17 +2,17 @@
  * Fetches publisher article text for the stories of an editor run.
  *
  * Usage:
- *   npm run fetch-text
- *   npm run fetch-text -- --editor-run 112
- *   npm run fetch-text -- --editor-run 112 --dry-run
- *   npm run fetch-text -- --editor-run 112 --limit 20
+ *   npm run fetch
+ *   npm run fetch -- --editor-run 112
+ *   npm run fetch -- --editor-run 112 --dry-run
+ *   npm run fetch -- --editor-run 112 --limit 20
  *
  * --dry-run plans and prints the worklist without making a single request.
  * --limit caps the number of URLs requested, for a first cautious run.
  */
 
 import "dotenv/config";
-import { runArticleFetch } from "../src/pipeline/fetch/index.js";
+import { runFetch } from "../src/pipeline/fetch/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -43,7 +43,7 @@ async function main() {
     process.exit(1);
   }
 
-  const summary = await runArticleFetch({
+  const summary = await runFetch({
     ...(editorRunId !== undefined ? { editorRunId } : {}),
     dryRun: flags["dry-run"] === "true",
     ...(flags["limit"] ? { limit: parseInt(flags["limit"], 10) } : {}),

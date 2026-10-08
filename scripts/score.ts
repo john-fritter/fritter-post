@@ -1,8 +1,8 @@
 import "dotenv/config";
-import { runGroupingPass1 } from "../src/pipeline/score/index.js";
-import { assembleGroupingPile } from "../src/pipeline/rank/pile.js";
-import { runThreading } from "../src/pipeline/thread/index.js";
-import { runRerunCheck } from "../src/pipeline/novelty/index.js";
+import { runScore } from "../src/pipeline/score/index.js";
+import { assemblePile } from "../src/pipeline/rank/pile.js";
+import { runThread } from "../src/pipeline/thread/index.js";
+import { runNovelty } from "../src/pipeline/novelty/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { overridesFromFlags, type ModelOverrides } from "../src/config/overrides.js";
 
@@ -29,10 +29,10 @@ function parseArgs(argv: string[]) {
 async function main() {
   const { groupingRunId, overrides } = parseArgs(process.argv);
 
-  console.log("[grouping-pass-1] starting...");
-  const run = await runGroupingPass1({ groupingRunId, overrides });
+  console.log("[score] starting...");
+  const run = await runScore({ groupingRunId, overrides });
   console.log(
-    `[grouping-pass-1] run #${run.id} complete: ` +
+    `[score] run #${run.id} complete: ` +
       `${run.itemsIn} items scored, model=${run.modelUsed}`,
   );
 
@@ -42,12 +42,12 @@ async function main() {
   // The rerun check first: news the paper has already printed is neither a
   // thread member nor a pile row, and a minor update or routine news threads
   // and ranks at a reduced score.
-  const rerun = await runRerunCheck({ groupingPass1RunId: run.id });
+  const rerun = await runNovelty({ groupingPass1RunId: run.id });
 
   const { thread: threadConfig } = loadModelConfig();
   let threadRunId: number | undefined;
   if (threadConfig.enabled) {
-    const threadRun = await runThreading({
+    const threadRun = await runThread({
       groupingPass1RunId: run.id,
       exclude: rerun.dropped,
       reductions: rerun.reduced,
@@ -57,13 +57,13 @@ async function main() {
     console.log("[thread] disabled — pile will contain un-threaded rows");
   }
 
-  const pile = await assembleGroupingPile(run.id, threadRunId, {
+  const pile = await assemblePile(run.id, threadRunId, {
     withheld: rerun.dropped,
     reductions: rerun.reduced,
     rerunRunId: rerun.rerunRunId,
   });
   console.log(
-    `[grouping-pass-1] pile #${pile.pileId}: ` +
+    `[score] pile #${pile.pileId}: ` +
       `${pile.threadsInPile} threads + ${pile.clustersInPile} clusters + ` +
       `${pile.singletonsInPile} singletons in pile ` +
       `(target=${pile.pileTarget}, score_cutoff=${pile.scoreCutoff ?? "n/a"}, ` +

@@ -1,3 +1,16 @@
+/**
+ * Step 5, score: how much does each event matter to this reader?
+ *
+ * Every cluster and singleton gets two bio-aware axes, interest and
+ * consequence (0-50 each), summed in software to a 0-100 score. Source counts
+ * are deliberately withheld from the scorer. The runner's score stage then
+ * runs the novelty and thread passes and assembles the pile. Formerly
+ * "grouping-pass-1" (and, before that, the editor's first pass). Writes
+ * `grouping_pass1_runs` / `grouping_pass1_results`.
+ *
+ * See docs/design.md, "score".
+ */
+
 import "dotenv/config";
 import { readFileSync } from "fs";
 import path from "path";
@@ -235,7 +248,7 @@ async function processGroupingBatch(
   try {
     const llmResult = await callWithBackoff(
       () => callLLM({
-      stage: "grouping-pass-1",
+      stage: "score",
       stageRunId: runId,
       model,
       systemPrompt,
@@ -248,14 +261,14 @@ async function processGroupingBatch(
       stream,
       }),
       retryConfig,
-      `grouping-pass-1 batch ${batchIndex + 1}/${batchCount}${label}`,
+      `score batch ${batchIndex + 1}/${batchCount}${label}`,
     );
 
     const expectedIds = items.map((item) => item.id);
     const parsed = parseBatchOutput(llmResult.text, expectedIds);
     if (parsed === null) {
       console.warn(
-        `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${items.length} items to score=50`,
+        `[score] batch ${batchIndex + 1}/${batchCount}: parse failed — defaulting all ${items.length} items to score=${FAIL_SAFE_SCORE}`,
       );
       return {
         results: items.map((item) => ({
@@ -270,7 +283,7 @@ async function processGroupingBatch(
     }
 
     const log =
-      `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}: ` +
+      `[score] batch ${batchIndex + 1}/${batchCount}: ` +
       `parsed-lines=${parsed.parsedLineCount}/${items.length}; ` +
       `fail-safe-defaulted=${parsed.failSafeCount}`;
     if (parsed.failSafeCount > 0) {
@@ -283,7 +296,7 @@ async function processGroupingBatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[grouping-pass-1] batch ${batchIndex + 1}/${batchCount}${label}: LLM call failed ` +
+      `[score] batch ${batchIndex + 1}/${batchCount}${label}: LLM call failed ` +
         `after retries (${msg}) — ${items.length} item(s) unscored`,
     );
     return {
@@ -360,7 +373,7 @@ export async function scoreBatches(
   if (needed.length === 0) return { results: ordered, unscored: 0 };
 
   console.warn(
-    `[grouping-pass-1] stragglers: ${needed.length} item(s) came back unscored — ` +
+    `[score] stragglers: ${needed.length} item(s) came back unscored — ` +
       `re-asking sequentially in chunks of ${stragglerBatchSize}`,
   );
 
@@ -389,14 +402,14 @@ export async function scoreBatches(
 
   const stillUnscored = unscoredIds().length;
   console.log(
-    `[grouping-pass-1] stragglers: recovered ${needed.length - stillUnscored} of ` +
+    `[score] stragglers: recovered ${needed.length - stillUnscored} of ` +
       `${needed.length}, ${stillUnscored} still unscored`,
   );
 
   return { results: ordered, unscored: stillUnscored };
 }
 
-export async function runGroupingPass1(
+export async function runScore(
   options: { groupingRunId?: number; modelOverride?: string; overrides?: ModelOverrides } = {},
 ): Promise<GroupingPass1Run> {
   const pool = getPool();
@@ -430,7 +443,7 @@ export async function runGroupingPass1(
   // 3. Load model config (scoring reuses editor_pass_1 model settings).
   const modelConfig = loadModelConfig();
   const stageConfig = applyModelOverrides(
-    modelConfig.editor_pass_1,
+    modelConfig.score,
     withModel(options.overrides, options.modelOverride),
   );
   const model = stageConfig.model;
@@ -449,7 +462,7 @@ export async function runGroupingPass1(
 
   const totalItems = clusters.length + singletons.length;
   console.log(
-    `[grouping-pass-1] grouping run #${groupingRunId}: ` +
+    `[score] grouping run #${groupingRunId}: ` +
       `${clusters.length} clusters, ${singletons.length} singletons = ${totalItems} total to score`,
   );
 
@@ -538,7 +551,7 @@ export async function runGroupingPass1(
     const totalUnscored = clusterScored.unscored + singletonScored.unscored;
     if (totalUnscored > 0) {
       console.warn(
-        `[grouping-pass-1] WARNING: ${totalUnscored} item(s) could not be scored ` +
+        `[score] WARNING: ${totalUnscored} item(s) could not be scored ` +
           `after the straggler re-ask. They carry score=${FAIL_SAFE_SCORE} and a null ` +
           `interest axis, which keeps them out of the pile unless it is short of ` +
           `judged candidates. Find them with: interest IS NULL.`,

@@ -133,7 +133,7 @@ export function applyPaperBudget(packets: WriterPacket[], target: number): Write
 
 /** Every story of an editor run, assembled and rendered into writer prompts. */
 export async function buildEditorRunPackets(editorRunId: number): Promise<RenderedPacket[]> {
-  const cfg = loadModelConfig().writers.packet;
+  const cfg = loadModelConfig().write.packet;
   const stories = await loadEditorRunMaterials(editorRunId);
 
   const itemIds = [...new Set(stories.flatMap((s) => s.articles.map((a) => a.preprocessedItemId)))];
@@ -159,7 +159,7 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
   const { tiers, swaps } = resolveTiersByMaterial(candidates, ladder);
   for (const swap of swaps) {
     console.log(
-      `[writers] editor run #${editorRunId}: rank ${swap.rank} ${swap.ref} ` +
+      `[write] editor run #${editorRunId}: rank ${swap.rank} ${swap.ref} ` +
         `${swap.tier}→${swap.demotedTo} (headline-only material for a ${swap.tier}); ` +
         `rank ${swap.takerRank} ${swap.takerRef} ${swap.takerFrom}→${swap.tier}`,
     );
@@ -182,7 +182,7 @@ export async function buildEditorRunPackets(editorRunId: number): Promise<Render
   const sectionPieces = budgeted.filter((p) => p.section !== null).length;
   if (sectionPieces > 0) {
     console.log(
-      `[writers] editor run #${editorRunId}: ${stories.length} stories → ${expanded.length} pieces ` +
+      `[write] editor run #${editorRunId}: ${stories.length} stories → ${expanded.length} pieces ` +
         `(${sectionPieces} in sections), ${dropped} standalone piece(s) displaced to hold the paper at ${stories.length}`,
     );
   }

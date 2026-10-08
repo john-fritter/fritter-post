@@ -7,7 +7,7 @@
  */
 
 import "dotenv/config";
-import { runPreprocessor } from "../src/pipeline/preprocess/index.js";
+import { runPreprocess } from "../src/pipeline/preprocess/index.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -50,7 +50,7 @@ async function main() {
     console.log(`  skip-cross-run-dedup: true`);
   }
 
-  const run = await runPreprocessor({ collectorRunId, skipCrossRunDedup });
+  const run = await runPreprocess({ collectorRunId, skipCrossRunDedup });
 
   console.log(`\nPreprocessor run #${run.id} complete.`);
   console.log(`  Raw items considered:   ${run.rawItemsConsidered}`);

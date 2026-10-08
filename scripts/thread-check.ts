@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { getPool } from "../src/db/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
-import { loadThreadCandidates, runThreading } from "../src/pipeline/thread/index.js";
+import { loadThreadCandidates, runThread } from "../src/pipeline/thread/index.js";
 
 // Runs the thread pass on its own, for model comparison, and exports what every
 // thread run over the same grouping-pass-1 runs produced.
@@ -149,7 +149,7 @@ async function main() {
   const { export: _e, out: _o, blind: _b, "pass1-runs": _p, ...modelFlags } = flags;
   const overrides = overridesFromFlags(modelFlags);
   for (const pass1 of pass1Runs) {
-    const s = await runThreading({ groupingPass1RunId: pass1, overrides });
+    const s = await runThread({ groupingPass1RunId: pass1, overrides });
     console.log(
       `[thread-check] pass-1 ${pass1}: thread run ${s.threadRunId}, ` +
         `${s.threadsFormed} thread(s), ${s.rowsAbsorbed} rows, failed_calls=${s.failedCalls}`,
