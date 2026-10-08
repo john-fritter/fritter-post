@@ -1,7 +1,7 @@
 # Model assignments per pipeline stage.
 # All models must be accessible via LLM_BASE_URL (OpenAI-compatible).
 
-# The daily run. The runner (`npm run pipeline`) calls the nine stages in order
+# The daily run. The runner (`npm run pipeline`) calls the stages in order
 # and decides, between each pair, whether the next one should start.
 #
 # It has to decide, because a stage exiting 0 does not mean it worked. The
@@ -40,7 +40,7 @@ pipeline:
   # something is wrong, which 240 was not.
   max_duration_minutes: 90
 
-  writers:
+  write:
     # A tripped breaker means the provider was failing, not the material, and
     # --repair exists for exactly this: run #35 lost 32 pieces to five
     # budget-exhaustion calls and one repair pass recovered all 32. Attempted
@@ -58,7 +58,7 @@ pipeline:
   # are the two cases where continuing is worse than stopping -- there is
   # nothing to work on, or the writers came back too holed to be a paper.
   gates:
-    collector:
+    collect:
       # A single dead feed is normal and the collector is failure-tolerant. Half
       # of them failing is not a feed problem, it is DNS, egress, or the proxy.
       min_sources_succeeded_fraction: 0.5
@@ -71,19 +71,19 @@ pipeline:
       # Zero new items in a 24h window means the collector fetched nothing worth
       # having; every stage below it would run on yesterday.
       min_items_inserted: 1
-    preprocessor:
+    preprocess:
       min_items_kept: 1
       # Warn when more than this share of non-English items kept their original
       # text. Sep 10-14 logged zero translation errors, so a quarter is an event,
       # not the steady state. A tripped translation breaker always warns.
       warn_translation_fallback_fraction: 0.25
-    prefilter:
+    screen:
       min_items_kept: 1
       # The prefilter is a relevance floor, not a shredder. Cutting nearly
       # everything means the prompt or the bio load went wrong, and the paper
       # below it would be built from the remainder.
       max_cut_fraction: 0.95
-    grouping:
+    cluster:
       min_rows: 1
       # attach_unrecovered is judgments still missing after the straggler
       # re-ask. Non-zero means the cluster/singleton split understates real
@@ -92,7 +92,7 @@ pipeline:
       # would know.
       warn_attach_unrecovered: 1
       warn_split_failed_calls: 1
-    grouping_pass1:
+    score:
       # An unscored row scores 0 by design (FAIL_SAFE_SCORE), so a handful is
       # survivable and the pile simply prefers judged rows. A quarter of the
       # corpus unjudged is a different thing: the ranking below it is noise.
@@ -104,7 +104,7 @@ pipeline:
       # which is the right failure -- but run #50 lost its single call and put
       # three separate wildfire rows in the top ten. Worth saying out loud.
       warn_failed_calls: 1
-    rerun:
+    novelty:
       # A failed judge call keeps its rows -- the paper is as it would have been
       # before this check existed -- but a run that silently stopped checking
       # should say so.
@@ -112,12 +112,12 @@ pipeline:
       # A day that drops more than this share of what it checked is more likely
       # a judge gone wrong than a slow news cycle.
       warn_dropped_fraction: 0.2
-    editor:
+    rank:
       min_items_ranked: 1
       # Ties fall back to ref order, which is alphabetical, at a boundary that
       # decides feature versus standard.
       warn_tie_break_failed_calls: 1
-    writers:
+    write:
       # After repair. Below this the run aborts and nothing is published, so
       # yesterday's paper stays up rather than today's being mostly holes.
       # Any hole above it warns and publishes: there is no threshold below
@@ -134,7 +134,7 @@ pipeline:
       # The full list stays on pipeline_stage_runs.metrics either way.
       warn_on_newly_cooled_hosts: true
 
-    publisher:
+    publish:
       # A published piece whose lineage would not resolve is one the reader
       # cannot follow to anyone's reporting, which is the one thing the paper
       # promises.
@@ -153,80 +153,9 @@ pipeline:
       # one it destroyed. `--force` is the deliberate path.
       min_replacement_fraction: 0.75
 
-# Publisher tuning. The publisher is deterministic (no LLM); this block is the
-# cross-day lineage pass it runs after freezing the paper.
-publisher:
-  # Cross-day story lineage -- the "previously" marker. Finds, for each piece of
-  # today's paper, the piece in a recent paper that covered the same continuing
-  # situation. It never suppresses anything: a continuing story is fixed by
-  # continuity, and a duplicate is fixed upstream in the preprocessor.
-  lineage:
-    enabled: true
-    # How far back to look for prior coverage, counted in EDITIONS, not days.
-    # Seven because the audit's Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3,
-    # and a six-day window would have missed the confirmation that most needed
-    # the marker.
-    #
-    # It was `lookback_days: 7`, which is the same thing only while the paper
-    # comes out every day. It did not from Sep 15 to 21, and paper #42 (Sep 22)
-    # published with ZERO markers -- its last predecessor was eight days back,
-    # one outside the window -- on a front page led by the Ukraine refinery
-    # strikes and the Hormuz blockade, both running in every paper before the
-    # gap. What the reader last read is the last edition, however long ago.
-    lookback_editions: 7
-    # RETRIEVAL FLOOR, not a decision. Embedding cosine only decides which few
-    # prior pieces are worth asking about; the adjudicate pass below decides
-    # whether any of them is really the same situation.
-    #
-    # It was 0.80 and was doing the deciding, which the 2026-09-04 measurement
-    # over 900 pieces showed cannot work: the best-match distribution has no
-    # valley at all (largest below 0.7973, smallest above 0.8020, a 0.0047 gap
-    # in a smooth tail), and both of the two false links sat ABOVE the line at
-    # 0.8080 and 0.8219 while real continuations sat below it -- the renewed
-    # Iran escalation at 0.7944, an OpenAI follow-up at 0.7443. Moving a
-    # threshold trades one error for the other.
-    #
-    # 0.72 buys back the misses. It admits roughly 35 candidates per paper
-    # against 900 pieces, which is one small batched call.
-    candidate_floor: 0.72
-    # Prior pieces offered per piece. All of them are judged, and the best
-    # CONFIRMED one wins -- so a piece whose nearest match is a different
-    # instance of the same kind of event can still keep its real predecessor.
-    top_k: 3
-    # The judge. One call per paper over every candidate pair, which is why
-    # there is no batch_size or concurrency here: ~35 pairs of two headlines
-    # fit in one call, and chunking would only add failure modes.
-    #
-    # A failed call yields NO links for that paper rather than falling back to
-    # the floor. A paper with no continuity markers is a complete paper; a paper
-    # with unjudged ones is the defect this pass exists to fix.
-    adjudicate:
-      # Characters of each piece's published prose shown per pair. THE knob, and
-      # the reason the 2026-09-04 run accepted two wrong links: the judge was
-      # shown two headlines and nothing else, and "Ex-police officer charged
-      # with using Flock cameras to stalk girlfriend" does not say Oregon. The
-      # fact that separated it from the Georgia case was never in the prompt.
-      #
-      # This is grouping-pass-1's lesson, which spent months scoring singletons
-      # on bare headlines before `body_cap` was named as config. 300 characters
-      # is roughly the first paragraph — enough for the place and the actors,
-      # which is exactly what the two failures needed. Cost is ~2 x 300 chars
-      # per pair against ~90 pairs on the fullest day: about 15k extra input
-      # tokens on a call that used 5.6k.
-      body_cap: 300
-      model: zai-org/glm-5.2
-      provider: nanogpt
-      temperature: 0.1
-      max_tokens: 4096
-      reasoning_effort: "none"
-      stream: true
-      timeout_ms: 120000
-      retry_max_attempts: 5
-      retry_base_ms: 2000
-
 # Preprocessor tuning. The preprocessor is deterministic (no LLM), but its
 # recency window and dedup lookback are configuration, not magic numbers.
-preprocessor:
+preprocess:
   recency:
     # Fixed window on fetched_at: every run selects the last window_hours of
     # raw_items regardless of prior run cadence. Cross-run dedup (lookback_days
@@ -282,11 +211,11 @@ preprocessor:
     # with no paper. Ten is well clear of a bad minute and well short of that.
     abort_after_consecutive_failures: 10
 
-# Bio-aware relevance floor between the preprocessor and the clusterer — a
-# separate, later judgment from `filter` (garbage vs. reader-relevance; see
-# docs/decisions.md). Same model family as editor_pass_1's bio-aware scoring,
-# since this stage is built to become a scorer itself with only a prompt swap.
-prefilter:
+# Screen (formerly "prefilter"): the bio-aware relevance floor between
+# preprocess and cluster. One verdict per item: cut, news or opinion. Same model
+# family as the score stage, since this stage is built to become a scorer itself
+# with only a prompt swap.
+screen:
   model: zai-org/glm-5.2
   provider: nanogpt
   temperature: 0.1
@@ -316,23 +245,200 @@ prefilter:
   retry_max_attempts: 5
   retry_base_ms: 2000
 
-# Thread pass: groups related clusters and singletons into ongoing situations,
-# above grouping's event-level clustering. Runs after grouping-pass-1 scoring and
-# before pile assembly.
-#
-# Grouping asks "is this the same event?"; threading asks "is this the same
-# continuing story?". Run #43 produced five separate Oregon wildfire clusters,
-# four in the top fifteen, because the fires are one situation made of many
-# events. Threading fixes that without loosening the event question — which is
-# what lets the split pass keep event clustering strict.
-#
-# A thread is a first-class row the editor ranks: relevance = max(member score),
-# sources = sum(member source counts), so the editor formula applies unchanged.
-# Both read today's news only: a member the rerun check reduced counts at its
-# reduced score and adds no sources (see deriveThreadScores).
+# Embedding model for the cluster stage.
+# Qwen3-Embedding-8B via OpenRouter at 4096 dims; matches vector(4096) in
+# item_embeddings (migration 020). batch_size controls texts per API call.
+# body_cap is set in cluster.embedding.body_cap (2000 chars) — not here.
+embeddings:
+  model: qwen/qwen3-embedding-8b
+  provider: openrouter
+  dims: 4096
+  batch_size: 100
+  timeout_ms: 120000
 
-# The rerun check -- runs inside grouping-pass1, after scoring and before
-# threading. It grades how new each top-scoring row is against what the paper
+# Cluster (formerly "grouping"): embedding-based clustering of same-event items.
+# Four steps: embed (software + embedding model), candidate groups (software,
+# cosine-similarity graph + union-find), attach (LLM, near-miss singletons),
+# describe (LLM, neutral title + summary per multi-item cluster).
+#
+# THE KNOB: embedding.similarity_threshold is the primary tuning lever.
+# Higher = fewer, tighter groups. Lower = more, looser groups.
+cluster:
+  # Stage-level model. The attach and describe sub-steps set their own models
+  # under cluster.attach / cluster.describe; this top-level value satisfies
+  # the shared stage-config schema.
+  model: alibaba/qwen3.6-27b:thinking
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 8192
+  reasoning_effort: "none"
+  stream: true
+  timeout_ms: 600000
+  embedding:
+    # Max characters from body_text included in embed text per item.
+    # 2000 chars captures enough of the article opening that same-event
+    # pairs score meaningfully higher than same-topic-different-event pairs.
+    body_cap: 2000
+    # Cosine similarity threshold for adding an edge between two items.
+    # Start here and sweep: higher tightens groups, lower loosens them.
+    similarity_threshold: 0.66
+    # Top-K nearest neighbors per item considered for edge creation.
+    # Limits graph density; raise if same-story items are getting missed.
+    top_k: 15
+  # Split pass (step 2b): repairs over-merges created by union-find.
+  #
+  # Connected components only require a PATH between members, so a bridging
+  # article chains unrelated stories into one cluster (run #35's "Power grid
+  # strains and data center moratoriums" joined a Virginia power line to a New
+  # York moratorium). Until this pass, step-2 components became clusters with no
+  # LLM ever seeing them — the attach prompt's "shares only a topic is not the
+  # same event" rule never applied to them.
+  #
+  # The measure is COHESION: edges present / possible pairs, divided by the most
+  # that embedding.top_k allows at that component size. The raw ratio alone would
+  # be wrong — top_k caps each item at 15 neighbours, so a 37-item component can
+  # never exceed 15/36 = 0.42 however coherent it is, and run #35's 37-source
+  # US-Iran cluster would be flagged every run. Dividing by the ceiling makes
+  # 1.0 mean "as connected as it could be" at any size; a chain stays near zero.
+  #
+  # Only components both large enough to chain and loosely connected get a call,
+  # so the dense majority costs nothing.
+  split:
+    enabled: true
+    # Below this cohesion a component is treated as possibly chained.
+    #
+    # Raised from 0.5 after run #40. A pure chain — the exact over-merge shape —
+    # scores 2/n at raw density, which for n=4 is exactly 0.500. The check is
+    # `cohesion < density_floor`, so at 0.5 the canonical 4-item chain passed on
+    # a boundary equality, and run #40 had four components sitting precisely
+    # there (three of them size 4). 0.55 catches them; the next component up in
+    # that run scored 0.57, so nothing legitimate is swept in. Costs ~4 extra
+    # LLM calls per run, and the model is still the precision gate — a component
+    # that is genuinely one story comes back as one group.
+    #
+    # Chains of size 3 score 0.667 and remain out of reach: catching them would
+    # need a floor above 0.67, which is where many legitimate components sit.
+    density_floor: 0.55
+    # Components of size 2 are density 1.0 by construction and cannot chain.
+    # Size 3 is the smallest that can.
+    min_size: 3
+    model: zai-org/glm-5.2
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 24000
+    concurrency: 4
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 300000
+    retry_max_attempts: 5
+    retry_base_ms: 2000
+  # Attach pass: concurrent rounds. Each round snapshots current state, builds
+  # candidates for all eligible anchors, runs all LLM calls concurrently under
+  # pLimit(concurrency), then applies merges deterministically (highest anchorBestSim
+  # wins a contested singleton). Cascade attach: clusters formed in round N are
+  # visible in round N+1. Rounds repeat until a round yields zero new merges.
+  # Attach-only; never splits. candidate_floor is the sole candidate filter.
+  attach:
+    enabled: true
+    # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
+    # 0.55 catches same-event pairs (measured at 0.78+) and cross-event near-misses
+    # (e.g. Samsung pair at 0.635) while skipping true orphans. The LLM is the
+    # precision gate — there is no auto-accept tier and no per-anchor cap.
+    candidate_floor: 0.55
+    model: zai-org/glm-5.2
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 24000
+    # Governs actual in-flight LLM calls. Lowered from 10 after run #34 (2026-06-19)
+    # logged 81 rate-limit errors across 163 grouping calls: Phase A and Phase B
+    # both run under this limit, and at 10 the pass saturated the provider. A
+    # failed attach call silently means "attach nothing", so 429s cost cluster
+    # quality invisibly — prefer fewer in-flight calls over retry churn.
+    concurrency: 4
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 300000
+    # 429/503 backoff. Without this a rate-limited attach call is indistinguishable
+    # from the model declining every candidate.
+    retry_max_attempts: 5
+    retry_base_ms: 2000
+  # Describe pass: cheap batched LLM call that writes a neutral title and
+  # short summary for every multi-item cluster. Runs after attach. Singletons
+  # skip this pass.
+  describe:
+    model: zai-org/glm-5.2
+    provider: nanogpt
+    temperature: 0.1
+    max_tokens: 4096
+    # Clusters per LLM call. Each call sees batch_size clusters, each shown
+    # as its member items (title + body excerpt).
+    batch_size: 20
+    # Lowered alongside attach.concurrency for the same rate-limit reason. A
+    # failed describe batch leaves every cluster in it with a fallback label.
+    concurrency: 4
+    reasoning_effort: "none"
+    stream: true
+    timeout_ms: 120000
+    retry_max_attempts: 5
+    retry_base_ms: 2000
+  # Top-N rows (clusters + singletons combined) by bio-relevance score that
+  # pass into the pile. Replaces the old all-clusters + singleton_pile_target logic.
+  pile_target: 150
+
+score:
+  model: zai-org/glm-5.2:thinking
+  provider: nanogpt
+  temperature: 0.1
+  max_tokens: 24000
+  batch_size: 40
+  # The highest concurrency in the pipeline, and until 2026-08-26 the only
+  # batched concurrent stage with no retry at all — callWithBackoff was not even
+  # imported. One 429 on the first and only attempt defaulted a whole batch of 40
+  # to a fabricated score. Run #42 lost clusters C80-C83 that way.
+  concurrency: 10
+  retry_max_attempts: 5
+  retry_base_ms: 2000
+  reasoning_effort: "medium"
+  # Items per call when re-asking for scores that came back missing.
+  #
+  # The commonest fail-safe is not a failed call — it is a call that SUCCEEDS and
+  # silently omits one line. Run #39's batch 7 of 8 parsed 39 of 40, so one item
+  # went into the pile competition unjudged inside an otherwise clean run. Any of
+  # those 40 could have been the day's biggest story.
+  #
+  # Small, because a dropped line is much harder to hide in a short response, and
+  # because the usual straggler count is one or two — so this is normally a
+  # single cheap call rather than forty individual ones.
+  straggler_batch_size: 10
+  singleton_pile_target: 100
+  # Characters of English body text shown per SINGLETON being scored.
+  #
+  # This is the fix for run #47's tie storm. Singletons were scored on title +
+  # slice(0, 50) while clusters were scored on a full describe-pass summary, so
+  # the scorer had real material for one row type and a headline for the other.
+  # With nothing to discriminate on it fell back to coarse title-shaped buckets:
+  # 150 published rows carried only 38 distinct combined scores, 127 of them sat
+  # in a tie, and both tier boundaries landed inside a tie group — so whether a
+  # story ran as a feature was settled by the tie-break LLM, or when that call
+  # dropped refs, by alphabetical ref order.
+  #
+  # 1000 is deliberately more than prefilter's 500: this is a 0–100 judgment
+  # rather than a keep/cut floor, and it runs over ~420 singletons rather than
+  # ~1,200 items, so the finer judgment is also the cheaper one to feed.
+  #
+  # Watch the score histogram after changing this. If ties stay this dense with
+  # a full opening paragraph in hand, the problem is the prompt's scoring bands,
+  # not the input, and the next lever is the band definitions in prompt.ts.
+  body_cap: 1000
+  # Characters of describe-pass summary shown per CLUSTER being scored. Was a
+  # hardcoded 300 and stays at 300 — cluster summaries are already distilled and
+  # rarely run longer than this.
+  summary_cap: 300
+  stream: true
+  timeout_ms: 600000
+
+# Novelty (formerly "the rerun check") -- runs inside the score stage, after
+# scoring and before threading. It grades how new each top-scoring row is against what the paper
 # printed in its last editions, and the grade decides what happens to the row:
 #
 #   new          nothing like it was printed            -> unchanged
@@ -344,7 +450,7 @@ prefilter:
 #                                                          size capped at a brief
 #   rerun        nothing new                            -> withheld from the pile
 #
-# See src/pipeline/rerun/.
+# See src/pipeline/novelty/.
 #
 # Why rerun: the Sep 5-22 audit found about 60 of 257 continuity links were the
 # same news printed again from a later outlet -- AfD's result on Sep 7, 8 and 10,
@@ -358,17 +464,17 @@ prefilter:
 # And a war section reached the top ten on nine of ten days on the strength of
 # one more night of strikes. The reader's ruling (2026-10-03): reduce minor
 # updates, do not drop them; reduce routine war news the same way.
-rerun:
+novelty:
   enabled: true
   # Rows below this never reach the pile (pile_target 150, and threads absorb
   # rows), so there is nothing to protect there.
   candidate_target: 250
-  # The lineage pass's window, for the same reason: what the reader last read is
+  # The continuity pass's window, for the same reason: what the reader last read is
   # the last editions, however long ago.
   lookback_editions: 7
-  # Retrieval floor, matched to the lineage pass's 0.72. It was 0.74, and eight
+  # Retrieval floor, matched to the continuity pass's 0.72. It was 0.74, and eight
   # of the fourteen restatements the 2026-10-01 audit traced sat between the two
-  # (0.7215-0.7389): linked as "previously" by lineage, never seen by this check.
+  # (0.7215-0.7389): linked as "previously" by continuity, never seen by this check.
   candidate_floor: 0.72
   # Printed pieces offered per candidate. Five, not two: whether today's strike
   # is routine can only be judged against a week of the situation's headlines.
@@ -395,7 +501,7 @@ rerun:
   timeout_ms: 180000
   retry_max_attempts: 5
   retry_base_ms: 2000
-  # Points off the pass-1 score, and the largest piece the story may run as.
+  # Points off the score, and the largest piece the story may run as.
   # Scale: a typical day's feature line is ~15 combined points below its top
   # story. FIRST SETTING, to be calibrated against the novelty-preview replay of
   # papers #43-52 before it runs live.
@@ -406,6 +512,21 @@ rerun:
     routine:
       penalty: 20
       max_tier: brief
+
+# Thread pass: groups related clusters and singletons into ongoing situations,
+# above cluster's event-level grouping. Runs inside the score stage, after
+# scoring and novelty and before pile assembly.
+#
+# Grouping asks "is this the same event?"; threading asks "is this the same
+# continuing story?". Run #43 produced five separate Oregon wildfire clusters,
+# four in the top fifteen, because the fires are one situation made of many
+# events. Threading fixes that without loosening the event question — which is
+# what lets the split pass keep event clustering strict.
+#
+# A thread is a first-class row the rank stage ranks: relevance = max(member
+# score), sources = sum(member source counts), so the formula applies unchanged.
+# Both read today's news only: a member the novelty check reduced counts at its
+# reduced score and adds no sources (see deriveThreadScores).
 thread:
   enabled: true
   # Top-scored rows offered to the pass. A thread's members are spread across
@@ -447,7 +568,7 @@ thread:
   retry_max_attempts: 5
   retry_base_ms: 2000
 
-editor:
+rank:
   # Deterministic formula: combined = relevance + source_weight * ln(sources)
   # ln(1)=0 so singletons get no lift; a 53-source cluster gets ~+35 at W=9.
   source_weight: 9
@@ -471,7 +592,7 @@ editor:
     timeout_ms: 300000
     # Characters of summary / English body per item in a tie-break group. Was a
     # hardcoded 300 and stays there. Groups are small, so this is cheap — but it
-    # only matters while ties are dense; if editor_pass_1.body_cap does its job
+    # only matters while ties are dense; if score.body_cap does its job
     # the tie-break should end up ranking a handful of items, not most of the
     # paper.
     body_cap: 300
@@ -483,8 +604,57 @@ editor:
     retry_max_attempts: 5
     retry_base_ms: 2000
 
+# Article text fetch. Editor run #112's audit is the source of every number
+# here: 305 underlying articles, 185 of them (61%) under 800 characters of feed
+# body and 132 under 300, with thinness concentrated by outlet rather than
+# spread evenly — AP, Al Jazeera, BBC World, NYT and the Oregonian ran 100%
+# teasers; Meduza, KTVZ, the Bend Bulletin and OPB ran none.
+fetch:
+  enabled: true
+  # Briefs are one-liners; a headline and a lede is already enough for one.
+  # This is what keeps the fetch at ~139 requests rather than ~230.
+  tiers: [feature, standard]
+  # Only fetch what the feed left short. Matches THIN_CHARS in the materials
+  # audit, so the audit's "thin" count and the fetch worklist are the same set:
+  # roughly a headline plus a lede, which is what the judgment stages read and
+  # what a writer cannot work from.
+  feed_chars_floor: 800
+  # Below this, extraction did not find an article — a paywall, a consent wall,
+  # or a JavaScript shell. The row is marked thin and the assembler falls back
+  # to the feed text. Set above feed_chars_floor on purpose: a fetch that
+  # barely matches the teaser was not worth making.
+  min_extracted_chars: 1200
+  # Hosts fetched in parallel. Each host's own URLs are always sequential with
+  # per_host_delay_ms between them, so this is a fan-out across publishers, not
+  # pressure on any one of them. Run #112's busiest fetchable host held 15
+  # articles, which at 1.5s apart is well under a minute.
+  concurrency: 6
+  per_host_delay_ms: 1500
+  timeout_ms: 20000
+  # Do not re-request an article attempted inside this window, whatever the
+  # outcome. Run #112's full fetch re-requested the 20 URLs its own capped run
+  # had just retrieved: the plan consulted the cooldown but never the cache.
+  # 20 hours means a same-day re-run costs nothing and tomorrow's paper starts
+  # clean.
+  refetch_after_hours: 20
+  # A news page above this is nav, ads and tracking, not article text.
+  max_bytes: 5000000
+  # This is the only table holding third-party full text. It exists to write
+  # the paper, is never published, and is swept on this window.
+  retention_days: 14
+  # Leave alone the hosts that keep refusing. NYT and OregonLive answer with a
+  # DataDome device check that the browser identity does not get past, so
+  # re-requesting them daily is 18 pointless requests. Learned from
+  # article_texts rather than configured as a blocklist: a host with no success
+  # in the window and at least min_attempts failures is skipped, and recovers
+  # by itself once those failures age out.
+  cooldown:
+    enabled: true
+    window_days: 7
+    min_attempts: 3
+
 # Writers stage: the fetch sub-stage, the packet assembler and the writer calls.
-writers:
+write:
   # Chosen by three blind bake-offs (docs/decisions.md, 2026-09-23 and
   # 2026-09-25), every piece read against its sources before the key was opened.
   # Round 1 (eight models at "low"): Flash put an unsupported fact, frame or
@@ -527,58 +697,9 @@ writers:
   # enough that a couple of unlucky calls do not trip it. Set to 0 to disable.
   abort_after_consecutive_failures: 10
 
-  # Article text fetch. Editor run #112's audit is the source of every number
-  # here: 305 underlying articles, 185 of them (61%) under 800 characters of feed
-  # body and 132 under 300, with thinness concentrated by outlet rather than
-  # spread evenly — AP, Al Jazeera, BBC World, NYT and the Oregonian ran 100%
-  # teasers; Meduza, KTVZ, the Bend Bulletin and OPB ran none.
-  fetch:
-    enabled: true
-    # Briefs are one-liners; a headline and a lede is already enough for one.
-    # This is what keeps the fetch at ~139 requests rather than ~230.
-    tiers: [feature, standard]
-    # Only fetch what the feed left short. Matches THIN_CHARS in the materials
-    # audit, so the audit's "thin" count and the fetch worklist are the same set:
-    # roughly a headline plus a lede, which is what the judgment stages read and
-    # what a writer cannot work from.
-    feed_chars_floor: 800
-    # Below this, extraction did not find an article — a paywall, a consent wall,
-    # or a JavaScript shell. The row is marked thin and the assembler falls back
-    # to the feed text. Set above feed_chars_floor on purpose: a fetch that
-    # barely matches the teaser was not worth making.
-    min_extracted_chars: 1200
-    # Hosts fetched in parallel. Each host's own URLs are always sequential with
-    # per_host_delay_ms between them, so this is a fan-out across publishers, not
-    # pressure on any one of them. Run #112's busiest fetchable host held 15
-    # articles, which at 1.5s apart is well under a minute.
-    concurrency: 6
-    per_host_delay_ms: 1500
-    timeout_ms: 20000
-    # Do not re-request an article attempted inside this window, whatever the
-    # outcome. Run #112's full fetch re-requested the 20 URLs its own capped run
-    # had just retrieved: the plan consulted the cooldown but never the cache.
-    # 20 hours means a same-day re-run costs nothing and tomorrow's paper starts
-    # clean.
-    refetch_after_hours: 20
-    # A news page above this is nav, ads and tracking, not article text.
-    max_bytes: 5000000
-    # This is the only table holding third-party full text. It exists to write
-    # the paper, is never published, and is swept on this window.
-    retention_days: 14
-    # Leave alone the hosts that keep refusing. NYT and OregonLive answer with a
-    # DataDome device check that the browser identity does not get past, so
-    # re-requesting them daily is 18 pointless requests. Learned from
-    # article_texts rather than configured as a blocklist: a host with no success
-    # in the window and at least min_attempts failures is skipped, and recovers
-    # by itself once those failures age out.
-    cooldown:
-      enabled: true
-      window_days: 7
-      min_attempts: 3
-
   # Prompt assembly: how much material each tier's writer sees, and how it is cut
   # down to that. Every number here is a budget, not a judgment — the judgment
-  # happened in the prefilter and grouping-pass-1, and the editor's tier is what
+  # happened in the screen and score stages, and the rank stage's tier is what
   # carries it into this stage.
   packet:
     # A paragraph shorter than this is exempt from duplicate removal. A dateline,
@@ -707,194 +828,73 @@ writers:
         thin_material_chars: 200
         full_material_chars: 600
 
-editor_pass_1:
-  model: zai-org/glm-5.2:thinking
-  provider: nanogpt
-  temperature: 0.1
-  max_tokens: 24000
-  batch_size: 40
-  # The highest concurrency in the pipeline, and until 2026-08-26 the only
-  # batched concurrent stage with no retry at all — callWithBackoff was not even
-  # imported. One 429 on the first and only attempt defaulted a whole batch of 40
-  # to a fabricated score. Run #42 lost clusters C80-C83 that way.
-  concurrency: 10
-  retry_max_attempts: 5
-  retry_base_ms: 2000
-  reasoning_effort: "medium"
-  # Items per call when re-asking for scores that came back missing.
-  #
-  # The commonest fail-safe is not a failed call — it is a call that SUCCEEDS and
-  # silently omits one line. Run #39's batch 7 of 8 parsed 39 of 40, so one item
-  # went into the pile competition unjudged inside an otherwise clean run. Any of
-  # those 40 could have been the day's biggest story.
-  #
-  # Small, because a dropped line is much harder to hide in a short response, and
-  # because the usual straggler count is one or two — so this is normally a
-  # single cheap call rather than forty individual ones.
-  straggler_batch_size: 10
-  singleton_pile_target: 100
-  # Characters of English body text shown per SINGLETON being scored.
-  #
-  # This is the fix for run #47's tie storm. Singletons were scored on title +
-  # slice(0, 50) while clusters were scored on a full describe-pass summary, so
-  # the scorer had real material for one row type and a headline for the other.
-  # With nothing to discriminate on it fell back to coarse title-shaped buckets:
-  # 150 published rows carried only 38 distinct combined scores, 127 of them sat
-  # in a tie, and both tier boundaries landed inside a tie group — so whether a
-  # story ran as a feature was settled by the tie-break LLM, or when that call
-  # dropped refs, by alphabetical ref order.
-  #
-  # 1000 is deliberately more than prefilter's 500: this is a 0–100 judgment
-  # rather than a keep/cut floor, and it runs over ~420 singletons rather than
-  # ~1,200 items, so the finer judgment is also the cheaper one to feed.
-  #
-  # Watch the score histogram after changing this. If ties stay this dense with
-  # a full opening paragraph in hand, the problem is the prompt's scoring bands,
-  # not the input, and the next lever is the band definitions in prompt.ts.
-  body_cap: 1000
-  # Characters of describe-pass summary shown per CLUSTER being scored. Was a
-  # hardcoded 300 and stays at 300 — cluster summaries are already distilled and
-  # rarely run longer than this.
-  summary_cap: 300
-  stream: true
-  timeout_ms: 600000
-
-# Embedding model for the grouping stage.
-# Qwen3-Embedding-8B via OpenRouter at 4096 dims; matches vector(4096) in
-# item_embeddings (migration 020). batch_size controls texts per API call.
-# body_cap is set in grouping.embedding.body_cap (2000 chars) — not here.
-embeddings:
-  model: qwen/qwen3-embedding-8b
-  provider: openrouter
-  dims: 4096
-  batch_size: 100
-  timeout_ms: 120000
-
-# Embedding-based grouping stage — the pipeline's clustering step.
-# Four steps: embed (software + embedding model), candidate groups (software,
-# cosine-similarity graph + union-find), attach (LLM, near-miss singletons),
-# describe (LLM, neutral title + summary per multi-item cluster).
-#
-# THE KNOB: embedding.similarity_threshold is the primary tuning lever.
-# Higher = fewer, tighter groups. Lower = more, looser groups.
-grouping:
-  # Stage-level model. The attach and describe sub-steps set their own models
-  # under grouping.attach / grouping.describe; this top-level value satisfies
-  # the shared stage-config schema.
-  model: alibaba/qwen3.6-27b:thinking
-  provider: nanogpt
-  temperature: 0.1
-  max_tokens: 8192
-  reasoning_effort: "none"
-  stream: true
-  timeout_ms: 600000
-  embedding:
-    # Max characters from body_text included in embed text per item.
-    # 2000 chars captures enough of the article opening that same-event
-    # pairs score meaningfully higher than same-topic-different-event pairs.
-    body_cap: 2000
-    # Cosine similarity threshold for adding an edge between two items.
-    # Start here and sweep: higher tightens groups, lower loosens them.
-    similarity_threshold: 0.66
-    # Top-K nearest neighbors per item considered for edge creation.
-    # Limits graph density; raise if same-story items are getting missed.
-    top_k: 15
-  # Split pass (step 2b): repairs over-merges created by union-find.
-  #
-  # Connected components only require a PATH between members, so a bridging
-  # article chains unrelated stories into one cluster (run #35's "Power grid
-  # strains and data center moratoriums" joined a Virginia power line to a New
-  # York moratorium). Until this pass, step-2 components became clusters with no
-  # LLM ever seeing them — the attach prompt's "shares only a topic is not the
-  # same event" rule never applied to them.
-  #
-  # The measure is COHESION: edges present / possible pairs, divided by the most
-  # that embedding.top_k allows at that component size. The raw ratio alone would
-  # be wrong — top_k caps each item at 15 neighbours, so a 37-item component can
-  # never exceed 15/36 = 0.42 however coherent it is, and run #35's 37-source
-  # US-Iran cluster would be flagged every run. Dividing by the ceiling makes
-  # 1.0 mean "as connected as it could be" at any size; a chain stays near zero.
-  #
-  # Only components both large enough to chain and loosely connected get a call,
-  # so the dense majority costs nothing.
-  split:
+# Publish tuning. Publishing is deterministic (no LLM); this block is the
+# continuity pass (formerly "lineage") it runs after freezing the paper.
+publish:
+  # Cross-day continuity -- the "previously" marker. Finds, for each piece of
+  # today's paper, the piece in a recent paper that covered the same continuing
+  # situation. It never suppresses anything: a continuing story is fixed by
+  # continuity, and a repeat is withheld upstream by the novelty check.
+  continuity:
     enabled: true
-    # Below this cohesion a component is treated as possibly chained.
+    # How far back to look for prior coverage, counted in EDITIONS, not days.
+    # Seven because the audit's Nvidia/Hugging Face arc ran 8/27 -> 8/28 -> 9/3,
+    # and a six-day window would have missed the confirmation that most needed
+    # the marker.
     #
-    # Raised from 0.5 after run #40. A pure chain — the exact over-merge shape —
-    # scores 2/n at raw density, which for n=4 is exactly 0.500. The check is
-    # `cohesion < density_floor`, so at 0.5 the canonical 4-item chain passed on
-    # a boundary equality, and run #40 had four components sitting precisely
-    # there (three of them size 4). 0.55 catches them; the next component up in
-    # that run scored 0.57, so nothing legitimate is swept in. Costs ~4 extra
-    # LLM calls per run, and the model is still the precision gate — a component
-    # that is genuinely one story comes back as one group.
+    # It was `lookback_days: 7`, which is the same thing only while the paper
+    # comes out every day. It did not from Sep 15 to 21, and paper #42 (Sep 22)
+    # published with ZERO markers -- its last predecessor was eight days back,
+    # one outside the window -- on a front page led by the Ukraine refinery
+    # strikes and the Hormuz blockade, both running in every paper before the
+    # gap. What the reader last read is the last edition, however long ago.
+    lookback_editions: 7
+    # RETRIEVAL FLOOR, not a decision. Embedding cosine only decides which few
+    # prior pieces are worth asking about; the adjudicate pass below decides
+    # whether any of them is really the same situation.
     #
-    # Chains of size 3 score 0.667 and remain out of reach: catching them would
-    # need a floor above 0.67, which is where many legitimate components sit.
-    density_floor: 0.55
-    # Components of size 2 are density 1.0 by construction and cannot chain.
-    # Size 3 is the smallest that can.
-    min_size: 3
-    model: zai-org/glm-5.2
-    provider: nanogpt
-    temperature: 0.1
-    max_tokens: 24000
-    concurrency: 4
-    reasoning_effort: "none"
-    stream: true
-    timeout_ms: 300000
-    retry_max_attempts: 5
-    retry_base_ms: 2000
-  # Attach pass: concurrent rounds. Each round snapshots current state, builds
-  # candidates for all eligible anchors, runs all LLM calls concurrently under
-  # pLimit(concurrency), then applies merges deterministically (highest anchorBestSim
-  # wins a contested singleton). Cascade attach: clusters formed in round N are
-  # visible in round N+1. Rounds repeat until a round yields zero new merges.
-  # Attach-only; never splits. candidate_floor is the sole candidate filter.
-  attach:
-    enabled: true
-    # Cosine-similarity floor (title-only) for offering a candidate to the LLM.
-    # 0.55 catches same-event pairs (measured at 0.78+) and cross-event near-misses
-    # (e.g. Samsung pair at 0.635) while skipping true orphans. The LLM is the
-    # precision gate — there is no auto-accept tier and no per-anchor cap.
-    candidate_floor: 0.55
-    model: zai-org/glm-5.2
-    provider: nanogpt
-    temperature: 0.1
-    max_tokens: 24000
-    # Governs actual in-flight LLM calls. Lowered from 10 after run #34 (2026-06-19)
-    # logged 81 rate-limit errors across 163 grouping calls: Phase A and Phase B
-    # both run under this limit, and at 10 the pass saturated the provider. A
-    # failed attach call silently means "attach nothing", so 429s cost cluster
-    # quality invisibly — prefer fewer in-flight calls over retry churn.
-    concurrency: 4
-    reasoning_effort: "none"
-    stream: true
-    timeout_ms: 300000
-    # 429/503 backoff. Without this a rate-limited attach call is indistinguishable
-    # from the model declining every candidate.
-    retry_max_attempts: 5
-    retry_base_ms: 2000
-  # Describe pass: cheap batched LLM call that writes a neutral title and
-  # short summary for every multi-item cluster. Runs after attach. Singletons
-  # skip this pass.
-  describe:
-    model: zai-org/glm-5.2
-    provider: nanogpt
-    temperature: 0.1
-    max_tokens: 4096
-    # Clusters per LLM call. Each call sees batch_size clusters, each shown
-    # as its member items (title + body excerpt).
-    batch_size: 20
-    # Lowered alongside attach.concurrency for the same rate-limit reason. A
-    # failed describe batch leaves every cluster in it with a fallback label.
-    concurrency: 4
-    reasoning_effort: "none"
-    stream: true
-    timeout_ms: 120000
-    retry_max_attempts: 5
-    retry_base_ms: 2000
-  # Top-N rows (clusters + singletons combined) by bio-relevance score that
-  # pass into the editor pile. Replaces the old all-clusters + singleton_pile_target logic.
-  pile_target: 150
+    # It was 0.80 and was doing the deciding, which the 2026-09-04 measurement
+    # over 900 pieces showed cannot work: the best-match distribution has no
+    # valley at all (largest below 0.7973, smallest above 0.8020, a 0.0047 gap
+    # in a smooth tail), and both of the two false links sat ABOVE the line at
+    # 0.8080 and 0.8219 while real continuations sat below it -- the renewed
+    # Iran escalation at 0.7944, an OpenAI follow-up at 0.7443. Moving a
+    # threshold trades one error for the other.
+    #
+    # 0.72 buys back the misses. It admits roughly 35 candidates per paper
+    # against 900 pieces, which is one small batched call.
+    candidate_floor: 0.72
+    # Prior pieces offered per piece. All of them are judged, and the best
+    # CONFIRMED one wins -- so a piece whose nearest match is a different
+    # instance of the same kind of event can still keep its real predecessor.
+    top_k: 3
+    # The judge. One call per paper over every candidate pair, which is why
+    # there is no batch_size or concurrency here: ~35 pairs of two headlines
+    # fit in one call, and chunking would only add failure modes.
+    #
+    # A failed call yields NO links for that paper rather than falling back to
+    # the floor. A paper with no continuity markers is a complete paper; a paper
+    # with unjudged ones is the defect this pass exists to fix.
+    adjudicate:
+      # Characters of each piece's published prose shown per pair. THE knob, and
+      # the reason the 2026-09-04 run accepted two wrong links: the judge was
+      # shown two headlines and nothing else, and "Ex-police officer charged
+      # with using Flock cameras to stalk girlfriend" does not say Oregon. The
+      # fact that separated it from the Georgia case was never in the prompt.
+      #
+      # This is grouping-pass-1's lesson, which spent months scoring singletons
+      # on bare headlines before `body_cap` was named as config. 300 characters
+      # is roughly the first paragraph — enough for the place and the actors,
+      # which is exactly what the two failures needed. Cost is ~2 x 300 chars
+      # per pair against ~90 pairs on the fullest day: about 15k extra input
+      # tokens on a call that used 5.6k.
+      body_cap: 300
+      model: zai-org/glm-5.2
+      provider: nanogpt
+      temperature: 0.1
+      max_tokens: 4096
+      reasoning_effort: "none"
+      stream: true
+      timeout_ms: 120000
+      retry_max_attempts: 5
+      retry_base_ms: 2000

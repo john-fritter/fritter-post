@@ -1,3 +1,15 @@
+/**
+ * Step 7, thread: which events are one continuing situation?
+ *
+ * Cluster asks "same event?"; this asks "same story?" -- one state's fire
+ * emergency, one war, one city's fight over one project. One LLM call over the
+ * whole candidate set; a thread's score and sources are derived in software so
+ * the rank stage can treat it like any other row. Runs inside the score stage.
+ * Writes `thread_runs` / `threads` / `thread_members`.
+ *
+ * See docs/design.md, "thread".
+ */
+
 import "dotenv/config";
 import { readFileSync } from "fs";
 import path from "path";
@@ -8,7 +20,7 @@ import { callWithBackoff } from "../../llm/backoff.js";
 import { normalizeRef } from "../../lib/refs.js";
 import { englishTitle, englishBodyExcerpt, excerpt } from "../../lib/text.js";
 import { applyModelOverrides, withModel, type ModelOverrides } from "../../config/overrides.js";
-import { parseGroupingDigest } from "../editor-pass-1/index.js";
+import { parseGroupingDigest } from "../score/index.js";
 import { buildThreadSystemPrompt, buildThreadUserPrompt } from "./prompt.js";
 
 const BIO_PATH = path.join(import.meta.dirname, "..", "..", "..", "docs", "bio.md");
@@ -304,7 +316,7 @@ export interface RunThreadingOptions {
  * a wrong answer — the pile simply keeps its un-threaded rows. That is recorded
  * in failed_calls so a report can say so.
  */
-export async function runThreading(
+export async function runThread(
   options: RunThreadingOptions,
 ): Promise<ThreadRunSummary> {
   const pool = getPool();

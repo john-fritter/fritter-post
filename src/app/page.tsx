@@ -13,8 +13,8 @@ import {
   sourceLabel,
   formatEditionDate,
   WORDS_PER_MINUTE,
-} from "@/pipeline/publisher/assemble";
-import { loadLatestPaper, loadPaperPieces, type PaperPieceRow } from "@/pipeline/publisher/read";
+} from "@/pipeline/publish/assemble";
+import { loadLatestPaper, loadPaperPieces, type PaperPieceRow } from "@/pipeline/publish/read";
 
 // The paper changes once a day, but it is the database that says when — so the
 // page is rendered per request rather than cached against a build.

@@ -18,9 +18,9 @@ import {
   formatMarkerDate,
   paragraphs,
   readingMinutes,
-} from "@/pipeline/publisher/assemble";
-import { lineageLabel } from "@/pipeline/lineage/select";
-import type { PaperPiece } from "@/pipeline/publisher/read";
+} from "@/pipeline/publish/assemble";
+import { continuityLabel } from "@/pipeline/continuity/select";
+import type { PaperPiece } from "@/pipeline/publish/read";
 
 export function ArticleView({
   piece,
@@ -38,7 +38,7 @@ export function ArticleView({
   // Null when nothing was linked, and also when the prior piece was a section
   // line with no headline of its own — a pointer to a pointer is not worth a row.
   const previously = piece.previously
-    ? lineageLabel(
+    ? continuityLabel(
         { priorPublishedOn: piece.previously.publishedOn, priorHeadline: piece.previously.headline },
         formatMarkerDate,
       )

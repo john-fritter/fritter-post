@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { loadModelConfig } from "../src/config/models.js";
 import { applyModelOverrides, overridesFromFlags, withModel } from "../src/config/overrides.js";
 
-const writers = loadModelConfig().writers;
-const rerun = loadModelConfig().rerun;
+const writers = loadModelConfig().write;
+const rerun = loadModelConfig().novelty;
 
 function testNoOverridesIsProduction() {
   assert.equal(applyModelOverrides(writers, undefined), writers);
@@ -17,7 +17,7 @@ function testModelAndBudgetReplaced() {
   // Everything not overridden is production's, so the comparison is the model alone.
   assert.equal(cfg.temperature, writers.temperature);
   assert.equal(cfg.reasoning_effort, writers.reasoning_effort);
-  assert.equal(writers.model, loadModelConfig().writers.model, "production config not mutated");
+  assert.equal(writers.model, loadModelConfig().write.model, "production config not mutated");
 }
 
 function testReasoningEffortOmitted() {

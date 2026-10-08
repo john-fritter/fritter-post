@@ -10,8 +10,8 @@
 
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { displayHeadline } from "@/pipeline/publisher/assemble";
-import { loadArticle, loadLatestPaper } from "@/pipeline/publisher/read";
+import { displayHeadline } from "@/pipeline/publish/assemble";
+import { loadArticle, loadLatestPaper } from "@/pipeline/publish/read";
 import { ArticleView } from "../../_components/article";
 
 export const dynamic = "force-dynamic";

@@ -18,7 +18,7 @@
  */
 
 import "dotenv/config";
-import { runWriters, repairWriterRun } from "../src/pipeline/writers/index.js";
+import { runWrite, repairWriterRun } from "../src/pipeline/write/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 
 function parseArgs(argv: string[]) {
@@ -73,7 +73,7 @@ async function main() {
 
   const overrides = overridesFromFlags(flags);
 
-  const summary = await runWriters({
+  const summary = await runWrite({
     ...(editorRunId !== undefined ? { editorRunId } : {}),
     ...(flags["tier"] ? { tier: flags["tier"] } : {}),
     ...(flags["limit"] ? { limit: parseInt(flags["limit"], 10) } : {}),

@@ -1,193 +1,138 @@
 # The Fritter Post
 
-A self-hosted personal daily newspaper. Runs on a daily cron, gathers and
-synthesizes news from a curated source set, and serves a clean ad-free page
-at `post.fritter.lol`.
+A daily newspaper for one reader.
 
-See `docs/concept.md` for the vision and pipeline architecture.
+Every morning at six a pipeline reads 111 news sources and works out what
+happened. It decides what matters to one specific person, using a profile the
+reader wrote, and writes about 150 pieces in a house voice, each linking
+out to the reporting it came from. The result is published as a finite paper at
+post.fritter.lol: ranked rather than sectioned, with no feed, no ads and no
+engagement metrics. When you reach the end, you're done.
+
+It's a personal project, self-hosted on one box, and it's not a product.
+
+<p align="center">
+  <img src="docs/images/index.jpg" width="260" alt="The front page: a ranked list of headlines, each with its source count, and an ongoing story with four pieces inside it">
+  &nbsp;
+  <img src="docs/images/article.jpg" width="260" alt="An article page: the headline, a 'Previously' line naming the paper's earlier story, and the piece">
+  &nbsp;
+  <img src="docs/images/sources.jpg" width="260" alt="The foot of an article: its sources as blue links, and a link to discuss it on the board">
+</p>
+
+<p align="center"><sub>
+The front page is the whole paper, in rank order: rank 2 is an ongoing story that opens into four pieces.
+An article says what the paper ran on it before.
+Its sources sit at the foot, and they are the only colour on the page.
+</sub></p>
 
 ---
 
-## Development setup
+## How it works
 
-**Prerequisites:** Node 22+, a Postgres instance (local or remote).
-
-```bash
-# 1. Install dependencies
-npm install
-
-# 2. Set up environment — uncomment and fill in DATABASE_URL for local dev
-cp .env.example .env
-
-# 3. Run migrations
-npm run migrate
-
-# 4. Start the dev server
-npm run dev
+```
+GATHER       collect → preprocess → screen
+UNDERSTAND   cluster → score → novelty → thread
+PRODUCE      rank → fetch → write → publish
 ```
 
-The app runs at http://localhost:3000.
+| step | what it does |
+|---|---|
+| **collect** | Fetches 111 RSS feeds and news sitemaps. No judgment and no dedup: the same story from five outlets is a signal. |
+| **preprocess** | Canonicalizes URLs, removes duplicate articles, translates non-English items, and cuts link dumps by rule. |
+| **screen** | An LLM gives each item a verdict against the reader's bio: cut, news or opinion. When unsure, it keeps. |
+| **cluster** | Embeds every item and groups the ones that report the same event. LLM passes split chains, attach near-misses and name each cluster. |
+| **score** | Rates every event for this reader on two axes, *interest* and *consequence*. Software adds them up. |
+| **novelty** | Compares each story with the last week's papers: new, a development, a minor update, routine, or a rerun. Reruns are withheld and minor updates shrink. |
+| **thread** | Groups events into ongoing situations (one war, one state's fire season) so the paper covers a situation once, as a section. |
+| **rank** | Builds the front page by formula: `score + 9·ln(outlets reporting it)`. Rank decides each piece's size: feature, standard or brief. |
+| **fetch** | Gets the full article text where the feed only carried a teaser. The text is used for writing and never published. |
+| **write** | One LLM call per piece, given the sources, the reader, a word target and the standing memo on voice. |
+| **publish** | Freezes the paper with its source links, and marks stories the paper has covered before ("Previously…"). |
 
-**Type checking and tests:**
+A full run takes about 15 minutes. `docs/design.md` covers each stage in detail.
+
+## What's interesting about it
+
+- **LLMs judge and software decides.** Models answer narrow questions, such as
+  whether two articles are the same event or how much a story matters to this
+  reader. The ranking is a formula over those answers, and no model is asked to
+  lay out the front page.
+- **"Same event" and "same story" are different questions.** Clustering groups
+  articles about one event. Threading groups events into one situation. Keeping
+  the two apart lets clustering stay strict without the paper losing the
+  connection.
+- **Novelty, not dedup.** The repeats that matter are yesterday's news reported
+  by a different outlet today. They share no URL or title with what was
+  printed, so a dedup key can't catch them. A judge grades how new each story
+  is against what the reader has already been told.
+- **A stage that exits 0 hasn't necessarily worked.** A rate-limited call that
+  comes back empty looks exactly like a model saying "none of these". So every
+  stage records the counters that tell those apart, and the runner reads them
+  back through a gate between stages before going on.
+- **A model repeats what the prompt says about itself.** Tell a writer its
+  source is "truncated" and the reader gets a sentence about truncation. The
+  writer prompts never describe their own plumbing.
+- **Everything is traceable.** Every LLM call is logged with its full prompts.
+  Every published piece traces back through its cluster to the raw items, and
+  every piece links to its sources.
+
+The editorial stance (plain headlines, named actors, symmetric skepticism,
+"curate, don't reproduce") is set out in `docs/concept.md` and `docs/voice.md`.
+
+## Stack
+
+- TypeScript, Next.js (App Router) for the reading view.
+- PostgreSQL with pgvector, in the same docker-compose stack.
+- LLMs through the OpenAI SDK against OpenAI-compatible providers. Each stage
+  picks its model in `config/models.yaml`: GLM for judgment, DeepSeek for
+  writing, Qwen3 for embeddings.
+- A systemd timer generated from config.
+
+## Running it locally
+
+Prerequisites: Node 22+ and PostgreSQL with the pgvector extension.
+
+```bash
+npm install
+cp .env.example .env        # set DATABASE_URL and the provider keys
+npm run migrate
+npm run dev                 # the reading view at http://localhost:3000
+```
+
 ```bash
 npm run typecheck
 npm test
+npm run pipeline -- --dry-run          # print the plan, run nothing
+npm run pipeline                       # make a paper
+npm run inspect -- pipeline --id <n>   # what happened, gate by gate
 ```
 
-**Pipeline inspection** (requires a running database with data):
-```bash
-# Outside Docker (needs DATABASE_URL in .env):
-npm run inspect -- count
-npm run inspect -- list --source "AP Top News" --limit 10
+Every stage also runs on its own (`npm run collect`, `npm run screen`,
+`npm run score`, …) and has an `inspect` view. `CLAUDE.md` lists all the
+commands. To write a paper for someone other than John, replace `docs/bio.md`;
+`docs/bio.example.md` shows the shape.
 
-# Inside the compose stack:
-docker compose exec app npm run inspect -- count
-```
-
----
-
-## Production setup
-
-The compose stack is self-contained: Postgres and the app run as services in
-the same stack. Postgres has no published port and is reachable only within
-the stack. The app container joins the external `seedbox_default` network so
-Caddy on the host can reach it by container name.
-
-### Architecture
+## Repository
 
 ```
-[Caddy on host]
-    └── seedbox_default network
-            └── fritter-post-app-1:3000
-                    └── internal network
-                            └── postgres:5432 (no published port)
+config/        models.yaml (per-stage models, budgets, gates), sources.yaml
+docs/          concept, design, operations, decisions, open items, bio, voice
+migrations/    numbered SQL
+scripts/       one CLI per stage, plus inspect, experiments and the test runner
+src/pipeline/  one directory per stage, plus runner/
+src/llm/       the LLM wrapper: logging, streaming, backoff
+src/app/       the reading view
+tests/         unit tests for the deterministic parts
 ```
 
-Caddy proxies `post.fritter.lol → fritter-post-app-1:3000` via the shared
-`seedbox_default` Docker network, which it also joins. This mirrors the
-Fritterflix pattern on the same host.
+## Documentation
 
-### First-time deployment
-
-```bash
-# 1. Clone the repo and set up environment
-cp .env.example .env
-# Edit .env: set POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD.
-# Leave DATABASE_URL commented out — the compose stack builds it automatically.
-
-# 2. Bring up the stack
-docker compose up -d --build
-
-# 3. Run migrations inside the app container
-docker compose exec app npm run migrate
-```
-
-### Ongoing deployments
-
-```bash
-git pull
-docker compose up -d --build
-docker network connect seedbox_default fritter-post-app-1
-```
-
-That third line every time. The app service declares only the internal network
-and joins `seedbox_default` by hand, so every `up -d --build` drops Caddy's route
-and the site 502s until it runs. See below for how to check.
-
-### The daily run
-
-The paper is produced by a systemd timer on the host that runs the whole
-pipeline inside the app container:
-
-```bash
-docker compose exec -T app npm run pipeline
-```
-
-That runs the nine stages in order and evaluates a gate between each pair, so a
-stage that fails while exiting 0 stops the run instead of publishing a broken
-paper. The schedule lives in `pipeline.schedule` in `config/models.yaml`
-(06:00 America/Los_Angeles), and the systemd unit and timer are generated from
-it rather than maintained separately:
-
-```bash
-docker compose exec -T app npm run pipeline -- --print-timer --working-dir /srv/fritter-post
-```
-
-Read a run back with `npm run inspect -- pipeline [--id <n>]`, which shows the
-lineage, each gate's verdict and the metrics it read.
-
-**Re-running from the top is not a retry.** Cross-run dedup means a same-day full
-re-run comes back near-empty by design, so recovery is `npm run pipeline --
---from <stage>`, which inherits the recorded lineage. This is also why the
-generated unit has no `Restart=on-failure`.
-
-### Running CLI scripts on the deployed stack
-
-Migrations, inspection, and the collector run inside the app container where
-DATABASE_URL is already set by the compose environment:
-
-```bash
-docker compose exec -T app npm run migrate
-docker compose exec -T app npm run collect
-docker compose exec -T app npm run inspect -- collector
-docker compose exec -T app npm run inspect -- list --source "AP Top News"
-```
-
-The production image intentionally includes the project CLI runtime
-(`scripts/`, `migrations/`, `config/`, `src/`, and `node_modules`) in addition
-to the Next standalone server bundle. Do not remove those copies unless
-migrations and pipeline stages move to a separate worker image.
-
-After rebuilding/recreating `app`, verify that it is attached to both the
-internal project network and `seedbox_default`:
-
-```bash
-docker inspect fritter-post-app-1 \
-  -f '{{range $name,$net := .NetworkSettings.Networks}}{{println $name $net.IPAddress}}{{end}}'
-```
-
-If the app is missing from `seedbox_default`, reconnect it before testing the
-public Caddy route:
-
-```bash
-docker network connect seedbox_default fritter-post-app-1
-```
-
-### Caddy
-
-Caddy runs on the host and is connected to the `seedbox_default` Docker
-network. It proxies `post.fritter.lol → fritter-post-app-1:3000` by
-container name. The Caddy configuration lives outside this repo.
-
----
-
-## Project layout
-
-```
-src/pipeline/   Nine-stage pipeline (collector → publisher), plus runner/ and
-                lineage/ (the publisher's cross-day "previously" marker) and
-                rerun/ (withholds news already printed, before the pile)
-src/llm/        OpenAI SDK wrapper with logging and budgets
-src/db/         Postgres connection pool
-src/app/        Next.js App Router — the reading view
-src/lib/        Shared utilities
-scripts/        CLI tools (migrate, inspect, test, pipeline, one per stage)
-migrations/     Numbered SQL migrations
-config/         sources.yaml, models.yaml
-docs/           concept.md, decisions.md, open-items.md, bio.md, voice.md
-```
-
-All nine stages are built and the pipeline runs itself on a daily timer:
-
-```
-collector → preprocessor → prefilter → grouping → grouping-pass-1
-          → (rerun) → thread → editor → writers → publisher
-```
-
-`rerun` is a pass inside grouping-pass-1: it withholds news the paper has
-already printed, judged against the last seven editions (`inspect reruns`).
-
-`docs/concept.md` has the vision and what each stage is for; `CLAUDE.md` has the
-operational detail and the reasoning behind specific behaviours;
-`docs/decisions.md` is the append-only log of why things are the way they are;
-`docs/open-items.md` is what is known to be wrong or deferred.
+| question | file |
+|---|---|
+| What is this for, and what is it not? | `docs/concept.md` |
+| How is it built? | `docs/design.md` |
+| Why is it built that way? | `docs/decisions.md` (dated, with an index) |
+| What's known to be wrong? | `docs/open-items.md` |
+| How is it deployed and run? | `docs/operations.md` |
+| Who is the reader? How does the paper sound? | `docs/bio.md`, `docs/voice.md` |
+| How should an agent work in this repo? | `CLAUDE.md` |

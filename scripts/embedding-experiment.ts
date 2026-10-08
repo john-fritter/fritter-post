@@ -39,11 +39,11 @@ import "dotenv/config";
 import { getPool } from "../src/db/index.js";
 import { embed } from "../src/llm/index.js";
 import type { LLMProvider } from "../src/llm/index.js";
-import { parseGroupingDigest } from "../src/pipeline/editor-pass-1/index.js";
+import { parseGroupingDigest } from "../src/pipeline/score/index.js";
 import {
   detectLanguageCode,
   isEnglish,
-} from "../src/pipeline/preprocessor/translation.js";
+} from "../src/pipeline/preprocess/translation.js";
 
 const DEFAULT_BODY_CAP = 2000;
 const DEFAULT_MAX_PAIRS = 60;

@@ -2,17 +2,20 @@
 
 Operational guidance for Claude Code working in this repository.
 
-For the project's vision, principles, and pipeline architecture, read
-`docs/concept.md` first. For the reasoning behind specific choices,
-read `docs/decisions.md`.
+**Before changing a stage, read its section of `docs/design.md`.** That is where
+the mechanism and the reason for each behaviour live. This file holds the rules
+that apply on every turn, the commands, and how to work with production.
+`docs/decisions.md` (dated, indexed, append-only) has the history behind each
+rule, and `docs/open-items.md` has what is known to be wrong. The pre-2026-10-08
+version of this file, with the full stage narratives, is at commit `55e6978`.
 
 ---
 
 ## The project
 
 The Fritter Post is a self-hosted personal daily newspaper for one reader,
-served at post.fritter.lol. A daily cron runs a pipeline that collects,
-synthesizes, and renders a finite paper from a curated source set.
+served at post.fritter.lol. A daily systemd timer runs a pipeline that collects,
+judges, ranks, writes and publishes a finite paper from a curated source set.
 
 **What this is:** a newspaper. A daily artifact. Curated synthesis.
 
@@ -20,2002 +23,335 @@ synthesizes, and renders a finite paper from a curated source set.
 engagement-optimized anything, or an independent reporting tool. Do not add
 features in the direction of any of these. When in doubt, less is more.
 
----
-
 ## Stack
 
-- **Language:** TypeScript
-- **Framework:** Next.js (App Router) — matches Fritterflix on the same box
-- **Database:** Self-contained PostgreSQL inside the project's
-  docker-compose stack, on a private internal network. The app container
-  also attaches to `seedbox_default` so Caddy on the host can reach it.
-- **LLM access:** OpenAI SDK pointed at OpenAI-compatible endpoints,
-  wrapped in `src/llm/` for logging, typing, streaming, and per-stage
-  budgets. Three provider credential pairs — select per-stage in
-  `config/models.yaml`:
-  - `provider: ollama-cloud` (default) — `LLM_BASE_URL` / `LLM_API_KEY`
-  - `provider: nanogpt` — `NANOGPT_BASE_URL` / `NANOGPT_API_KEY`
-  - `provider: openrouter` — `OPENROUTER_BASE_URL` / `OPENROUTER_API_KEY`
-    (used for the embedding model)
-- **Embeddings:** pgvector extension on the same PostgreSQL instance.
-  Embedding vectors (4096-dim, `qwen/qwen3-embedding-8b` via OpenRouter)
-  stored in `item_embeddings`. Used by the grouping stage.
-- **Deployment:** Docker container, fronted by Caddy, on fritter.lol
-- **Cron:** a systemd timer on the host invoking `npm run pipeline` inside the
-  app container. The schedule lives in `pipeline.schedule` in `models.yaml`
-  (default 06:00 America/Los_Angeles) and the unit is generated from it by
-  `npm run pipeline -- --print-timer`, so the hour is not maintained twice.
+- **TypeScript**, **Next.js** (App Router) for the reading view.
+- **PostgreSQL + pgvector**, self-contained in the docker-compose stack on a
+  private network. The app container also joins `seedbox_default` so Caddy can
+  reach it.
+- **LLMs** via the OpenAI SDK against OpenAI-compatible endpoints, wrapped in
+  `src/llm/`. `provider:` per stage in `config/models.yaml` picks the
+  credentials: `ollama-cloud` (default, `LLM_*`), `nanogpt` (`NANOGPT_*`),
+  `openrouter` (`OPENROUTER_*`, which serves the embeddings). After changing
+  any of these, recreate the app container.
+- **Embeddings**: `qwen/qwen3-embedding-8b`, 4096 dimensions, in `item_embeddings`.
+- **Cron**: a systemd timer generated from `pipeline.schedule` by
+  `npm run pipeline -- --print-timer`. Never maintain the hour in two places.
 
----
+## The pipeline
+
+```
+collect → preprocess → screen → cluster → score [→ novelty → thread → pile]
+        → rank → fetch → write → publish [→ continuity]
+```
+
+| stage | does | dir (`src/pipeline/`) | config | formerly |
+|---|---|---|---|---|
+| collect | sources → `raw_items` | `collect/` | — | collector |
+| preprocess | canonicalize, dedup, translate; junk filter on read | `preprocess/` | `preprocess` | preprocessor |
+| screen | bio-aware cut / news / opinion | `screen/` | `screen` | prefilter |
+| cluster | embeddings + split / attach / describe → events | `cluster/` | `cluster`, `embeddings` | grouping |
+| score | two-axis bio-aware relevance | `score/` | `score` | grouping-pass-1, editor-pass-1 |
+| novelty | new / development / minor / routine / rerun | `novelty/` | `novelty` | rerun check |
+| thread | events → ongoing situations | `thread/` | `thread` | — |
+| rank | pile, formula, tiers, tie-break | `rank/` | `rank` | editor |
+| fetch | article text for feature and standard pieces | `fetch/` | `fetch` | fetch-text |
+| write | packets and writer calls | `write/` | `write` | writers |
+| publish | freeze the paper, source links | `publish/` | `publish` | publisher |
+| continuity | the "previously" marker | `continuity/` | `publish.continuity` | lineage |
+
+The runner (`runner/`) has nine stages: novelty, thread and the pile run inside
+`score`, and continuity inside `publish`. **Tables and `--…-run` flags still
+carry the old names** (`grouping_runs`, `editor_stories`, `--editor-run`, …);
+`docs/design.md` §6 maps them. "Lineage" now means provenance only.
 
 ## Repo layout
 
 ```
-fritter-post/
-├── CLAUDE.md                    # this file
-├── README.md
-├── package.json
-├── tsconfig.json
-├── next.config.ts
-├── Dockerfile
-├── docker-compose.yml
-├── docs/
-│   ├── concept.md               # the vision document
-│   ├── decisions.md             # decision log, append-only
-│   ├── bio.md                   # the reader (written)
-│   └── voice.md                 # the standing memo — voice, read by the writers
-├── config/
-│   ├── sources.yaml             # feed list
-│   └── models.yaml              # per-stage LLM model and budget config
-├── src/
-│   ├── pipeline/                # the pipeline stages
-│   │   ├── collector/
-│   │   ├── preprocessor/
-│   │   ├── prefilter/           # bio-aware relevance floor + junk removal + news/opinion routing
-│   │   ├── grouping/            # clustering: embeddings + connected components + attach + describe
-│   │   ├── editor-pass-1/       # bio-aware scoring + pile assembly (grouping path)
-│   │   ├── rerun/               # grades novelty: withholds reruns, reduces minor and routine news
-│   │   ├── thread/              # groups related rows into one ongoing situation
-│   │   ├── editor/              # deterministic ranking + tiering (grouping pile)
-│   │   ├── writers/             # materials + fetch + assembler + the writer calls
-│   │   ├── publisher/           # freezes a writer run into the day's paper
-│   │   ├── lineage/             # cross-day continuity: the "previously" marker
-│   │   └── runner/              # the daily run: stage order + gates + lineage
-│   ├── llm/                     # OpenAI SDK wrapper + logging + streaming
-│   ├── db/                      # postgres connection, query helpers
-│   ├── config/                  # models.yaml + sources.yaml loaders (Zod)
-│   ├── app/                     # Next.js routes — the index and one page per piece
-│   └── lib/                     # shared utilities
-├── scripts/                     # CLI entry points for each stage + inspect
-├── migrations/                  # numbered SQL migrations (001–047)
-└── tests/                       # unit tests for deterministic parsers
+config/          models.yaml (per-stage everything, in pipeline order), sources.yaml
+docs/            concept, design, operations, decisions, open-items, bio, voice; gizmo/ task files
+migrations/      numbered SQL (001–048; next is 049; 025 is used twice, harmlessly)
+scripts/         one CLI per stage, inspect, pipeline, experiments, test runner
+src/pipeline/    one directory per stage, plus runner/
+src/llm/         callLLM (logging, streaming) and callWithBackoff
+src/db/          pool, latest-run lookups, outlet counting
+src/config/      Zod loaders for models.yaml / sources.yaml; one-run model overrides
+src/lib/         shared utilities (text.ts: English text + caps; http.ts: UA policy)
+src/app/         the reading view
+tests/           node:assert scripts for the deterministic parts
 ```
 
 ---
 
-## Pipeline: implemented stages
+## Rules
 
-The pipeline is nine stages (see `docs/concept.md`). All nine are built.
-
-The researcher stage was dropped; the editor's tiered output feeds the writers
-directly (see `docs/decisions.md`).
-
-Clustering is the embedding-based **grouping** stage. (An earlier LLM-based
-`triage` clusterer — seed + parallel spines + semantic merge — was removed once
-grouping proved out; see `docs/decisions.md`.)
-
-```
-collector  →  preprocessor  →  prefilter  →  grouping  →  grouping-pass-1
-           →  rerun  →  thread  →  editor  →  writers  →  publisher
-```
-
-(`rerun` and `thread` are passes inside the grouping-pass-1 stage, not stages.)
-
-### collector
-Hits every configured source, writes raw items to `raw_items`. Failure-tolerant
-— a dead feed is logged and skipped. No deduplication here; cross-source pickup
-is signal, not noise.
-
-**Charset handling is ours, not rss-parser's.** `fetch-feed.ts` fetches the body
-itself and hands `parser.parseString` a decoded string; it never calls
-`parseURL`. rss-parser reads the charset from the Content-Type header only — it
-ignores the XML declaration and doesn't support `windows-1252` — so Latin-1
-feeds decoded as UTF-8 and published mojibake. `collector/charset.ts` resolves
-header → XML declaration → UTF-8, and retries when the decode produces U+FFFD.
-See `docs/decisions.md`, 2026-07-28.
-
-**403 means "not to you", so we ask again as a browser.** Every feed is fetched
-first with the honest `FritterPost/0.1` UA. On a 403 — and only a 403 — the
-fetch retries once with a browser UA and logs the source if that works. Run #47
-lost The Baffler, TechCrunch, and Inside Climate News to CDN bot rules that
-serve the same feed to any browser. 404/410/5xx are never retried: those mean
-the feed is actually gone or broken, and a second request buys nothing.
-
-**A source's first collection is an archive dump, and per-source windowing now
-applies to feeds too.** `max_age_hours` and `exclude_paths` are declared per
-source and were applied inside `fetchNewsSitemap` only — inert on RSS, the
-format 109 of 111 sources use. The Nugget, a weekly, was added on 2026-08-28
-and its first collection returned 44 items, every one new; three of paper #3's
-top eleven came from that backlog, some a week old. The preprocessor could not
-see it — its recency window is 24h on `fetched_at`, and everything in a first
-collection is fetched now, while the `max_age_days: 14` backstop is set for
-genuine archive dumps. Both options now apply to both formats via
-`collector/window.ts`. **`max_age_hours` is opt-in for RSS with no default**
-(sitemaps keep 24h): a sitemap carries a publisher's whole index and must be
-windowed, a feed windows itself, and a default would change what all 109
-existing sources collect to fix a problem only a new or weekly source has. An
-item with no date is kept — dropping what cannot be dated would silently empty
-feeds that publish no `pubDate`.
-
-**A sitemap is a feed when a publisher serves no feed.** `format: news-sitemap`
-on a source reads a Google News sitemap instead of RSS — same transport, same
-identity rule, different parse. It exists for AP, which serves no RSS
-(`Disallow: /*.rss`) and whose Google News proxy yields interstitials: 52 real
-links, three resolution strategies, **zero** publisher URLs recovered. AP's own
-robots.txt declares `news-sitemap-content.xml` — 529 entries, 518 of them
-`/article/`, and 15 of 15 sampled pages cleared 800 characters through the real
-path. A sitemap carries **no body**, so these items reach the prefilter, grouping
-and scoring on their titles alone and get their text from the fetch stage;
-that is not a regression from a headline echo, but it is the property to watch.
-`max_age_hours` windows the collection because a sitemap does not window itself
-(AP's spans ~28 hours against a daily collector), and `exclude_paths` carries the
-publisher's own robots.txt disallows so the rule is followed rather than noted.
-
-**Parse failures log their neighbourhood.** A malformed feed throws a sax error
-naming a line and column but not the markup, and by the time anyone reads the
-log the feed body is gone. `parseFeedText` prints the surrounding lines before
-rethrowing (run #47: Labor Notes, "Unexpected close tag, Line 64").
-
-### preprocessor
-Redirector unwrapping, URL canonicalization, exact-URL dedup within-source,
-junk-filter (deterministic
-pattern rules in `junk-filter.ts`), track/group assignment from source config.
-Writes `preprocessed_items`. The assembler (`assembler.ts`) queries the kept set
-for downstream stages, composing prefilter and junk-filter results by
-simple set intersection.
-
-**The junk filter is the hard gate, and it is the only one.** `getClusteringItems`
-is the sole path into both grouping and grouping-pass-1, so an item it drops
-cannot reach the pile as a cluster member or as a singleton. That is why the
-link-dump rules live there rather than in a prompt: the prefilter prompt had
-said "cut link-dump roundups" since it was written and still let Just
-Security's daily "Early Edition" reach the feature tier in run #109. Rules are
-high-precision and evidence-driven — extend them from audit logs, never
-speculatively, and add a `tests/junk-filter.test.ts` case for both the cut and
-the near-miss that must survive.
-
-**A wrapper is not a host.** `canonicalizeUrl` unwraps a redirector that carries
-its destination in its **path** — Folha publishes every feed item as
-`redir.folha.com.br/redir/…/rss091/*https://www1.folha.uol.com.br/…`, and storing
-the wrapper sent the fetch to the redirector and taught the host cooldown against
-a host that is not a publisher (42 of run #118's article rows). Query strings are
-excluded: `…/article?ref=https://other.example` is one outlet's article with a
-referrer, not a redirect. Google News is deliberately left alone — its
-`/rss/articles/CBMi…` token is an opaque identifier with no URL in it, so those
-items stay headline-only by construction.
-
-**Translation stops asking when the provider stops answering.** Sep 15–21
-made no paper. The translation key stopped authenticating (`401 Invalid
-session`, then the provider's own lockout `429 … after repeated invalid
-credentials`), every call failed in under a second, and split-on-failure plus
-429 backoff turned ~60 batches into 634–758 failed calls a day: preprocess ran
-5–6.5 hours and the runner's deadline stopped every run before prefilter. The
-failures were fast; the count took six hours. Translation now carries the
-writers' consecutive-failure breaker (`translation.abort_after_consecutive_
-failures`), an authentication error trips it at once, and `callWithBackoff`
-never retries an auth error (`isAuthError`). Untranslated items keep their
-original text — the stage's existing failure mode — and the preprocessor gate
-warns. A worse paper beats no paper.
-
-**Aggregator title suffixes are stripped.** Google News RSS appends the
-publisher's domain to every headline, and run #112 published nine of them
-("… who had been in custody - apnews.com"). `title.ts` removes a trailing
-separator plus a *bare domain* only — an outlet name is not a domain, so
-"… Goes Rogue? - Willamette Week" keeps its suffix.
-
-### prefilter
-Bio-aware relevance floor between the preprocessor and the clusterer. Batched,
-concurrency-capped (p-limit). Per-item verdict: `cut`, `news`, or `opinion`.
-- `cut` — obvious noise this reader has no interest in (routine sports scores,
-  celebrity tabloid, market-movement wire filler) plus non-article material
-  (event calendars, horoscopes, photo galleries, house ads) and **every digest**
-  — roundups, link dumps, newsletter editions, date-only titles. A digest is
-  judged on shape, not topic: its body lists many unrelated stories, so it reads
-  as more relevant than any single article. That density is the tell. The
-  deterministic junk filter is the actual guarantee here; the prompt is the
-  second line.
-- `news` — flows into clustering (grouping) and grouping-pass-1 scoring
-- `opinion` — kept but routed out of clustering; pools with `track=analysis`
-  items for a future Longer Reads section
-Conservative bias: when unsure, keep as `news`; a low-interest topic becomes a
-keep the moment it carries a substantive angle, and substantive foreign
-coverage clears the floor regardless of an obvious reader tie. Reads
-`docs/bio.md`. Absorbs the junk-removal job that the former standalone LLM
-`filter` stage handled. Reads English text, capped at `prefilter.body_cap`.
-
-### grouping
-The clustering stage. Embedding-based, running on the kept `news` items. Four
-steps:
-1. **Embed** — each item's title + body excerpt (capped at `body_cap` chars)
-   is embedded via `qwen/qwen3-embedding-8b` (OpenRouter, 4096 dims) and
-   stored in `item_embeddings` (upserted, so re-runs are cheap).
-   **Neither embedded text may be empty** (`embed-text.ts`): the provider
-   rejects `""` and one rejected input fails the whole batch call, which fails
-   the run. Sep 12 made no paper that way — one KTVZ item with an empty title.
-   A missing title borrows the body's opening; an item with neither is left out
-   and becomes a singleton.
-2. **Candidate groups** — pure software: cosine-similarity graph with
-   `similarity_threshold` edge cutoff and `top_k` neighbour cap, then
-   union-find connected components. Groups of size ≥ 2 become candidate
-   clusters; isolated items are singletons.
-2b. **Split** — repairs over-merges that union-find creates. A connected
-   component only requires a *path* between members, so a bridging article
-   chains unrelated stories into one cluster, and until this pass no LLM ever
-   saw a step-2 component. Components that are large enough to chain
-   (`min_size`) and loosely connected (cohesion < `density_floor`) get one LLM
-   call that re-partitions them; dense components pass through without a call.
-   Freed members rejoin the singleton pool for attach to place.
-   **Cohesion, not raw density:** `top_k` caps each item's neighbours, so raw
-   density has a ceiling that falls as components grow — a 37-item component
-   cannot exceed `top_k/(n-1)`. Cohesion divides that ceiling out so the
-   threshold means the same thing at every size. Controlled by
-   `grouping.split.*`.
-3. **Attach** — cluster-centric, two phases. Phase A offers each cluster its
-   candidate singletons (title-cosine ≥ `candidate_floor`) in one LLM call;
-   Phase B forms new clusters from leftover singletons via proto-groups. One
-   bounded cascade re-pass follows. Controlled by `grouping.attach.*`.
-4. **Describe** — batched LLM call over every multi-item cluster. It emits
-   `index;;verdict;;title;;summary`: a neutral label, plus whether the cluster is
-   really **one event**. Singletons skip this pass. Controlled by
-   `grouping.describe.*`.
-4b. **Re-split** — the clusters describe called `MULTI` go through the split
-   prompt again and are re-partitioned; freed members rejoin the singleton pool
-   and the new pieces are re-described. **This exists because step 2b cannot see
-   this class of over-merge.** Split selects suspects by *cohesion*, since it was
-   built to repair chaining; two gold mine collapses on different continents are
-   the opposite shape — tightly connected, because they are the same kind of
-   event in the same words. Run #50 produced four of these, and describe wrote
-   one straight into its own title ("Gold mine collapses kill dozens in Central
-   African Republic **and** Colombia") where nothing read it. Deliberately a
-   re-partition, not a dissolve: a flagged cluster of ten may hold two real
-   groups of five. A failed call leaves the cluster intact.
-
-All three LLM passes go through `callWithBackoff`. This is not optional: a
-failed attach call returns an empty set, which is indistinguishable from the
-model saying "none of these belong," so the cluster silently doesn't grow and
-the run still reports success.
-
-Per-pass counters are persisted onto `grouping_runs` (migration 030) so a
-report regenerated from the database can judge a run without the console log:
-`cluster_count`, `singleton_count`, `attach_calls`, `attach_failed_calls`,
-`split_examined` / `split_suspect` / `split_calls` / `split_failed_calls` /
-`split_components_split` / `split_freed_singletons`, and (migration 038)
-`describe_flagged` / `resplit_calls` / `resplit_failed_calls` /
-`resplit_clusters_split` / `resplit_freed_singletons`, and (migration 039)
-`attach_unrecovered`.
-
-**A lost attach judgment is now recoverable, and `attach_unrecovered` is the one
-to read.** The concurrent phases are followed by one **sequential straggler
-re-ask** for every cluster and proto-group that lost a call. A call lost to
-congestion is not the same as a call that is too slow: `callWithBackoff`
-deliberately does not retry timeouts, which is right for a genuinely slow call
-and wrong for one that spent its budget queued behind a rate-limit storm. Run #56
-was the second kind — 158 provider attempts for 133 successes, 24 recoverable
-429s and one 300,006 ms timeout, on a news lane that had just grown 42% (483
-kept-news to 686) when AP switched to its sitemap. The corpus outgrew the
-concurrency budget and one judgment went with it. The re-ask runs after
-everything else, one call at a time, so it is a different regime rather than a
-repeat of the same one — the writers' straggler pattern, applied where a lost
-call is silent instead of visible.
-
-So the two counts diverge, and only one of them is a defect:
-`attach_failed_calls` counts provider calls that failed, which costs time and
-tokens; **`attach_unrecovered` (migration 039) counts judgments still missing
-after the re-ask, and a non-zero value means the cluster/singleton split
-understates real grouping and the run must not be used to judge cluster quality
-or tune `similarity_threshold`.** NULL means a run before 039, where
-`attach_failed_calls` carried that meaning. A unit is lost if **any** of its
-chunks failed — chunks partition its candidates, so a sibling chunk answering
-says nothing about the ones that went unseen. If `split_failed_calls` is non-zero, those components
-were left intact and may still be over-merged. NULL means the pass didn't run,
-which is not the same as zero.
-
-Output: `grouping_runs.digest` — flat `title;;summary;;ids` lines. The
-**primary tuning lever** is `embedding.similarity_threshold` in `models.yaml`:
-higher = fewer, tighter groups; lower = more, looser groups.
-
-### grouping-pass-1
-Scoring stage for the grouping path. Lives in `src/pipeline/editor-pass-1/`
-(the directory keeps the historical name; the `editor_pass_1.*` config block
-supplies its model and prompt). Two functions:
-
-**A batch that fails is re-asked, and an unscored row scores 0.** This stage is
-batched and concurrent at `concurrency: 10`, the highest in the pipeline, and
-until 2026-08-26 it was the one place the "any new batched, concurrent stage
-needs `callWithBackoff`" rule was never applied — the wrapper was not even
-imported, so a single 429 on the first and only attempt defaulted a whole batch
-of 40 items. Failed batches now retry under backoff, and then **every item that came back
-unscored** — not every failed batch — is re-asked sequentially in chunks of
-`straggler_batch_size`.
-
-**The item, not the call, is the unit**, because the commonest fail-safe does not
-fail the call. Three paths leave an item unscored: `LLM error` and `batch parse
-error` fail the batch, and `missing/invalid line` does not — the call *succeeds*
-and the model simply omits a line. Run #39's batch 7 of 8 parsed 39 of 40, so one
-item entered the pile competition unjudged inside an otherwise clean run, and any
-of those 40 could have been the day's biggest story. Every fail-safe path leaves
-`interest` null, which is what makes that the reliable marker to re-ask on.
-**`FAIL_SAFE_SCORE` is 0, not 50**: 50 sits mid-range and therefore *competed*,
-so whether an unjudged item reached the reader turned on where the day's pile
-cutoff happened to land — run #42's was 54 and four unscored clusters fell below
-it, run #40's was 49 and one was published. 0 says what is true, and the pile
-takes an unscored row only if it is short of judged candidates. Not excluded
-outright, because that is right in normal operation and catastrophic during a
-provider outage; 0 gets the first without buying the second. Unscored rows carry
-a null `interest` axis, so `interest IS NULL` finds them, and the stage warns
-with a count.
-
-`runGroupingPass1` — bio-aware 0–100 scoring of every grouping output row,
-clusters and singletons on the same scale. **The model emits two axes, not one**
-(`id;;interest;;consequence;;reason`, each 0–50); software sums them into
-`score`, and both axes are persisted (migration 033). One integer collapsed the
-distribution onto round attractors — 55, 58, 60, 62, 65, 68, 70, 72 — and since
-a singleton's editor lift is `ln(1) = 0`, its combined score *is* its relevance
-score, so equal integers are exact ties. Run #109 put 115 of 119 tied rows in
-that shape. Two axes also give the pipeline its principled defence against
-digests: a link roundup is legitimately high **interest** and near-zero
-**consequence**, which one number could not express. See `docs/decisions.md`,
-2026-08-11.
-Clusters are scored on their
-describe-pass title + summary (capped at `editor_pass_1.summary_cap`);
-singletons on their English title + body excerpt (capped at
-`editor_pass_1.body_cap`). Those two caps are the stage's quality lever: when
-they are far apart the scorer has real material for clusters and a bare
-headline for singletons, and singleton scores collapse onto a handful of
-values — see `docs/decisions.md`, 2026-08-11.
-**Nearness is part of the interest axis, and routine local business is the
-carve-out that makes it safe.** Run #47 scored a torture arrest in the reader's
-own county `interest=28, consequence=34` and ranked it 103 of 123, below
-Argentina's central bank reform. Consequence was right; the scorer saw the story
-was local (its reason said so) and the interest rubric, which asks about the
-SUBJECT, had nowhere to put it. Geography sat in the bio as a list of places
-with no instruction attached. The axis now says nearness raises interest, with
-the discriminator that stops it becoming a police blotter: **is this out of the
-ordinary for its place?** A house fire and a county hiring notice stay low
-however near they happen. Not measured yet — the controlled form is a re-score
-of one grouping run against the new prompt, diffed with the old.
-
-Source count is stored on each `grouping_pass1_results` row but the scorer
-never sees it — scoring is purely reader-relevance. Reads `docs/bio.md`.
-Writes to `grouping_pass1_runs` / `grouping_pass1_results`.
-
-`assembleGroupingPile` — ranks threads and un-threaded rows together by score
-descending, takes the top `grouping.pile_target` (config: 150), and writes to
-`editor_piles` + `editor_pile_items`. Rows absorbed into a thread are withheld:
-a threaded row must not also appear on its own.
-
-### rerun
-**Grades how new each story is to a reader who read the last editions, and
-withholds what is not new at all.** Runs inside grouping-pass-1, after scoring
-and before threading. `src/pipeline/rerun/`. Writes `rerun_runs` /
-`rerun_assessments` (migration 047; `rerun_verdicts`, 045, holds the pairwise
-runs before it); read them with `inspect reruns`.
-
-| grade | meaning | effect (`rerun.grades`) |
-|---|---|---|
-| `new` | nothing like it was printed | none |
-| `development` | something has changed since | none; the writer leads on it |
-| `minor` | the same news plus a small detail | score −12, at most `standard`; writer leads on the detail |
-| `routine` | more of what this situation does daily | score −20, at most `brief` |
-| `rerun` | nothing new | withheld from threading and the pile |
-
-**Why grades, not a yes/no (2026-10-03).** The check shipped as RERUN-or-not,
-and "not" meant *the candidate says anything the printed piece did not*. A
-day-later article always does — a quote, a condition update, an analyst — so
-the 2026-10-02 audit, reading papers #43–52 **by headline**, found about two
-repeats a day still printing, six in the top five (the US-China truce at rank 1
-on 9/27 after 9/24 and 9/26; OpenAI's training pause rank 1 on 9/28 after rank 2
-on 9/27; Christa Pike rank 2 on 10/1 and 10/2), every one under a "previously"
-line. And the same audit called 34 of 106 drops wrong, mostly a development
-matched on a printed background fact. A binary judge must pick one of those
-errors; a graded one keeps a small update and makes it small. The reader's
-ruling: minor updates are reduced, not dropped — a lower score, which may move
-them down or out of the pile, and a smaller piece — and routine war news is
-reduced the same way. The penalties were checked with `novelty-preview` over
-papers #43–53 and kept (`docs/decisions.md`, 2026-10-03); live since that day.
-
-**The judge's sentence is cleaned before a writer sees it** (`newsForWriter`):
-the preview found 14 of 358 kept-story sentences ending by talking about the
-coverage ("adding detail to yesterday's report"), so such a clause is cut, or the
-sentence dropped. Extend its pattern from audit evidence, with a test for the cut
-and the near-miss, the junk filter's rule.
-
-**Routine needs history, so a candidate is judged against everything it
-resembles at once** (`top_k` 5, the two closest with their bodies, the rest as
-dated headlines), not pair by pair. Whether tonight's strikes on Kyiv are news
-depends on whether the paper printed strikes on Kyiv each of the last five
-days — a fact about the paper, which is what the PRINTED list shows. The judge
-does not need to know the war; it needs to know what the reader was told.
-
-**A cluster is judged on its articles, not its label.** The describe summary is
-two sentences generated from every member, which compresses away what is new;
-11 of the 34 wrong drops were clusters. `candidate_cap` characters from up to
-`candidate_articles` members, the summary only as a fallback.
-
-**Where the grade lands.** A reduced row threads and enters the pile at its
-reduced score (`thread_members.score` and `editor_pile_items.score` store it, the
-reason says `[novelty: -12 from 80]`); a thread's sources sum over unreduced
-members only (`deriveThreadScores`); the editor caps the tier
-(`assignTiersWithCaps`, ranks never move) and stores `editor_stories.max_tier`,
-which `resolveTiersByMaterial` respects; and the writer gets the judge's
-sentence and yesterday's headline (`continuationLines`). `editor_piles.rerun_run_id`
-is how the editor and writers find the grades the pile ranked on.
-
-`candidate_floor` is 0.72, lineage's — it was 0.74, and eight of the fourteen
-restatements the 2026-10-01 audit traced sat between the two: linked as
-"previously", never seen by this check.
-
-**The defect.** The Sep 5–22 audit read all 257 "previously" links across nine
-editions and about one in four was the same news printed again because a later
-outlet reported it: AfD's 43.8% result ran Sep 7, 8 and 10; LG TVs recording
-audio Sep 7, 8 and 9; Australia's algorithmic-feed law Sep 6, 7 and 8. **None of
-the 257 shared a URL, preprocessed item or normalized title** with its
-predecessor, and 114 did not share an outlet, so cross-run dedup could never see
-them — the preprocessor knows duplicate *articles*, not duplicate *news*. The
-lineage judge accepted them on purpose: its question is "same situation?", and a
-restatement is one.
-
-**How.** Retrieval is lineage's: max pairwise cosine between the articles behind
-each of the top `rerun.candidate_target` rows and the articles behind every
-piece in the last `lookback_editions` papers, `top_k` per row above
-`candidate_floor`. Then a batched judge reads each candidate against its printed
-pieces and answers `n;;today's news;;GRADE` — the sentence first, so it states
-what is new before it decides whether anything is. A row graded `RERUN` is
-withheld from threading and the pile, so the next row takes its slot rather than
-leaving a hole.
-
-**It fails open — the opposite of the lineage judge — and deliberately.** A
-wrongly dropped story is invisible: the reader never learns it existed. A missed
-rerun is the paper as it already was. So a failed call, a missing line and an
-unreadable one leave the row ungraded, and an ungraded row is neither reduced
-nor withheld; the prompt says "when unsure whether anything is new, MINOR"; and
-only a stated `RERUN` drops anything. Every graded row is persisted, whatever the
-grade, because this table is the only place a wrong drop can be seen. The gate
-warns on a failed call and on a day that drops more than
-`warn_dropped_fraction` of what it checked.
-
-**The two-fact rule changed with the grades.** The pairwise prompt graded a
-candidate on its "single most important fact", which the backtest flagged (below)
-and the live audit confirmed: nine wrong drops matched a candidate on the fact it
-shared with a printed piece and ignored the one it did not. The graded prompt
-reads the most significant *new* fact, and calls commentary MINOR but a party
-acting (Iran's president answering Trump at the UN) an event.
-
-**Backtested 2026-09-22** (the pairwise judge) with `npm run rerun-check -- --as-of` over Sep 7–14's
-pass-1 runs (seven days, 250 rows each): 8, 17, 17, 17, 15, 1 and 9 rows
-withheld, 93 RERUN verdicts, 0 failed calls, ~25–45 s per day. Every expected
-rerun that retrieval offered was withheld or kept as a real DEVELOPMENT (AfD's
-Kremlin-messaging angle, DeepSeek's new benchmarks), and **none of eight
-must-keep developments was withheld** — Romualdez's arrest, five tankers after
-three, the Missouri map blocked, Oregon approving the $123M it had weighed, LG's
-denial. One expected rerun was never offered (Imelda Marcos's acquittal, Sep 9
-then 11): a retrieval miss, not a judge miss. Borderline calls to watch: Sep 9's
-C86 ("Houthis escalate… and Saudi-backed forces report airstrikes on Yemen") and
-Sep 8's C16 (Zelensky's account of the envoys' visit) were judged RERUN against
-pieces that led on the other half of the story. A candidate with two facts, one
-printed and one not, is the shape the prompt's "single most important fact" rule
-could get wrong.
-
-### thread
-**Groups related clusters and singletons into one ongoing situation.** Runs
-between grouping-pass-1 scoring and pile assembly. `src/pipeline/thread/`.
-
-Grouping asks *"is this the same event?"*; threading asks *"is this the same
-continuing story?"*. Both are needed and neither can do the other's job — which
-is precisely what lets the split pass keep event clustering strict. Run #43
-published five separate Oregon wildfire clusters, four in the top fifteen,
-because the fires are one situation made of many distinct events.
-
-The merge criterion is a **concrete situation anchored in a place and a time**
-(one state's fire emergency, one war, one city's fight over one project) — not
-an abstract theme spanning unrelated places and actors (data centers straining
-grids in three states is a topic, not a situation). Most items belong to no
-thread; that is the expected answer. Reads `docs/bio.md`.
-
-**Two tests, and time alone is not enough.** Run #22's T1 passed the time test —
-a defence minister's appointment, a prisoner exchange, a strike on a police
-station and a family's story from the occupied east are all current developments
-in one war — and produced a section its reviewer preferred as a single article. A
-survey of all eleven of that run's sections found the second test: a member
-belongs when it **changes what the reader understands about the rest** — as a
-consequence, a mechanism, a scale, a human cost, or another instance of the same
-emergency. A member that merely also happened is an *item*, not a *dimension*.
-Four of the eleven sections were built from items. Member count predicted
-nothing: T0 worked with nine and T1 failed with eleven, T3 worked with four and
-T8 failed with three.
-
-A thread's numbers are derived in software, never asked of the model:
-
-```
-relevance = max(member score)      sources = sum(member source counts)
-```
-
-Both read today's news only: a member the rerun check reduced counts at its
-reduced score and adds no sources, and a thread of nothing but reduced members
-counts one source (no lift). A war section of five routine strike reports used to
-keep its full prominence and reached the top ten on nine days of ten.
-
-That is what makes a thread a first-class row the editor ranks with its
-existing formula, unchanged. On run #43's data the five fire rows thread to
-`score=85, sources=23` → `combined=113.22`, ahead of that day's actual lead at
-111.64, and free four pile slots for other stories.
-
-**One LLM call covers the whole candidate set.** This is deliberate: a thread's
-members are spread across the score range (the fires scored 85, 80, 80, 78, 60),
-so chunking by score would hide members of one situation from each other.
-`thread.candidate_target` (config: 220) is therefore bounded by what a single
-call can hold, not by cost.
-
-**The model states the anchor before it lists members.** The criterion has always
-been "a concrete situation anchored in a place and a time", and the prompt has
-always said so — and it still produced two topic-bundles: run #8's "immigration
-crackdown" (rank 1) and run #113's "Afghanistan under Taliban" (five members
-spanning 2021–2026). Both pattern-match the positive example "one war, or one
-front of one war". The discriminator the prompt never asked for is **time**:
-every thread that held gathers developments from the same news cycle, while both
-failures gather coverage of a condition years old. The output line is now
-`title;;anchor;;summary;;refs`, and the anchor is stored (migration 037) so a bad
-thread is legible in the audit — "the Taliban's rule since 2021" is visibly not
-an anchor, where a front-page title conceals it. Deliberately **not** validated in
-software: Ukraine and Gaza are countries too, and a heuristic would cost real
-threads.
-
-Writes `thread_runs` / `threads` / `thread_members` (migration 031). A failed
-call yields zero threads — the pass not running, rather than a wrong answer —
-recorded in `thread_runs.failed_calls`.
-
-### editor
-**Deterministic formula, not an LLM ranker.** Reads all clusters and
-singletons from the editor pile and ranks them by a combined score:
-
-```
-combined = relevance + source_weight * ln(sources)
-```
-
-`relevance` is the grouping-pass-1 score (0–100), or `max(member score)` for a
-thread; `sources` is **how many newsrooms reported it — distinct parent outlets
-in the cluster**, not member rows (1 for singletons, and `ln(1) = 0`, so
-singletons get no lift), or `sum(member sources)` for a thread;
-`source_weight` is `editor.source_weight` in `models.yaml` (config: 9).
-Rows sort by combined descending, then relevance, then ref.
-
-Tiers are assigned by rank position from fixed counts in `editor.tiers`
-(config: feature 15, standard 60, brief 75). Features fill first, then
-standard, then brief — the last tier absorbs the shortfall on a smaller pile.
-A story the rerun check capped (a minor update, routine news) takes the largest
-slot its cap allows and the slot it skipped goes to the next story down
-(`assignTiersWithCaps`); a thread is capped only if every member is.
-
-The only LLM in this stage is the **tie-break**: items sharing an identical
-combined score are grouped and ranked against each other by one small
-bio-aware call per tie group, run concurrently under
-`editor.tie_break.concurrency`. Reads `docs/bio.md`. Ties that the LLM
-doesn't resolve fall back to ref ordering.
-
-**It is batched and concurrent, so it runs under `callWithBackoff` — and for its
-whole life it did not.** Run #125 lost 12 of 25 tie groups to a single 429 each,
-with no retry, and ranked 60-odd items by ref order instead: alphabetical, and
-at a tier boundary that decides whether a story is a feature or a standard. The
-same run is its own control — grouping's attach pass met the identical 429 storm
-from the identical provider minutes earlier, retried, and finished with
-`attach_failed_calls=0`. The failure was also the quiet kind the rule exists for:
-the catch returns an empty rank map, which is exactly what a group the model
-declined to order returns, so the stage warned and reported success. Counts are
-persisted as `editor_runs.tie_break_calls` / `tie_break_failed_calls`
-(migration 040) and shown by `inspect editor --id`; NULL means a run before 040,
-where the console was the only record. A model that answers but omits refs gave
-a worse answer, not a lost call, and is not counted as a failure.
-
-**Prominence is outlets, not rows** (`src/db/outlets.ts`). Run #47's KTVZ feed
-carried the same CNN story in English and Spanish seven times, and each pair
-added a source to the lift. `sources.yaml` has declared a `parent` on sibling
-feeds all along — AP, three Reuters feeds, three Guardian, two each for BBC, the
-NYT and OPB — and no ranking code read it. Counted at 1 minimum, never 0: the
-value is fed to `ln()` and `ln(0)` is -Infinity, which does not throw, it sorts
-the story to the bottom of the paper and looks deliberate. The preprocessor's
-within-parent dedup already collapses sibling duplicates that share a URL or a
-normalized title, so this is a backstop for what that key cannot see — one
-outlet publishing one story under two headlines — and expects a small effect.
-
-Exported pure functions `combinedScore`, `assignTier`, `parseTieBreakOutput`,
-and `applySortWithTieRanks` are unit-tested (`tests/editor-formula.test.ts`,
-`tests/editor-tie-break.test.ts`).
-
-Resolves cluster details from `grouping_runs.digest` via `grouping_run_id`.
-
-(This replaced an earlier whole-pile LLM tierer with retry-once-then-fallback
-resilience. `editor.fallback` no longer exists in `models.yaml`. See
-`docs/decisions.md`, 2026-06-16.)
-
-### writers
-
-Three pieces: the materials resolver, the article-text fetch, and the prompt
-assembler, then the writer calls themselves.
-
-**The writer is DeepSeek V4.1 Flash at reasoning `high`, the one stage not on
-GLM 5.2.** Three blind bake-offs (writer runs 64–71, 74–78, 82–86) read every
-piece against its packet. They were decided by attribution, not prose: who said
-what, whether an analyst's view stays the analyst's, whether an absence gets
-reported as a finding. Across three runs Flash at `high` put one unsupported
-claim in 96 pieces; GLM 5.2 put one in five or six pieces a run. The level
-matters as much as the model:
-- `low` once refused a full packet ("the source material didn't come through";
-  open item 4);
-- `none` ran long everywhere;
-- `xhigh` spent a 32,000-token budget reasoning and wrote nothing.
-
-`max_tokens` is 16000 because `high` has used up to 7,553 on one call. See
-`docs/decisions.md`, 2026-09-23 and 2026-09-25.
-
-**`materials.ts` — the resolver.** Walks a ranked editor story to the articles
-underneath it: thread → `thread_members` → cluster → `grouping_runs.digest` →
-`preprocessed_items`. It does the walk and nothing else — no fetching, capping,
-dedup, or formatting — and returns body text **uncapped**, because the assembler
-owns the budget and a second cap here would be a second place to look for
-missing text. Unresolvable rows are recorded on the story (`unresolved`) with the
-source count the editor ranked it on left intact.
-
-**`fetch-text.ts` + `extract.ts` — article text.** 61% of editor run #112's 305
-underlying articles carried under 800 characters of feed body, and thinness is a
-property of the outlet rather than the story, so the fetch is per item: feature
-and standard tiers, only where the feed body is under
-`writers.fetch.feed_chars_floor`. Extraction is Readability + html-to-text, with
-**no whole-document fallback** — a page with no article extracts to `""` rather
-than to nav soup.
-
-**`thin` text is used, and the length floor was never the right guard.**
-`loadFetchedTexts` used to demand `status = 'ok'`, which threw away reporting the
-fetch had already paid for: run #28's C20 was a feature lead written on 49 words
-while 1,035 characters of one source's extracted text sat in `article_texts`
-marked `thin`. Letting it through took that piece to 388 words. It now returns
-`ok` and `thin` alike and the assembler's rule — whichever of the stripped
-candidates is longer — decides.
-
-**A non-empty extraction is not a guarantee of article-shaped prose.** The
-premise for relaxing the floor was that the no-fallback rule already made one:
-Readability returns "" when it finds no article. Wrong — it returns the best
-article-shaped *block*, and on a page whose article it cannot see, that is a
-template module. Cascade PBS handed run #118 its house promo for a different
-programme ("In this episode of 'Beyond the CANVAS,' we sit down with novelist
-Margaret Atwood…") as the article body for an ABC-versus-FCC lawsuit at rank 65
-and a South Korea military-drills feature at rank 8. `min_extracted_chars` had
-been rejecting that by accident. The defences are now the ones that read the
-text: `stripBoilerplate` collapses a paragraph repeated inside one document —
-no article says the same paragraph twice, a page template does, once per slot —
-and carries a rule for that promo. They accrete from audit evidence, the way the
-junk filter does; a length threshold never could.
-
-Politeness is per host, not per source: hosts run concurrently, each host's own
-URLs run sequentially with `per_host_delay_ms` between them. The honest UA goes
-first and a browser UA is tried once on a 403 only — the collector's rule, now
-shared via `src/lib/http.ts`.
-
-**Hosts that keep refusing are skipped**, learned from `article_texts` rather
-than configured: a host with `min_attempts` failures and no success inside
-`cooldown.window_days` is left alone, and recovers by itself when those failures
-age out. nytimes.com and oregonlive.com serve a DataDome device check the
-browser UA does not get past.
-
-**A row the database refuses costs one article, not the paper.** Pipeline #30
-(2026-09-29) stopped in fetch-text on `invalid byte sequence for encoding
-"UTF8": 0x00`: Postgres TEXT cannot hold U+0000, a NUL in publisher HTML
-survives linkedom, Readability and html-to-text, and the uncaught upsert
-rejected the stage's `Promise.all`. `extractArticle` now strips NULs before
-counting and reports how many (logged with the URL), `sanitizeArticleTextRow`
-strips them from every TEXT column at the upsert (recounting `text_chars`), and
-a failed upsert is logged by item, host and URL — never the body — and counted
-as `storeFailed`, which the fetch gate warns on. The article falls back to its
-feed body, as any failed fetch does.
-
-**A non-HTML response is not read.** A PDF or image used to be decoded as HTML,
-extracted, and its "text" stored on an `error` row — which the writers never
-read, since `loadFetchedTexts` takes `ok` and `thin` only. Binary bytes are the
-likeliest source of that NUL. `isHtmlContentType` now turns such a response
-away before the body is downloaded; a missing Content-Type is still read.
-
-**`assembler.ts` + `prompt.ts` — the packet.** Pure functions: select, dedupe,
-budget. Selection takes one article per parent outlet before a second from the
-same one, capped per tier. Deduplication is **verbatim paragraph** removal across
-the packet — not embedding similarity, which would delete the corroboration a
-cluster exists to provide, since every member of a cluster is the same event by
-construction. Trimming lands on a paragraph or sentence boundary. Config is
-`writers.packet.*`.
-
-**Source material is not rationed.** `max_articles` and `total_chars` are `null`
-on every tier: an item that survived collection, prefiltering, grouping and the
-editor reaches the writer, and nothing is dropped for being the 13th source or
-the 48,001st character. They were 12/48,000 for a feature, justified as
-redundancy control — wrong twice over, because selection already reads one
-article per outlet before a second from the same one and `dedupeParagraphs`
-already removes what another source said verbatim, so the caps were a third
-mechanism for a solved problem that discarded whole sources rather than repeated
-text. Run #114's Iran thread lost 5 of 17 articles that way, and run #17's rank
-32 printed a false statement because `per_article_chars` cut the article before
-the part that answered the question. **Deciding what bears on a piece is the
-writer's judgment** — it reads the sources and works out what the story is, which
-is why the pipeline gathers and groups them at all. When a piece comes out too
-long the fix is guidance on how to editorialize, never less to read.
-
-`per_article_chars` and `floor_chars` are inert while `total_chars` is null. If a
-cap is ever needed — a page that would blow a context window — they make the
-squeeze spread across outlets instead of letting two long sources take it all.
-
-**Furniture comes off both candidates before either is measured.** The packet
-takes whichever of the fetched text and the feed body is longer, and comparing
-them raw picks the text that loses more of itself to stripping: run #28's four
-cascadepbs.org sources each had a 574-character extraction beat a ~390-character
-feed body and then strip down to 286, worse than the teaser it replaced and worse
-in a way the raw comparison could not see.
-
-**A fetched page must be the article the feed described** (`pageMatchesTitle`).
-Sep 8's rank 2 was a Ukraine section led by a feature headlined "Source material
-for Ukraine section does not contain reporting on the conflict": its La Nación
-item was titled as live war coverage and linked to a real-estate story, whose
-3,912 clean characters beat the 327-character feed body on length. A page that
-shares under a fifth of the headline's distinctive words (titles with fewer than
-three are never judged) is not used, and the feed body stands.
-
-**A long feed body is not a complete one.** `feed_chars_floor` reads a character
-count and calls it a finished article. La Nación publishes ~1,800-character
-teasers that stop mid-clause, well clear of the 800 floor, so run #43's rank 15
-(S62865) was never requested and its writer was handed a fragment that broke off
-inside a quotation — then wrote 180 words of real reporting and ended by
-narrating the break: "…we also have people from" — the source cuts off there.
-Nothing upstream could see it; every stage between the feed and the writer
-measured that body by its length and found it generous. `endsMidSentence` now
-overrides the length skip in `planFetch` — a body that stops mid-sentence is by
-definition not the whole article — **judged on the stripped body, never the raw
-one**: a feed whose last line is furniture (the Guardian's "Continue reading…",
-Ars Technica's "Read full article") has no terminal punctuation at the end of
-the raw text and is a complete article all the same, and testing before the
-strip flagged 611 such bodies across twelve outlets that are already 100%
-usable — and `stripBoilerplate` cuts a dangling tail
-back to the last finished sentence, so a fetch that fails anyway still cannot
-hand the writer half a quote. **This is `trimToBoundary`'s own rule** ("a writer
-quoting a half-sentence is a defect the assembler can prevent for free"), which
-only ever fired when the *budget* truncated a body — and the budget is inert
-while `total_chars` is null. The truncation that reached the paper was the
-publisher's. An ellipsis counts as truncation, not as an ending. The trim is
-skipped when the last finished sentence sits in the first half of the body:
-that is a caption run or a structureless extraction rather than prose with a
-broken tail, and the same proportional guard is why `trimToBoundary` has one.
-
-**`boilerplate.ts` — furniture removal, and it is a junk-filter-style rule set.**
-Readability keeps the article but cannot know that `The-CNN-Wire`, a WordPress
-"appeared first on" footer, a `READ ALSO` list or Le Monde's live-blog comment box
-are not sentences. Rules are whole-paragraph, high-precision, and each names the
-run and source it came from; `tests/writer-boilerplate.test.ts` pins both the cut
-and the near-miss prose that must survive. Sources whose body only repeats the
-headline (`isHeadlineEcho` — the Google News shape) lose their packet slot, but a
-packet is never emptied. **The two ends of that check have to normalize the same
-attribution the same way**, and for a long time they did not: `title.ts` strips a
-trailing bare *domain* and nothing else — run #112 needed "… Goes Rogue? -
-Willamette Week" to keep its suffix — so a Google News title arrived ending
-"- AP News" while its body ended "- apnews.com", `startsWith` failed, and a stub
-that was nothing but its own headline was admitted as a source. The 14-day source
-audit found 99 of 106 Google News members contributing 64–140 characters of
-exactly that to writer prompts. `normalizeForCompare` now strips the domain form
-and a separator-plus-short-tail alike; it is a comparison normalization that
-never reaches the reader, and a body with real reporting still fails the length
-test.
-
-A packet records what it could not supply: `materialLevel` is judged against the
-tier's own thresholds — the same 1,000 characters is thin for a feature and
-adequate for a standard piece. **The notes are directions, never a description
-of the packet.** They used to open "Material is headline-level only", and six
-pieces in run #13 relayed that to the reader — "No further detail was available",
-"The outlet did not specify the new development in its public feed". The standing
-memo forbids writing about the sourcing and sits in the *system* prompt; the note
-sat in the user prompt, about that specific piece, and the nearer instruction won.
-
-**The prompt never describes its own plumbing.** `formatArticle` used to label
-every source `[feed summary only]` and `[truncated at 1200 of 4800 chars]`, and
-run #15 relayed both — "Further detail was not available from the published
-portion of the report", "the source material was truncated before detailing the
-specific benefits". The second read as a hallucination (the persisted article
-body has those details) and was accurate about the *packet*, because the budget
-cut the text and the label said so, in numbers, inches from the text. That was
-the third and closest of three layers saying the same thing, and fixing the outer
-two left this one winning. The rule, learned three times: **a model relays what
-the prompt tells it about itself, so the fix is not to tell it.** Only the
-untranslated flag survives — whether the writer can read the text is a real
-decision. Origin, truncation, dedup and furniture counts moved to
-`inspect packet --rank`, where an audit needs them. Voice comes from `docs/voice.md`
-(the standing memo), read like `docs/bio.md` with a fallback.
-
-**A note says what to do about a gap, and the bare prohibition did not work.**
-Two material notes used to end "and make no remark about how much they say",
-removed on the theory that a prohibition naming the sourcing plants the sourcing.
-Run #31 did not support that theory: genuine source-meta sentences went 1 → 2 → 4
-as layers came off, and all four of run #31's were in the two material levels
-whose clause had just been removed. The clause is back as the *actionable* rule
-rather than the prohibition — "a gap is worth a sentence only when someone in the
-story withheld something", the memo's actor-versus-outlet distinction restated at
-the near distance where the winning instruction keeps turning out to live. That
-comparison is across different editor runs and is not controlled; the controlled
-form is a single-tier re-run against one editor run.
-
-**The writer is told nothing about sources it cannot see.** The prompt used to
-open with `Sources behind this story: 2 (1 included below)` — the editor's count
-plus a parenthetical naming the gap — and the notes used to say how many sources
-were counted but not reproduced. Both are gone, along with the two note clauses
-ending "and make no remark about how much they say": a prohibition that names the
-sourcing plants the sourcing. Run #30's C187 wrote "No further details were
-available from the source" with all three present and the omission note already
-fixed, and S57910 wrote "The source material cuts off mid-sentence; the accounts
-of the other three services are not available." The editor's count stays on the
-packet for `inspect packet`, and `inspect materials` is where an unresolved item
-is diagnosed. **This is the fifth form of one failure** — the packet note, the
-source labels, the word-target floor, the omission note, and now the source count
-— and the rule has not changed: a model relays what the prompt tells it about
-itself, so the fix is not to tell it.
-
-**An omission the writer is told about must be one that withheld something.**
-`PacketOmission.kind` splits the two cases: `length` is a source with reporting
-in it that a cap could not fit, worth naming so the writer does not go looking
-for the rest of the story; `no-text` is a source that had nothing — an empty
-body, or one that only repeats its headline. Only `length` renders in the
-prompt, and with `max_articles` and `total_chars` null on every tier there are
-none, so the note is now silent. It used to count both and say "left out for
-length", which was the fourth layer of the same failure: run #28's C187 was
-handed a packet of **zero** characters plus a note claiming a further source
-existed, and wrote "No further details were available from the report."
-
-**Sections: a thread is not one piece.** Threading absorbs a situation's rows
-into one ranked story, and one 500-word slot cannot hold twelve events — run #3's
-T1 dropped a story scoring 81 while the paper ran a brief on one scoring 56. A
-thread expands into a lead at the story's tier, up to
-`packet.section.max_sidebars` members one tier below, and a one-sentence line for
-every remaining member, all sharing `section_ref` and the story's rank.
-
-**Slots are assigned by score *and* by material**, because a slot the material
-cannot fill is worse than no slot. A headline-only member cannot lead — run #13's
-Gaza section led with a 47-word stub while a 180-word fully-sourced piece ran
-below it — so the highest scorer with real material leads instead, and score
-order stands only when no member has any. A headline-only member gets a line
-rather than a sidebar: a line is a pointer and a headline is enough for one,
-while an empty paragraph-shaped slot is an invitation to fill it, which run #13
-did twice with prose about the sources and once with an asserted development the
-packet did not contain. Neither rule touches the thread's own score or rank.
-
-**Material partitions by member, and every piece is told what the others cover.**
-Each piece is assembled from its own member's articles alone, so two pieces
-cannot draw on the same source — but that guarantees nothing about *content*: a
-live blog assigned to one member carries every other member's events, which is
-why `isLiveBlog` exists and why it accepts any separator after "EN DIRECT" (run
-#20's T1 lead was Le Monde's `EN DIRECT, guerre en Ukraine`, 45,000 characters of
-the whole war). **It reads the URL as well as the title, and it drops rather than
-reorders** — both learned from run #44's rank 2. AP titles its rolling coverage
-exactly like an article ("Canada launches retaliatory tariffs on US goods") and
-declares it in the path instead, so title detection never saw it; and the rule
-had been *inert for two months*, because it worked by ranking live blogs last and
-letting `max_articles` cut them off, and every cap went null when sources were
-unrationed on 2026-08-19. A live blog now leaves the packet the way a headline
-echo does — its body is not reporting on *this* story — and like that rule it
-never empties a packet: the only source a story has is still its source. **That
-fallback keeps the longest article rather than the first**, which the rule always
-claimed ("if every article is a stub the best one stays") and `slice(0, 1)` never
-did; harmless while the filter only removed empties, and not harmless once live
-blogs joined it, since `selectArticles` orders them last. The guarantee is the sibling list: the lead is told every piece
-below it and a sidebar or line is told the lead plus the others. It used to name
-sidebars only, which cost nothing at three members and cost two duplicated
-paragraphs at eleven. Static text, not a call — writers still never see each
-other's work.
-
-Sections make the paper longer than the editor's story count, so
-`applyPaperBudget` drops standalone pieces from the bottom of the rank order to
-compensate. Section pieces are never dropped and one standalone always survives.
-
-**Tier slots are assigned by material too — the section rule, one level up.**
-The editor tiers by rank position alone and its formula knows nothing about
-whether any text exists behind a story, so run #42 published 37 of 150 pieces on
-headline-only material, three of them features. Rank 7 ran one sentence and then,
-under a horizontal rule, a note to the operator ("That's all the source
-carries"); rank 18 was 24 words ending "the New York Times reports". Neither is a
-writing failure — both are writers obeying a headline-only packet's own ceiling
-inside a slot that promised four hundred words. **The pipeline knew before it
-made the call:** those two are `oregonlive.com` and `nytimes.com`, which the
-fetch cooldown had already given up on, and rank 62 was a Google News item that
-`sources.yaml` records as structurally unfetchable. Note that `opb.org` and
-`oregonlive.com` are both permanently in cooldown and both are the Oregon local
-beat — the front page is starved on precisely the subject the bio weights
-hardest.
-
-`resolveTiersByMaterial` runs between assembly and rendering. A story whose
-packet is headline-only *at the tier it holds* trades tiers with the
-nearest-ranked story below it that can fill the slot. `materialLevelAtTier` reads
-the level at the tier being asked about rather than the one assigned, which is
-what makes a demotion meaningful — 1,500 characters is headline-only for a
-feature and partial for a standard, so the demoted piece gets a band it can
-actually fill. **It swaps rather than demotes**, so the paper keeps 15 features on
-a day the local outlets block us instead of shrinking to 12, and the well-sourced
-standards just under the line get the treatment they can carry (run #42's ranks
-16 and 17 were fully-sourced pieces sitting below three stubs). Ranks and scores
-are never touched, so a story can sit high in the ranking and run short — the
-honest outcome when a story matters and the text is not there. The pass is
-top-down, so a story demoted out of feature is reconsidered at standard; when
-nothing below has material either, the slot is left alone. Threads participate,
-judged on their section lead. Config is `packet.tiers_requiring_material`
-(`[feature, standard]`); `brief` is deliberately absent because a brief is a
-pointer, and an empty list disables the rule.
-
-**A sidebar is never batched, and a brief-tier sidebar is budgeted as a sidebar.**
-Only `buildWriterUserPrompt` renders `sectionInstruction`, so a batched sidebar is
-written with no idea it belongs to a section and no idea what the lead covers —
-while the batch prompt tells it the items around it are unrelated. Run #10's T4
-sent three sidebars through the brief batch and got three unrelated briefs under a
-heading, the exact failure sections exist to prevent. `partitionByCallShape` now
-keeps every sidebar out of the batch pools. Separately, a sidebar under a
-standard-tier lead lands on `brief` by the tier ladder and inherited a brief's
-25–45 words; all four in run #10 wrote 48–53 and read well, so `packet.tiers.
-sidebar` gives them 45–70 and the material for it.
-
-**Thin material gets a ceiling; only a full packet gets a band.** A floor is a
-number and a number beats an instruction, which is the lesson this stage has now
-learned at two material levels. Run #24's five "No further details were
-available" pieces were headline-only against a 25-word minimum, and rendering
-that level as a ceiling with no floor fixed them; `partial` kept its tier's full
-band, so run #32's S60167 was asked for 120–200 words from one thin source and
-filled the gap with "The source material does not specify the legal mechanism of
-the guidance…". The note beside it said to stay inside the sources. The ceiling
-is unchanged, so a partial packet with 2,900 characters still writes to length —
-the floor only ever bound the pieces that had nothing to reach it with.
-
-**Every repaired piece is an individual call, briefs included.** `--repair` used
-to send a brief through the batch path as a batch of one, which kept the batch's
-own failure mode: the parser is keyed on the ref, so a model that does not echo
-`S60468;;` exactly produces no row and the piece fails again for the same reason.
-Run #31's S60468 survived two repair passes that way. Every packet carries a full
-individual prompt whatever its tier, and `parseWriterOutput` reads it back with
-no ref to echo. The batch exists to amortise the bio and the memo across 75
-briefs; at one piece there is nothing to amortise and only the risk left.
-
-**A short piece is short in its target, not in what its writer may read.** The
-`line` and `sidebar` tiers exist to set word targets — 15–30 and 45–70 —
-selected through `assembleWriterPacket`'s `budgetTier` override so the piece is
-still published as a brief. They no longer ration material: run #8's lines came
-back at 40–47 words and the fix then was to cut them to one source and 900
-characters, but the same run also introduced a separate line-register batch call,
-so which of the two worked was never established. A headline-only packet's word
-target is still capped element-wise against `packet.headline_only_words` whatever
-its tier — a note saying "write short" competes with a number and loses, and run
-#8's T1 sidebar filled a 120–200-word ask with detail about the 1924
-Johnson–Reed Act that no source carried. **It renders as a ceiling with no
-floor**: run #24 produced five pieces ending "No further details were available
-from the source", all headline-only, because fifteen words of material against a
-25-word minimum leaves ten words to fill. The memo, the packet note and the
-source labels had all been cleaned of that already; the floor was the last thing
-still asking for it.
-
-**`index.ts` — the writer calls.** One call per feature and standard piece;
-briefs go in batches of `brief_batch_size`, because 75 separate calls would each
-re-send the bio and the standing memo and the scaffolding would outweigh the
-writing. Batched briefs come back as `ref;;headline;;body` lines, keyed on ref so
-a brief cannot be written against the wrong story, and a ref missing from the
-output becomes a failed piece rather than a silent gap.
-
-**The batch prompt tells briefs what to do with too much material, because the
-line branch already did and the briefs behaved differently.** Run #34 is the
-natural experiment: all 7 section lines landed inside 15–30 words, and 22 of 52
-standalone briefs were over their band or ceiling, two of them at 99 and 116
-words. The `line` branch carried a "far more material than a line can hold"
-paragraph; the `brief` branch carried nothing, and stated each target once in a
-header that a 20,000-character packet then buried. Both branches now close by
-restating that every target is a ceiling — the individual prompt has always ended
-that way, and only the batch did not.
-
-**A section line has no headline, so the contract stops asking for one.** A line
-is one sentence at the foot of a section whose lead has established the
-situation — its own pointer, with no second thing to write — and `ref;;headline;;
-body` made the model write that sentence twice. All 7 of run #34's lines came
-back with the headline and body identical, verbatim, which no length or
-source-meta audit could see. The line contract is `ref;;the sentence`, the parser
-still reads a three-field line and drops the duplicate, and `writeOnePiece` nulls
-a line's headline too so the repair path agrees with the batch.
-
-**One call, one register.** `partitionByCallShape` returns three pools — longform,
-briefs, section lines — and lines never batch with briefs. The batch prompt frames
-the whole set, so a mixed call asks for one register and gets it for both; run #8
-did exactly that.
-
-**The contract names its fields, because showing the shape was not enough.**
-Whole batches answered `ref;;body` and dropped the headline field, and run #39
-published ten headline-less briefs that way. The brief contract now names three
-fields — ref, then a headline, then the brief — and says not to omit the headline;
-run #40 came back with 52 of 52 brief lines in the three-field shape and **zero**
-headline-less batch briefs. The same gap existed on the individual path, which
-showed `HEADLINE:` in its output block and never said the label was mandatory,
-so the system prompt now says so and says a brief has a headline exactly as a
-feature does.
-
-**A batch that answers on one line is still a batch.** The contract says "one
-output line per brief" and also "plain prose on one line, no line breaks", and
-run #38's batch merged the two: every brief on a single line, each separated by
-`;;`. The parser read the first ref, took the second field as its headline and
-**everything after it as the body**, so S60434 was published as a 353-word brief
-whose body was the other nine briefs, refs and all, while those nine went missing
-and cost a straggler re-ask. The refs are the batch's own structure, so
-`parseBriefBatchOutput` puts every known ref back at the start of a line before
-reading. Only `ref;;` splits — a brief that merely mentions a ref-shaped token
-keeps its body.
-
-**The batch parser is forgiving too, which it was not for thirty-five runs.**
-`parseBriefBatchOutput` demanded `ref;;headline;;body` exactly. Run #36's batch 0
-answered all ten of its briefs as `ref;;body` — no headline field — in the
-original call and again in the straggler re-ask; both produced ten complete,
-correctly-referenced briefs, and the parser dropped all twenty lines and turned
-the batch into ten failed pieces. A database-wide scan found **40 non-empty batch
-responses across thirteen runs** that yielded no pieces at all, quietly paid for
-and quietly discarded. A missing headline costs a headline; a dropped line costs
-the piece — so a two-field brief is read with a null headline, and only a line
-with no text at all is refused. This is run #3's lesson in the one place it was
-never applied.
-
-**Reading the output is forgiving; producing it is not retried.** Run #3 lost two
-pieces to a parser that demanded a labelled headline on the first line — the
-calls had succeeded. `parseWriterOutput` scans the opening lines for a label,
-ignores code fences, and falls back to a short unlabelled first line. A brief
-missing from a batch gets one follow-up call for the stragglers.
-
-**The label alone on its line is a label, not a headline.** Run #2's rank 65
-(S68421) published with the literal headline `HEADLINE:` and its real headline
-sitting at the top of its body. `matchHeadlineLabel` requires text after the
-colon, so a bare label never matched it and fell through to the unlabelled
-branch, which takes any first line of 160 characters or fewer — and `HEADLINE:`
-is nine. The headline is now read from the next line with content. The same fix
-covers `**HEADLINE:**`, which *did* match the label pattern with `**` as its
-text, cleaned away to nothing, and failed the whole piece — run #3's failure
-mode surviving in the one branch nobody had looked at, because it needed the
-model to bold a label it had put on its own line. When what follows is too long
-to be a headline, or is the piece's only line, the text is kept with a null
-headline rather than lost. This is the *primary* parse only: a mid-body revision
-that restarts with a bare label is still undetectable, as an unlabelled revision
-always was, because widening the strict restart matcher would risk truncating a
-piece that parsed correctly.
-
-**And a piece with no headline is still a piece.** The parser used to refuse a
-first line that was plainly prose, reasoning that publishing a paragraph as a
-headline is worse than recording a failure. That reasoning only holds while the
-prose is being made *into* a headline; with the headline null it does not apply.
-Run #36's S59896 repair answered with one clean line of newspaper prose — which
-is exactly what a 40-word brief is — and was recorded as "unparseable output";
-run #37 lost four more the same way. A label with nothing under it still fails,
-because there is no prose to publish.
-
-**When the writer revises in the stream, the last draft is the piece.** Run #28's
-C187 drafted, caught itself asserting a subsidy figure that came from the cluster
-label rather than a source, drafted again, caught itself writing about the
-sourcing, and produced a third draft that was correct — fifteen words, attributed,
-nothing the headline did not support. All three drafts and the reasoning between
-them reached the paper, 233 words against a 60-word ceiling, because the parser
-took the first headline it recognised and everything after it. **Every guardrail
-worked and the parser published the workings.** So `parseWriterOutput` rescans the
-body it produced and the *last* re-labelled draft wins. Bodies are bounded at the
-next label, so an abandoned final restart falls back to a clean earlier draft
-rather than one with a stray label in it. The opening label is matched
-case-insensitively and a restart only against the contract's literal `HEADLINE:`:
-missing the opening label costs a whole piece, mistaking prose for a restart
-truncates one that parsed correctly. A revision that never re-labels is
-undetectable, and the label is the only signal there is.
-
-**The writer is told what the reader already knows.** For a story the rerun
-check graded a development, minor update or routine news, the prompt carries
-yesterday's headline and the judge's one-sentence statement of today's news, and
-says to lead with it: the headline reports today's news, the known event is a
-clause of background (`continuationLines`). It used to be told nothing, so a
-day-later article — mostly recap, new detail lower down — produced the old event
-again: Christa Pike's failed execution headlined 10/1 and again 10/2, when 10/2's
-news was her condition and the courts' stay. It is phrased as what to do and
-never says "this paper" or "previously": the standing lesson is that a model
-relays what the prompt says about itself. The judge's sentence is a pointer, not
-a source.
-
-**`npm run write -- --repair <run>`** re-writes only the failed pieces of a run,
-in place. A paper is one run: filling three holes must not cost 150 calls.
-
-**A run stops asking when the provider stops answering.** Run #4 met an outage
-and, because `callWithBackoff` correctly retries broken streams, 103 logical
-calls became 807 provider attempts with 775 errors over 31 minutes. Per-call
-backoff cannot see that the provider is down — each call only sees itself — so
-the stage aborts after `abort_after_consecutive_failures` consecutive failures,
-marks the rest as failed, and names the `--repair` command. Consecutive rather
-than a rate: one hard piece among successes is a piece problem; a hundred in a
-row is an outage.
-
-**A failed call is a row, not an exception.** The paper has a deadline; one call
-that times out must cost one piece, not the edition. Failures are stored as
-`status='failed'` pieces with the reason, and `writer_runs.failed_calls` says how
-much of the paper is missing without anyone reading stdout. Every call goes
-through `callWithBackoff`.
-
-**And a piece is written to the database as its call returns, not at the end.**
-The same rule, extended to the process itself: a killed run should cost the calls
-still in flight, never the calls already answered. The stage used to hold every
-piece in memory and insert them after the last call finished, so run #29 made 94
-attempts, 90 of them successful, and persisted **zero** rows when it was stopped
-— the tokens spent, the writing done, and nothing recoverable, not even by
-`--repair`, because there were no failed rows to repair. Insert order is free:
-every reader of `writer_pieces` sorts by rank and section_rank explicitly.
-
-Writes `writer_runs` / `writer_pieces` (migration 035). `editor_story_id` anchors
-each piece to the ranked story, and from there the existing keys reach the
-thread, cluster, preprocessed items and raw items; `generation_log_id` reaches
-the exact prompt that produced it.
-
-**The cluster label is not evidence and the prompt says so.** A describe-pass
-title and summary are generated from every article in the cluster, including the
-ones the budget left out, so they routinely name events no included source
-reports. A writer treating the label as reporting produces unsupported claims in
-the paper's own voice — the one failure nothing downstream can catch.
-
-**`article_texts` (migration 034) is the only table holding third-party full
-text.** It exists to write the paper, is never published — "curate, don't
-reproduce" — and is swept on `writers.fetch.retention_days` by the fetch script.
-Failures and skips are stored too, so a report can say what fraction of the paper
-is running on feed excerpts.
-
-### publisher
-
-**Freezes a writer run into a paper, and adds the one thing the pipeline never
-had: source links.** `npm run publish -- --writer-run <n>`. Writes `papers` /
-`paper_pieces` / `paper_sources` (migration 041).
-
-**It is a stage, not a query, and that is the whole design argument.**
-`writer_pieces` stores a source *count* and no URLs — the attribution is three
-joins away through `thread_members`, `grouping_runs.digest` and
-`preprocessed_items`, which is exactly the walk `writers/materials.ts` exists to
-do. The publisher reuses that resolver rather than reimplementing it. Doing the
-walk per page load would put it on the reader's critical path and, the real
-objection, would make yesterday's paper a view of today's database: re-running
-grouping tomorrow must not change what was published this morning.
-
-**Source rows carry their own copies** of outlet name, title and URL rather than
-only a foreign key, because `raw_items` has a retention window and a published
-paper must keep pointing at its sources after its inputs are swept.
-
-**No third-party article text is ever copied.** `article_texts` stays the only
-table holding that; it writes the paper and never publishes it.
-
-**One paper per day, and re-publishing replaces it — but it will not shrink one
-by accident.** `papers.published_on` is unique and the stage deletes-then-inserts
-in one transaction, so a re-run corrects the morning's paper rather than sitting
-beside it. That is right for a correction and dangerous once the timer runs
-daily: a second run the same day sees only the hours since the first, because
-cross-run dedup already gave that run today's news, so it assembles a small
-paper — and **every stage's counters look healthy, because each one is fine in
-isolation**. Four hours after the timer, a 150-piece edition becomes a 56-piece
-one behind nine `ok` gates. `replacementShortfall` refuses below
-`pipeline.gates.publisher.min_replacement_fraction` of the paper being replaced;
-`--force` is the deliberate path. **It refuses rather than warns**, which is the
-opposite of every other gate, and the reason is that this is the only place a
-stage guards an artifact the reader already has: a warning arrives after the
-delete, and the smaller paper is strictly worse than the one it destroyed. The
-check runs before the materials walk, so a refusal costs nothing, and growth or
-replacing an empty paper is never refused. The date is the
-*reader's* local day (`PAPER_TIMEZONE`, default `America/Los_Angeles`): a run
-starting at 7pm Pacific must not publish tomorrow's edition.
-
-**Two ways a paper is holed, counted separately.** `pieces_skipped` is writer
-pieces that failed and so are not in the paper; `pieces_unsourced` is published
-pieces whose lineage would not resolve, which the reader cannot follow to
-anyone's reporting. Both are on `papers` for migration 030's reason — a report
-must be able to judge a paper after the console log is gone. `inspect publisher
---id <n>` shows them per piece as `resolved/ranked`.
-
-Pure functions in `assemble.ts` (`resolvePieceSources`, `buildIndex`,
-`displayHeadline`, `sourceLabel`, `paragraphs`, `formatEditionDate`,
-`readingMinutes`, `replacementShortfall`) are unit-tested in
-`tests/publisher-assemble.test.ts`.
-
-### lineage
-
-**Cross-day story continuity — the "previously" marker.** Runs inside the
-publisher, after the paper is frozen. Writes `paper_piece_lineage` (migration
-043) and `papers.pieces_with_lineage`.
-
-**It is not a stage, because it has no independent input.** It reads the paper
-that was just written and the papers before it, and the publisher is already the
-place that turns a writer run into an artifact with attribution attached.
-Continuity belongs beside attribution; the pipeline stays at nine stages.
-
-**The defect it closes.** The 2026-09-03 repeated-headline audit found the paper
-has **no cross-edition story identity** — `T0` and `C27` are run-local, and
-nothing outside the publisher reads `papers`. Nvidia/Hugging Face is the case
-that names it: a report on 8/27, a further report on 8/28, a six-source
-confirmation on 9/3. The 9/3 piece was legitimately new and must not be
-suppressed; what was missing was any marker saying it was the same transaction
-advancing. Nepal, Iran and the USPS fight are the same shape — a real new
-development every day, reading like a rerun because nothing said otherwise.
-
-**The relation is "same situation", and nothing here deletes anything** — no
-stage reads these rows to drop a story. Continuity is the fix for a continuing
-story; deletion is the fix for a duplicate. This section used to say the
-duplicate "already happened in the preprocessor", and the Sep 5–22 audit showed
-that was only true of duplicate *articles*: a day-late restatement from another
-outlet sailed through and got a "previously" line. Those are now withheld
-before the pile by the **rerun** pass, which asks the question this judge
-deliberately does not.
-
-**It shipped as retrieval alone and that was measured wrong.** The argument was
-that a continuity marker need not tell a resurfaced copy from a genuine
-follow-up, since "previously, Sept 2" is correct about both — true, and it was
-answering the wrong question. Reading all 114 links from seven republished
-papers found the failures are **same kind of event, different instance**: a Gaza
-City strike linked to a Jenin one at 0.8219, a TeamPCP arrest linked to the
-SpaceX agent breach at 0.8080. **This repository already knew embeddings cannot
-see that** — it is why grouping has a re-split pass, for "two gold mine collapses
-on different continents… the same kind of event in the same words."
-
-**No threshold fixes it.** The best-match distribution has no valley: largest
-below 0.80 was 0.7973, smallest above 0.8020, a 0.0047 gap in a smooth tail.
-Both false links sat *above* the line while real continuations sat below it
-(renewed Iran escalation 0.7944, an OpenAI follow-up 0.7443). So
-`similarity_threshold` became `candidate_floor` (0.72) and the judgment moved to
-one batched LLM call per paper — the thread pass's question, asked across days,
-answered the way this pipeline answers every other "is this the same story".
-**Every candidate is judged, not just each piece's nearest**, so a piece whose
-top match is a different instance can still keep its real predecessor at rank 2.
-
-**The judge fails closed**, which is the opposite of the writers' parser rule and
-deliberate: an unparseable or missing verdict is a NO, and a failed call records
-no links at all. A missing brief goes unseen and gets re-asked; an unjudged
-"previously" line prints in the paper. A *missing reason* costs only the reason,
-which is run #36's lesson in the one place it still applies.
-
-**The judge reads body text, and the second measurement is why.** The
-2026-09-04 run (seven papers, 158 links, all read by hand) rejected both
-original false links, recovered all three continuations 0.80 had missed, and
-dropped the three old borderline pairs — then accepted two new wrong ones: an
-Ozon business-expansion story against Ukrainian strikes on Ozon warehouses, and
-an Oregon Flock-stalking case against a Georgia one. **The prompt already
-forbids both** ("the same institution doing two unrelated things"; "another
-instance of the same kind of event"), so a third warning was the move that has
-already failed on the thread pass. The real defect was that the judge saw two
-headlines and nothing else: "Ex-police officer charged with using Flock cameras
-to stalk girlfriend" does not say Oregon, and the fact that separated it from
-Georgia was never in the prompt. `adjudicate.body_cap` (300) is
-grouping-pass-1's lesson arriving here — that cap "is the knob that decides how
-much a per-item judgment stage actually knows".
-
-**It also explains seven of the eleven good links the judge dropped.** They had
-a **section line** on one side, and a line has no headline by design, so the
-prompt showed the literal string "(section line, no headline)" and asked it to
-judge that. A line has a body; now it sends one.
-
-**A prior section line can no longer take the slot.** `lineageLabel` renders
-nothing for a prior with no headline, and one link per piece meant an
-unrenderable winner silently discarded a good second place — the reader saw no
-marker where one existed. Such candidates are skipped before selection.
-
-**The verdict carries a reason** (`judge_reason`, migration 044), because the
-first measurement could say a pair was accepted and never why. That is migration
-037's argument for the thread anchor one stage later: naming the criterion makes
-a bad call legible afterwards, and made the thread pass apply its rule rather
-than recognise it. `inspect publisher --id` prints it under the link.
-
-**And a YES must name something both texts say.** Body text took the false-link
-rate from 1.75% to 0.60% — one in 167 — and the survivor showed the limit of
-sending more input: a 141-character brief that never says Oregon, linked to "a
-Georgia police officer", with the reason "same officer and stalking case". The
-judge asserted a shared identity neither text names, and no `body_cap` fixes a
-fact the paper never printed. So the constraint went on the reason instead:
-name the transaction, the place, the case, the person, and check both texts say
-it. The thread pass's anchor rule at its strictest — not "state your criterion"
-but "state it and point at where it appears".
-
-**The data was already there.** `item_embeddings` is keyed on
-`preprocessed_item_id`, upserted by every grouping run, and — unlike
-`article_texts` — never swept; `paper_sources.preprocessed_item_id` reaches every
-published piece's articles. So "did we cover this before" is a vector query over
-rows that have accumulated since the project started. No backfill, no new
-embedding pass.
-
-**The vector maths stays in Postgres and the policy stays in `select.ts`.**
-pgvector computes 4096-dimension cosine next to the data; what crosses into Node
-is a small scored candidate list. `selectLineageLinks` then applies the rules,
-and they are unit-tested: one link per piece (enforced again by a unique index),
-ties broken toward the **more recent** prior piece — a story running four days
-straight should say what the paper said last, not what it said first — and a
-deterministic ref tie-break so a re-run inserts identically.
-
-**Similarity is max-pairwise, not centroid.** A cluster's items are the same
-event by construction and a section's pieces are partitioned by member, so the
-strongest single pairing is the honest measure. A centroid over a thread's eleven
-members would dilute exactly the signal wanted.
-
-**`publisher.lineage.candidate_floor` is the knob and is now a guess in the
-other direction** — 0.72, chosen to buy back the continuations 0.80 missed
-without flooding the judge, and not yet swept. The errors stay asymmetric: a
-false link prints where the reader sees it, a missed one leaves the page as it
-is. `inspect publisher --id` prints every link with its similarity, and every
-judge call is in `generation_logs` with its full prompt and verdicts. The 114
-hand-reviewed links from 2026-09-04 are the regression set. See
-`docs/open-items.md`.
-
-**The marker is text, never a link.** Yesterday's piece now has a permanent
-address (`/article/<id>`), but the reading view's rule is that colour means
-exactly one thing, a link that leaves for someone else's reporting. A "previously" line is the paper talking about
-itself, so it is set unlinked and uncoloured under the headline. A prior *section
-line* has no headline of its own and is dropped rather than rendered: a pointer
-to a pointer is not worth a row.
-
-**The lookback is counted in editions, not days** (`lookback_editions`). Seven
-calendar days was the same thing only while the paper came out daily; after the
-Sep 15–21 outage paper #42 published with zero markers, because its last
-predecessor was eight days back. What the reader last read is the last edition.
-
-**It runs outside the publisher's transaction and never fails a paper.** A paper
-with no continuity markers is a complete paper; a failure here is caught, warned,
-and the edition still publishes. Re-publishing a date recomputes rather than
-accumulating. The FKs into the prior paper are `ON DELETE SET NULL` with the date
-and headline copied beside them — the `paper_sources` rule, for the same reason:
-correcting an earlier edition must not silently erase what today's paper said
-about it.
-
-### the runner
-
-**One entrypoint, and the gates are the point.** `npm run pipeline` calls the
-nine stages in order and evaluates a gate between each pair. Writes
-`pipeline_runs` / `pipeline_stage_runs` (migration 042); read them back with
-`inspect pipeline`.
-
-**Ordering is the cheap part.** A shell chain would order the stages correctly
-and would even thread most of the ids, since the middle five default to their
-latest completed upstream run. What it cannot do is notice a stage that failed
-while exiting 0, and that is every expensive failure this pipeline has had:
-`runWriters` returns a normal summary after its breaker trips, so
-`write && publish` freezes an edition of holes; a failed attach call returns an
-empty set, indistinguishable from the model declining every candidate; the
-editor's tie-break catch returns an empty rank map, which is what a tie group
-the model declined to order returns. Every counter that separates those cases
-was already persisted — migrations 030, 037, 038, 039, 040 exist for exactly
-that — and nothing read one back. `runner/gates.ts` is what reads them back, and
-it is pure, so the policy is testable without a database or a provider.
-
-**Three verdicts, and warn is the common case.** `ok`, `warn` (the run continues
-and is recorded `degraded`), `abort` (the next stage does not start). The paper
-has a deadline, so only two things abort: there is nothing for the next stage to
-work on, or the writers came back below `writers.min_written_fraction` after the
-automatic repair pass. Thresholds are `pipeline.gates.*` in `models.yaml`,
-because what counts as too holed to publish is the reader's policy, not a
-stage's.
-
-**The writers' repair is automatic.** `--repair` exists for the breaker's exact
-failure mode — run #35 lost 32 pieces to five budget-exhaustion calls and one
-pass recovered all 32 — and an unattended run has nobody to type it. It waits
-`repair_delay_ms` first, because the breaker trips on an outage and re-asking
-immediately asks the same dead provider.
-
-**Any hole warns; only the floor decides whether to publish.** The first draft
-had a second threshold that made 147 of 150 written silent. There is no fraction
-below which a missing piece stops being worth naming.
-
-**A warn must be an event, not a standing condition — the opposite rule, and
-the one that only a real run could teach.** Run #1 published a flawless paper
-(150 of 150 written, 0 failed, 0 unsourced, 267 source links) and was recorded
-`degraded`, on two warnings that would have fired every night forever: 2 of 111
-feeds failed, and five hosts were in cooldown. Both were true and neither was
-news — the collector is *built* to skip a dead feed, and `nytimes.com` and
-`oregonlive.com` have served a DataDome check for months (open item 2). A status
-that is always on is not a status, and the reader would have learned within a
-week to ignore the word. So the collector warns only above
-`warn_failed_sources_fraction` of its sources, and the fetch warns only on a host
-not seen in cooldown by **any run inside the cooldown window** — an outlet we
-were reading last week and are not today. The full cooldown list stays on the
-metrics either way.
-
-**The fetch baseline is a window rather than yesterday, because a blocked host
-oscillates.** A host in cooldown is skipped, so it writes no attempt rows; after
-`writers.fetch.cooldown.window_days` its failures age out of
-`hostsInCooldown`'s lookback and it leaves the set; the next story from it
-retries it, it fails, and it is back. Run #3 showed the first half —
-`thediplomat.com` and `insideclimatenews.org` left the set between 2026-08-31
-and 2026-09-02 with no code change and no recovery — and diffing against
-yesterday alone would have announced the return as news once a week forever,
-which is the standing condition arriving as a periodic event. Matching the
-baseline to the window that causes the cycle suppresses all of it and still
-names a host that genuinely stopped answering. `newlyCooled` is pure and
-tested. Note this does not contradict the writers' rule above: a missing piece is
-rare and the reader sees the hole, where a dead feed among 111 is the steady
-state. `tests/pipeline-gates.test.ts` replays run #1's metrics through every
-gate and asserts none of them speak.
-
-**The deadline only refuses to start stages, and says so.** An in-flight LLM
-call cannot be cancelled from the runner, so `max_duration_minutes` is checked
-between stages only — what it honestly buys is not starting the 150-call writers
-stage on a run that has already blown its budget. The kill that can kill is
-systemd's `TimeoutStartSec`, generated an hour past it because a stage starting
-one minute before the deadline still runs to completion.
-
-**A full run is fifteen to eighteen minutes, not about an hour.** Runs #1-#3:
-14m 44s, 16m 43s, 17m 57s wall clock, of which 1m 15s-1m 17s is between stages
-rather than inside them. Duration tracks the size of the day — 325, 398 then 486
-rows out of grouping — and the stages that move with it are grouping-pass-1 and
-the writers. The project's standing figure of "about an hour" was the deploy and
-the audit around the pipeline, not the pipeline, which is what `inspect timing`
-was built to settle and now has. The project's
-standing figure of "about an hour" was the deploy and the audit around the
-pipeline, not the pipeline — which is what `inspect timing` was built to settle
-and now has. `max_duration_minutes` is 90 on the strength of it: six times the
-observed run, loose enough for a bad provider day (run #4's outage cost 31
-minutes in the writers alone) and tight enough that reaching it means something
-is wrong, which 240 was not.
-
-**`--from <stage>` is the recovery path, and re-running is not.** Retry
-semantics differ by end of the pipeline. The tail is safely re-runnable —
-`papers.published_on` is unique and the publisher deletes-then-inserts — but
-re-running from `collect` is not: cross-run dedup suppresses everything recent
-runs already processed, so a same-day full re-run comes back near-empty **by
-design** and would replace a good paper with an empty one. This is why the
-generated unit has no `Restart=on-failure`. A resume inherits the recorded
-lineage rather than re-deriving it, which is the second reason migration 042
-exists: `inspect timing` infers a lineage with a six-hour heuristic precisely
-because the real answer was never written down, and that inference was wrong for
-run #45.
-
-**A stage row is written when the stage starts.** The writers' lesson applied to
-the runner itself — run #29 persisted zero rows because it held everything until
-the end and was killed before it got there. A run killed by the systemd timeout
-leaves a `status='running'` row with no `completed_at`, which is the only thing
-that says which stage it died in.
-
-**Grouping will not start without a prefilter run for its preprocessor run.**
-`getClusteringItems` tolerates a missing one — "a null run means nothing is
-excluded on its account" — which is right for an experiment run by hand and
-silent under automation: grouping would cluster the unfiltered set and report
-success. Only a resume can reach that order, and this is where it is caught.
-
-**The schedule is configuration.** `pipeline.schedule` in `models.yaml`;
-`npm run pipeline -- --print-timer` generates the systemd unit and timer from
-it. A timer cannot read YAML, so without generation the hour would exist in two
-places and drift — with the failure mode being a reader who changes the config,
-sees nothing happen, and has no reason to suspect the unit file. The
-timezone-qualified `OnCalendar` needs systemd 252 or newer; the generated timer
-says so and says what to do instead.
-
-### the reading view
-
-`src/app/` — the index at `/`, one page per piece at `/story/<ref>`, and the
-same page at its permanent address `/article/<id>`. Server components reading
-only the `paper_*` tables: a published paper is self-contained, so rendering
-never touches the pipeline's working tables.
-
-**A piece has two addresses, and only one is permanent.** `/story/<ref>`
-resolves against the latest paper, because refs are run-local — C27 today is
-not C27 tomorrow. `/article/<id>` resolves any published piece by its **article
-id, which is `writer_pieces.id`**, not `paper_pieces.id`: a re-publish deletes
-and re-inserts the date's paper, so every `paper_pieces` id changes whenever a
-morning is corrected, while `--repair` rewrites writer pieces in place and keeps
-theirs. A paper replaced from a *different* writer run takes its old ids with
-it, so a stale id goes missing and never points at a different story. An
-earlier edition's page says which paper it is from and sends "back" to today's.
-
-**"Discuss on the board" is a link and nothing more** (live since 2026-09-26,
-`BOARD_URL=https://board.fritter.lol`). Every piece page links to
-Fritter Board's entry point for that article (`BOARD_URL` + `/article/<id>`),
-which opens the article's thread or offers to start one. The paper never reads
-the board's tables to learn whether a thread exists, so it shows no reply counts
-— that would be an engagement metric on a newspaper. Unset `BOARD_URL` and the
-link is not drawn. It is uncoloured: the board is the paper's neighbour, not
-someone else's reporting.
-
-**The board reads the paper through the `published` schema, and nothing else**
-(migration 046). Two views — `published.articles` and
-`published.article_sources` — are the whole contract; the board's role gets
-`USAGE` on that schema and `SELECT` on those views and no grant in `public`, so
-it can never see `article_texts` (third-party full text, never to be published,
-and which the board's bots would send to a model provider). Views run with
-their owner's privileges, so no underlying-table grant is needed. **Add columns
-to the views freely; never rename or drop one without changing the board in the
-same breath.**
-
-**Containers expand, pieces open.** A thread is the only container, so it is the
-only thing that expands in place; every piece — brief included — has a page.
-That rule replaced an earlier design where briefs linked straight out to their
-source, which read consistently but meant the 30-word brief bodies were written
-and never displayed, and left the 7 briefs a day with more than one source with
-no defensible destination.
-
-**The index is the paper.** 120-odd headline rows in rank order, because run
-#47's 150 pieces are 21,857 words — about 90 minutes — and a continuous scroll
-of all of it is a reading surface, not a newspaper. Tier is carried by type
-scale alone, no badges.
-
-**Colour means exactly one thing: a link that leaves for someone else's
-reporting.** So the index has no accent in it at all, and blue appears only on
-an article's source list. It is "curate, don't reproduce" made visible.
-
-**A section line has no headline**, so its row and its page lead on its
-sentence, set as prose rather than as a headline it does not have.
-`displayHeadline` deliberately does **not** trim that to a first sentence: every
-cheap way to find one is wrong on news prose, because a period-plus-space ends
-"U.S." and "Adm." as readily as a clause, and `U.S. and NATO officials told AP…`
-becomes the headline `U.S.`. A tall row is a blemish; a headline reading "U.S."
-is a defect. The real fix is upstream — a line should carry its own headline.
-
-**`next.config.ts` aliases `.js` → `.ts` for webpack.** The pipeline is written
-for tsx and node's ESM resolver, so every internal import carries a `.js`
-specifier pointing at a `.ts` file. Webpack does not do that rewrite, and the
-reading view imports publisher modules. The alias keeps one import convention
-across the repo instead of making `src/app` an exception.
-
----
-
-## Conventions
+These are invariants. Each one was learned from a run that broke, and the dated
+entry in `decisions.md` says which.
 
 ### LLM calls
 
-- **Every LLM call is logged.** A `generation_logs` table records model,
-  full prompts, full output, token counts, cost estimate, stage, run id.
-  This is non-negotiable — it's the feedback loop.
-- **Per-stage configuration** lives in `config/models.yaml`. Model, token
-  budgets, step limits, temperature, provider, stream, timeout_ms.
-  Hardcoding any of these in stage code is a bug. For Ollama Cloud, use
-  canonical model IDs from `/v1/models` such as `deepseek-v4-pro` or
-  `deepseek-v4-flash`, not display names or guessed suffixes.
-- **Streaming for long reasoning calls.** Any stage running a thinking model
-  must set `stream: true` in `models.yaml`. Non-streaming calls don't receive
-  HTTP response headers until the model finishes generating — undici's default
-  ~300s `headersTimeout` kills them before the model is done. The streaming
-  path receives headers within seconds of the request, keeping the connection
-  alive. See `docs/decisions.md` "Editor LLM call switched to streaming."
-- **provider selects credentials.** Three providers, set per-stage in
-  `models.yaml`. `provider: ollama-cloud` (default) uses `LLM_BASE_URL` /
-  `LLM_API_KEY`. `provider: nanogpt` uses `NANOGPT_BASE_URL` /
-  `NANOGPT_API_KEY`. `provider: openrouter` uses `OPENROUTER_BASE_URL` /
-  `OPENROUTER_API_KEY` (currently used for embeddings only). After changing
-  any of these env vars, recreate the app container before running via
-  `docker compose exec`.
-- **Judgment stages read English; text caps are config.** Every stage that asks
-  an LLM to judge an item — prefilter, grouping-pass-1, thread, the editor
-  tie-break — selects text through `src/lib/text.ts` (`englishTitle`,
-  `englishBodyExcerpt`), which prefers the preprocessor's `english_*`
-  translation and falls back to the original. Grouping already did this for
-  embeddings; the other four did not, so run #47 scored 33+ non-Latin-script
-  rows in their original scripts. Never `slice()` a body inline: the cap is a
-  named field in `models.yaml` (`body_cap` / `summary_cap`), because it is the
-  single biggest lever on what a judgment stage actually knows. A `body_cap`
-  above 2000 is meaningless for non-English items — see the ceiling note in
-  `src/lib/text.ts`.
-- **Pass the whole stage config to `callLLM`.** `provider`, `timeout_ms`, and
-  `stream` are easy to leave off, and the call still works — on the default
-  provider and the default 360s timeout, silently disagreeing with
-  `models.yaml`. Prefilter did exactly that until 2026-08-11.
-- **Structured outputs preferred** over freeform parsing wherever the schema
-  is knowable. Use JSON mode or tool-call shapes when the consumer is
-  software; freeform text only when the consumer is the reader.
-- **Agentic loops have budgets.** Step limit and token limit, both enforced.
-  An unbounded agentic loop is how you discover a $40 bug.
-- **No SDK-level retries.** `callLLM` sets `maxRetries: 0` on the OpenAI
-  client. The SDK's default silent retries masked a 903s hang on one run.
-  Retry logic lives in application code, not in the HTTP layer.
-- **Retry backoff is `src/llm/backoff.ts`.** `callWithBackoff` wraps a
-  `callLLM` thunk with exponential backoff and jitter, honoring a
-  `Retry-After` hint when the provider sends one. It retries three classes —
-  rate limits (429/503), transport failures where the connection died
-  mid-flight (`Stream broke`, `ECONNRESET`, `socket hang up`, …), and a call
-  that spent its entire output budget on reasoning and emitted no content. It
-  deliberately does **not** retry timeouts: a call that ran to its configured
-  ceiling will likely do it again, and the run #40 lesson was to bound those.
-  **Budget exhaustion looks like a timeout and behaves like a spiral**, which is
-  why it is on the other side of that line: run #35 had five calls land on
-  exactly 8,001 output tokens with an empty body, 32 pieces failed with them, and
-  one repair pass re-asked the same prompts and recovered all 32. Two of the five
-  were on the individual writer path, whose prompt had not changed — 500,932
-  input tokens against 500,934, the same 91 calls — while its output went 52,819
-  to 122,316. Identical input, 2.3× the output: the provider, not the prompt.
-- **An empty response is a failed call and the log says so.** `callLLM` sets
-  `generation_logs.error` before writing the row, not after. It used to throw
-  afterwards, so a run that lost 32 pieces still reported "91 attempts, 0
-  errors" and the regression was invisible in telemetry — only the piece counts
-  showed it.
-  Run #50's thread pass lost its single call to a broken stream and produced
-  zero threads, which put three separate wildfire rows in the top ten. Configured per-stage via
-  optional `retry_max_attempts` / `retry_base_ms`. Used by preprocessor
-  translation, prefilter, and grouping (attach + describe).
-  **Any new batched, concurrent stage needs it.** The failure mode is
-  quiet: a rate-limited call that returns a degraded-but-valid-looking
-  result (an empty attach set, a fallback label) is indistinguishable from
-  a real model verdict, so the run reports success while losing work. See
-  `docs/decisions.md`, 2026-07-25.
-- **No top-level await in scripts.** tsx runs scripts under the CJS output
-  format, which rejects top-level `await`. Wrap all async entry-point logic
-  in `async function main()` and call it as `main().catch(err => { ... })`.
-  All existing scripts in `scripts/` follow this pattern.
+- **Every LLM call is logged** to `generation_logs` with model, full prompts,
+  output, tokens, cost, stage and run id. This is non-negotiable; it is the
+  feedback loop. An empty response is recorded as an error *before* the row is
+  written.
+- **Config, not code.** Model, provider, budgets, temperature, stream,
+  timeout_ms, caps and thresholds all live in `config/models.yaml`. A hardcoded
+  one is a bug. For Ollama Cloud, use canonical IDs from `/v1/models`.
+- **Pass the whole stage config to `callLLM`.** Leaving off `provider`,
+  `timeout_ms` or `stream` still works, on silently wrong defaults.
+- **Stream reasoning models** (`stream: true`). Non-streamed calls get no
+  headers until done, and undici's ~300s headers timeout kills them.
+- **No SDK retries** (`maxRetries: 0`). Retries live in `callWithBackoff`
+  (`src/llm/backoff.ts`): 429/503, broken streams, and budget-exhausted empty
+  responses. **It never retries timeouts.**
+- **Any batched, concurrent stage uses `callWithBackoff`.** A lost call that
+  returns an empty-but-valid answer is indistinguishable from a real verdict, so
+  the run reports success while losing work. Persist a counter that tells the
+  two apart, and add a straggler re-ask where the unit can be lost silently.
+- **Judgment stages read English** through `src/lib/text.ts`
+  (`englishTitle`, `englishBodyExcerpt`). Never `slice()` a body inline. The cap
+  is a named config field, and it is the biggest lever on what a stage knows.
+- **Agentic loops have budgets**: a step limit and a token limit, both enforced.
+- **Prefer structured output** when the consumer is software.
+
+### Prompts
+
+- **A model relays what the prompt says about itself.** Never describe the
+  packet's plumbing to a writer: no source counts, no "feed summary only", no
+  "truncated", no "N sources omitted". This has been learned five times. A note
+  says what to *do* about a gap, never what the gap is.
+- **The cluster label is not evidence.** It was generated from articles the
+  packet may not include.
+- **A number beats an instruction.** Thin material gets a word *ceiling* with no
+  floor.
+- **Don't change prompt text as a side effect.** A prompt edit is an LLM-judgment
+  change and needs a noise-controlled measurement (§Gizmo).
+
+### Stage-specific rules that bite
+
+- **collect**: Decode charsets ourselves (`collect/charset.ts`); never hand
+  rss-parser a URL. Retry once with a browser UA on a 403 only. `max_age_hours`
+  stays opt-in for RSS. An undated item is kept.
+- **preprocess**: The junk filter is the only hard gate (`getClusteringItems` is
+  the sole path into cluster and score). Rules are extended **from audit
+  evidence only**, each with a `tests/junk-filter.test.ts` case for the cut
+  *and* the near-miss. Unwrap redirectors by path, never by query string. Strip
+  a bare domain from titles, never an outlet name. Translation trips its breaker
+  on auth errors.
+- **cluster**: Never embed an empty string. `attach_unrecovered > 0` means the
+  run must not be used to judge cluster quality or tune `similarity_threshold`.
+  NULL counters mean "didn't run", not zero.
+- **score**: The item is the unit, not the call. Every unscored item is
+  re-asked. `FAIL_SAFE_SCORE` is 0, never mid-range. The scorer never sees
+  source counts.
+- **novelty**: It fails **open**; only a stated `RERUN` withholds. Extend
+  `newsForWriter`'s cleanup from audit evidence, with tests. Every graded row is
+  persisted.
+- **thread**: One call over the whole candidate set. The anchor is stated by the
+  model and deliberately not validated in software. Thread numbers are derived
+  in software, never asked for.
+- **rank**: Sources means distinct **parent outlets**, minimum 1 (`ln(0)` sorts
+  silently to the bottom). Don't put an LLM ranker back.
+- **fetch**: No whole-document fallback; a non-HTML response is not read. Strip
+  NULs; a refused row costs one article. `article_texts` is the only table with
+  third-party full text, and it is **never published**. Furniture rules in
+  `write/boilerplate.ts` follow the junk filter's evidence-and-test rule.
+- **write**: Source material is not rationed (`max_articles` / `total_chars`
+  are null); when a piece runs long, fix the guidance, not the input.
+  `endsMidSentence` and `isHeadlineEcho` are judged on the *stripped* body.
+  Sidebars are never batched. Every repaired piece is an individual call.
+  Parsing is forgiving and production is not retried: a missing headline costs
+  the headline, and the last labelled draft wins. Pieces are persisted as each
+  call returns; a failed call is a `failed` row, not an exception.
+- **publish**: It refuses to replace a paper with a much smaller one
+  (`--force` is deliberate). Source rows carry copies, not just FKs. No
+  third-party text.
+- **continuity**: It fails **closed**. A YES names something both texts say.
+  Lookback is in editions. The marker is text, never a link. It never fails a
+  paper.
+- **runner**: A warning must be an event, not a standing condition. Gates
+  (`runner/gates.ts`) stay pure and tested. The deadline is checked only
+  between stages. Recovery is `--from`, never a same-day full re-run. A stage
+  row is written when the stage starts.
+- **reading view**: Colour means a link out to someone else's reporting, and
+  nothing else. `/article/<id>` is `writer_pieces.id`. `displayHeadline` never
+  trims a line to a "first sentence" ("U.S." would become the headline). No
+  counts or engagement metrics.
+- **published schema**: Fritter Board reads only `published.articles` and
+  `published.article_sources` (migration 046). Add columns freely; **never
+  rename or drop one** without changing the board in the same breath.
 
 ### Pipeline runs
 
-- **Graceful degradation.** A single failed feed, cluster, article, or
-  writer call should never crash the whole paper. Log it, render what
-  works, move on. The publisher in particular is designed to be tolerant.
-- **Full lineage.** Every published story can be traced back through
-  writing package → article idea → cluster → raw item(s). The schema
-  preserves these foreign keys.
-- **Idempotent where possible.** Re-running a pipeline stage with the
-  same inputs should produce a comparable output, not duplicate rows.
-
-### Postgres quirks
-
-Two operational quirks discovered during initial development — record them
-here so future agents don't rediscover them the hard way:
-
-- **Arrays and JSONB.** The `pg` library treats top-level JavaScript arrays
-  as PostgreSQL arrays, not JSON. For JSONB columns that hold an array at
-  the top level, use `JSON.stringify(value)` and an explicit `::jsonb` cast
-  in the query: `... = $1::jsonb`. Plain objects are fine — `pg` calls
-  `JSON.stringify` on them automatically.
-
-- **npm strips quotes from script args.** When calling CLI scripts via
-  `npm run`, quoted arguments with spaces (e.g., source names) can be
-  mangled by npm's argument passing. Prefer running tsx directly for
-  anything with quoted arguments:
-  `./node_modules/.bin/tsx scripts/collect.ts --source "AP Top News"`
+- **Graceful degradation.** A failed feed, cluster, article or writer call
+  must never cost the edition. Log it, count it, render what works.
+- **Full lineage.** Every published piece traces back to raw items; keep the
+  foreign keys.
+- **Idempotent where possible.** Re-running a stage on the same input gives a
+  comparable output, not duplicate rows.
 
 ### Code
 
-- **TypeScript strict mode.** No `any` without comment justifying it.
-- **No magic numbers.** Configuration goes in config files, not source.
-- **Small, focused modules.** A stage submodule that grows past a few
-  hundred lines probably wants to be split.
-- **Tests where they earn their keep.** Deterministic code with clear
-  inputs and outputs needs tests: URL canonicalization, dedup, flat-line
-  parsers (cluster digest, prefilter, grouping-pass-1). LLM stages don't get
-  conventional unit tests; their feedback loop is the inspection CLI.
+- **TypeScript strict.** No `any` without a comment justifying it.
+- **No magic numbers.** Configuration goes in config files.
+- **Small, focused modules.**
+- **Tests where they earn their keep**: deterministic code, especially the
+  flat-line parsers, the gates, the formulas and the filters. LLM stages are
+  checked through the inspect CLI and measured runs.
+- **No top-level await in scripts.** tsx runs them as CJS. Use
+  `async function main()` and `main().catch(...)`.
+- **Internal imports use `.js` specifiers** pointing at `.ts` files;
+  `next.config.ts` aliases them for webpack.
+
+### Postgres quirks
+
+- **Top-level JS arrays become Postgres arrays**, not JSON. For a JSONB column
+  holding an array, pass `JSON.stringify(value)` with an explicit `$1::jsonb`.
+- **npm strips quotes from script args.** For arguments with spaces, run tsx
+  directly: `./node_modules/.bin/tsx scripts/collect.ts --source "AP Top News"`.
+
+### Docs
+
+- `decisions.md` is append-only and newest first. Add an entry (and an index
+  line) for any decision worth recording; supersede old entries, never edit them.
+- `open-items.md` is a to-do list with evidence. Remove an item when it is fixed.
+- When you change how a stage works, update its section in `docs/design.md`.
 
 ---
 
 ## Commands
 
-All scripts are run with `npm run <script>` or invoked directly with
-`tsx scripts/<script>.ts` (see the npm-strips-quotes quirk above for
-anything with quoted arguments).
+Run with `npm run <script>`. In production, prefix with
+`docker compose exec -T app`.
 
-**Infrastructure**
-- `npm run dev` — Next.js dev server
-- `npm run build` — production build
-- `npm run typecheck` — TypeScript check
-- `npm test` — run every `tests/*.test.ts` file (each in its own tsx process)
-- `npm run migrate` — apply numbered SQL migrations
-
-Migration numbering note: `025` was used twice (`025_drop_pile_merge.sql` and
-`025_preprocessor_cross_run_dedup.sql`). The runner discovers, sorts, and
-tracks by *filename*, so both apply correctly and in a stable order — but the
-number is ambiguous. The next migration is **048**.
-
-**Pipeline stages**
-- `npm run collect` — collect raw source items
-- `npm run preprocess` — deduplicate/canonicalize collected items
-- `npm run prefilter` — bio-aware relevance floor + junk removal + news/opinion routing
-- `npm run grouping [-- --preprocessor-run-id <n>] [-- --model <id>]` —
-  embed items, build candidate groups, run attach + describe passes, write digest
-- `npm run grouping-pass1 [-- --grouping-run-id <n>] [-- --model <id>]` —
-  score all clusters + singletons on 0–100 bio-relevance scale, run the thread
-  pass (`thread.enabled`), assemble pile
-- `npm run editor [-- --pile-id <n>] [-- --model <id>]` — whole-pile ranking
-- `npm run fetch-text -- --editor-run <n> [--dry-run] [--limit <n>]` — fetch
-  publisher article text for the stories of an editor run
-- `npm run write -- --editor-run <n> [--tier <tier>] [--limit <n>] [--ranks 1-6,20]`
-  — write the paper's pieces; `--ranks` limits a run to those editor ranks
-- `npm run write -- --repair <writer-run-id>` — re-write only that run's failed
-  pieces, in place
-- `npm run publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]` — freeze a
-  writer run into the day's paper with resolved source links. Re-publishing a
-  date replaces that paper, so this is safe to re-run; `--force` is needed to
-  replace one with a substantially smaller paper
+**Infrastructure**: `dev`, `build`, `typecheck`, `test` (every
+`tests/*.test.ts`, each in its own process), `migrate`.
 
 **The daily run**
-- `npm run pipeline` — every stage in order, with a gate between each pair.
-  This is what the systemd timer invokes
-- `npm run pipeline -- --from <stage> [--to <stage>]` — resume from a stage,
-  inheriting the last run's recorded lineage. The recovery path: re-running from
-  `collect` is not a retry, because cross-run dedup makes a same-day full re-run
-  come back near-empty by design
-- `npm run pipeline -- --dry-run` — print the plan and the lineage it would
-  inherit, run nothing. Needs no database when starting from `collect`
-- `npm run pipeline -- --skip-cross-run-dedup` — **testing only.** A full run on
-  a day the pipeline has already run comes back near-empty by design; this makes
-  the preprocessor re-admit what earlier runs took, so the whole pipeline can be
-  exercised end to end. The paper it makes re-uses published items and is a test
-  artifact, which the `pipeline_runs` note records
-- `npm run pipeline -- --print-timer [--working-dir <path>]` — generate the
-  systemd unit and timer from `pipeline.schedule`
+- `pipeline`: every stage with a gate between each pair. This is what the timer
+  runs.
+- `pipeline -- --from <stage> [--to <stage>]`: resume from a stage, inheriting
+  the last run's recorded ids. This is the recovery path.
+- `pipeline -- --dry-run`: print the plan and inherited ids; run nothing.
+- `pipeline -- --skip-cross-run-dedup`: **testing only.** It makes a full run
+  possible on a day that has already run. The paper reuses published items.
+- `pipeline -- --print-timer [--working-dir <path>]`: generate the systemd
+  unit and timer.
 
-**Inspection**
-- `npm run inspect -- count [--source <name>]`
-- `npm run inspect -- list [--source <name>] [--limit <n>]`
-- `npm run inspect -- collector [--id <n>]`
-- `npm run inspect -- preprocessor [--id <n>]`
-- `npm run inspect -- prefilter [--id <n>]` — shows cut/news/opinion breakdown
-- `npm run inspect -- editor [--id <n>]` — ranked/tiered list with resolved titles
-- `npm run inspect -- timing` — per-stage durations for the latest run of each
-  stage, the sum, the wall clock across the lineage, and how much of that was
-  spent **between** stages rather than inside them. Stages whose run predates the
-  newest by more than six hours are marked `[earlier lineage]` and excluded from
-  the sum and the wall clock: a replay from an existing preprocessor run reuses
-  its upstream stages, and counting their age as a gap made run #45's report
-  discard the output entirely. Every run table has written
-  `started_at` and `completed_at` since migration 002 and nothing read them back,
-  so "how long does the paper take" had no answer but whoever ran it saying
-  "about an hour" — which conflates the pipeline with the deploy, the audit and
-  the report around it. A stage that doubled in cost would be invisible until
-  someone noticed the wait
-- `npm run inspect -- materials --editor-run <n>` — writer materials audit: how
-  much body text each story's underlying articles carry, per tier, per source and
-  per host, plus the fetch scope. Reports **feed body and after-fetch side by
-  side** — run #113's audit said the median article carried 560 characters while
-  the same run's fetch had taken body text from 33,903 to 405,351, and reading
-  the feed column alone says the features were written from teasers
-- `npm run inspect -- packet --editor-run <n> [--rank <n>]` — assembled writer
-  packets: sizes for every story, or the full prompt for one. Prints
-  **headline-only counts per tier**, any tier swaps `resolveTiersByMaterial`
-  made, and **why sources were left out of packets**, grouped by reason — the
-  per-story `omit` count has always been there and the reasons only ever printed
-  under `--rank`, so run #46's audit could not say whether AP's live page left
-  the packet because the live-blog rule fired or because its cache was empty. Run #42's audit could not state that 37 of its 150 pieces were
-  headline-only because the materials audit counts thin *articles*, which is a
-  different quantity from a thin *piece*; a non-zero count in a prominent tier
-  now means the day ran out of material to trade with, not a mis-assigned slot
-- `npm run inspect -- fetch [--days <n>]` — per-source article fetch outcomes
-  from `article_texts` (default 14 days): what a writer ends up with per outlet,
-  why we did not ask, and which hosts are in cooldown. This is where a host's
-  actual history is, as against the cooldown list a single run happened to see
-- `npm run inspect -- publisher [--id <n>]` — published papers; `--id` lists every
-  piece with `resolved/ranked` source counts, so a paper the reader cannot follow
-  anywhere is visible without opening it, plus each piece's `previously` link and
-  the similarity that produced it. That similarity is the retrieval score, not
-  the decision — the judge's verdicts are in `generation_logs` under
-  `stage='lineage'`, and tuning `publisher.lineage.candidate_floor` means
-  reading both
-- `npm run inspect -- writers [--id <n>] [--full]` — writer runs, then every
-  written piece; `--full` prints the bodies
-- `npm run inspect -- reruns [--id <n>] [--all]` — rerun checks; `--id` lists the
-  rows withheld or reduced, with the printed piece, the judge's statement of
-  today's news and the score change; `--all` every graded row. A withheld story
-  never reaches the paper, so this is the only place a wrong drop shows
-- `npm run inspect -- pipeline [--id <n>]` — daily runs and how each ended;
-  `--id` shows one run's lineage, per-stage gate verdicts with their reasons,
-  and the metrics each gate read. This is where "why is the paper short" is
-  answered after the console log is gone
+**Stages by hand.** Each one defaults to its latest completed upstream run.
+Hand runs skip the gates.
+- `collect [-- --source <name>]`, `preprocess`, `screen`
+- `cluster [-- --preprocessor-run-id <n>]`
+- `score [-- --grouping-run-id <n>]`: also runs novelty and thread, and
+  assembles the pile
+- `rank [-- --pile-id <n>]`
+- `fetch -- --editor-run <n> [--dry-run] [--limit <n>]`
+- `write -- --editor-run <n> [--tier <t>] [--limit <n>] [--ranks 1-6,20]`
+- `write -- --repair <writer-run-id>`: re-write only the failed pieces, in place
+- `publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]`
 
-**Experiments**
-- `npm run probe-source -- --robots <host>` — fetch a publisher's robots.txt and
-  probe every `Sitemap:` it declares, reporting which are **news sitemaps**
-  (they carry titles and publication dates, which is a feed in all but name).
-  **Start here rather than guessing paths**: robots.txt names the feeds. This is
-  the discovery mechanism for a source's endpoints, the same way `--probe` is for
-  embedding models, and for the same reason — `sources.yaml` records AP as having
-  no working feed on the strength of five URLs tried once, and that note is now
-  load-bearing for the paper's single largest contributor of material.
-- `npm run probe-source -- --feeds <host>` — battery of candidate feed and
-  sitemap paths, one at a time, honest UA first.
-- `npm run probe-source -- --sitemap <url> [--limit <n>]` — parse a news
-  sitemap, report its URL-shape mix, then run a sample through the **real
-  extractor** (`extractArticle` + `stripBoilerplate`) and report the characters a
-  writer packet would carry. A sitemap answers only half the question: it hands
-  over URLs and titles, and the text still has to come out of the page. Anything
-  that measures less than the real path measures a different pipeline than the
-  one that writes the paper.
-- `npm run probe-source -- --resolve <url>` /
-  `--resolve-source <name> [--limit <n>]` — resolve aggregator interstitials to
-  the publisher's article, reporting which strategy worked. Verifies by fetching
-  the destination and matching its title against the feed item's, and reports
-  "resolved but wrong" separately: the first version of this reported 52 of 52
-  AP links resolved when the true answer was zero, because every interstitial
-  embeds the publisher's logo on `googleusercontent.com` and the exclusion list
-  did not cover it. A probe that launders a guess into a finding is worse than no
-  probe. `--resolve-source`
-  pulls real links for a configured source out of `preprocessed_items`, so the
-  answer is a success rate over live data rather than one example. Strategies run
-  cheapest first: `decodeGoogleNewsToken` is offline and free, and if the feeds
-  still serve the older encoding then nothing else is needed and the resolution
-  belongs in the preprocessor beside the other redirector unwrapping.
-- `npm run embedding-experiment -- --probe <provider> [--candidate <id>]` —
-  determine which embedding models a provider actually serves, by making a
-  one-text embedding call per candidate and reporting the returned dimension.
-  **This is the discovery mechanism for embedding models, not `--list`.** On both
-  nanogpt and openrouter, `/v1/models` enumerates chat models only: it returned
-  295 and 367 entries respectively with zero embedding models, omitting even
-  `qwen/qwen3-embedding-8b`, which production embeds through successfully. A
-  catalog absence therefore proves nothing.
-- `npm run embedding-experiment -- --list <provider>` — raw `/v1/models` dump.
-  Useful for chat models; see above for why it can't answer embedding
-  availability.
-- `npm run embedding-experiment -- --model <provider>:<id> [--model …]
-  [--body-cap <n>] [--grouping-run-id <n>] [--max-pairs <n>]` — measures whether
-  translation earns its keep. Uses existing clusters as ground truth: a cluster
-  with both English and non-English members is a validated same-event
-  cross-language pair. Embeds the **originals** with each candidate model and
-  reports same-event vs different-event cosine separation, against the
-  translated-text numbers production gets today. If a model's original-text
-  same-event p10 clears the threshold while its diff-event p90 stays below it,
-  the translation stage can be deleted rather than hardened. Repeating
-  `--body-cap` also measures truncation sensitivity. Read-only apart from the
-  `generation_logs` rows every LLM call writes.
+**Inspection** (`inspect -- <command>`; the old names still work)
+- `count`, `list [--source <name>] [--limit <n>]`
+- `collect`, `preprocess`, `screen`, `rank`, `write`, `publish` `[--id <n>]`: a
+  stage's runs, or one in detail. `write --id <n> --full` prints the bodies.
+  `publish --id` shows per-piece `resolved/ranked` sources and each
+  "previously" link.
+- `novelty [--id <n>] [--all]`: withheld and reduced rows, with the judge's
+  sentence. It is the only place a wrong drop shows.
+- `pipeline [--id <n>]`: how each daily run ended, with gate verdicts and
+  metrics. Start here when you need to know why the paper is short.
+- `timing`: per-stage durations and the time spent between stages.
+- `materials --editor-run <n>`: body text behind each story, feed vs fetched.
+- `packet --editor-run <n> [--rank <n>]`: packet sizes, headline-only counts,
+  tier swaps, why sources were left out; `--rank` prints the full prompt.
+- `fetch [--days <n>]`: per-outlet fetch outcomes and the hosts in cooldown.
+- There is no `inspect cluster` or `inspect score` yet. Query `grouping_runs`
+  and `grouping_pass1_results` by hand.
 
-**Model comparisons.** These exist so a model can be judged on the same input,
-with only the model changed. **Every one of them needs a noise control**: run the
-production model again beside the candidate, because a model differs from itself
-run to run. The difference that counts is candidate-vs-production beyond
-production-vs-production. The 2026-09-23 to 09-25 evaluation in
-`docs/decisions.md` is the worked example, and the lesson that cost a round is
-that **a reasoning model must be tested at more than one reasoning level**. Flash
-lost every judge stage at `none` and won the writers at `high`.
-- **Override flags.** `write`, `rerun-check`, `lineage-check`, `thread-check`,
-  `prefilter` and `grouping-pass1` take `--model`, `--provider`,
-  `--reasoning-effort <level|omit>`, `--max-tokens` and `--timeout-ms` for one
-  run (`src/config/overrides.ts`). In `grouping-pass1` they apply to the scoring
-  calls only. Raise `--max-tokens` with the reasoning level: reasoning spends
-  output tokens, and a call that spends them all returns nothing. `prefilter`
-  writes a run that grouping will read as *the* prefilter run for that
-  preprocessor run, so never test it on today's run.
-- `npm run writer-bakeoff-export -- --runs <a,b,…> --out <dir> [--blind]` — every
-  piece of several writer runs side by side with their packets. `--blind` labels
-  the runs by letter and writes `key.md` and `summary.md` separately. **Read
-  every piece against its packet before opening the key.**
-- `npm run rerun-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD` — the
-  rerun judge alone, against the papers that existed that day. The Sep 7–14
-  backtest (pass-1 runs 55–61, reference rerun runs 1–7) is the regression set.
-- `npm run novelty-preview -- --papers 43-52 --out <file.md> [--rerun-runs p:r,…]`
-  — grades each paper's candidates with the current rerun check as of its date,
-  then re-ranks the day from the stored pass-1 scores and threads with and
-  without the grades (`src/pipeline/rerun/preview.ts`: pile cut, editor formula,
-  tier caps — no tie-break, no material swap) and prints both front pages side by
-  side, plus every graded row and a `.tsv`. Writes only rerun audit rows and
-  `generation_logs`. This is how `rerun.grades` penalties are calibrated.
-- `npm run lineage-check -- (--last <n> | --papers <a,b,…>) --out <file.md>` —
-  replays the "previously" judge in dry-run mode and diffs against the printed
-  links. Writes a `.md` and a `.tsv`, and nothing but `generation_logs` rows.
-- `npm run thread-check -- --pass1-runs <a,b,…>` runs the thread pass alone
-  (thread tables only, no pile). `--export --out <file.md> [--blind]` writes
-  every thread run over those pass-1 runs with member titles.
-- `npm run translation-experiment -- --preprocessor-run-id <n> --limit <n>
-  --model <provider>:<id> [--model …] --out <file.md>` — re-translates a spread
-  sample of non-English items per model, side by side.
-
-There is **no** `inspect grouping` or `inspect grouping-pass1` subcommand yet.
-Those two stages currently have no inspection view, which is a gap: the
-project convention is that LLM stages' feedback loop is the inspection CLI,
-and `grouping.embedding.similarity_threshold` is the pipeline's primary tuning
-lever. Inspecting either stage means querying `grouping_runs` /
-`grouping_pass1_results` by hand.
-
-In production, run CLI stages inside the app container:
-
-```bash
-docker compose exec -T app npm run migrate
-docker compose exec -T app npm run grouping
-docker compose exec -T app npm run inspect -- editor
-```
-
-`docker-compose.yml` uses `env_file: .env` for the app service. After any
-env var or model config change, recreate/rebuild the app container before
-assuming `docker compose exec` sees the new values.
+**Experiments.** Override flags: `write`, `screen`, `score`, `novelty-check`,
+`continuity-check` and `thread-check` take `--model`, `--provider`,
+`--reasoning-effort <level|omit>`, `--max-tokens` and `--timeout-ms` for one run.
+**Always run production beside the candidate as a noise control**, and test a
+reasoning model at more than one level. Raise `--max-tokens` with the level.
+`screen` writes the run that cluster will read, so never test it on today's
+preprocessor run.
+- `probe-source -- --robots <host>`: start here. robots.txt names the feeds
+  and news sitemaps. Also `--feeds <host>`, `--sitemap <url>` (runs the real
+  extractor), and `--resolve <url>` / `--resolve-source <name>` (aggregator
+  links, verified against the title).
+- `embedding-experiment -- --probe <provider>`: which embedding models a
+  provider really serves (`/v1/models` lists chat models only).
+- `writer-bakeoff-export -- --runs <a,b> --out <dir> [--blind]`: read every
+  piece against its packet before opening the key.
+- `novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD`: the novelty
+  judge alone, as of a date.
+- `novelty-preview -- --papers 43-52 --out <file.md>`: the front pages with and
+  without the grades. This is how `novelty.grades` is calibrated.
+- `continuity-check -- (--last <n> | --papers <a,b>) --out <file.md>`: replay
+  the "previously" judge and diff it against the printed links.
+- `thread-check -- --pass1-runs <a,b> [--export --out <file.md> [--blind]]`
+- `translation-experiment -- --preprocessor-run-id <n> --limit <n> --model <p>:<id> --out <file.md>`
 
 ---
 
 ## Working with Gizmo (the production agent)
 
 **You do not have access to the production box.** post.fritter.lol, its compose
-stack and its database live on fritter.lol, and this session cannot reach them —
-the egress proxy blocks the host, and there is no DATABASE_URL here. Anything
+stack and its database live on fritter.lol, and this session can't reach them.
+The egress proxy blocks the host, and there's no DATABASE_URL here. Anything
 that has to touch production is done by **Gizmo**, the agent that runs there.
-
-The reader relays between us. So:
+The reader relays between you. `docs/operations.md` describes the box.
 
 - **Deliver every Gizmo task as a file**, via SendUserFile, not as a code block
-  in chat. The reader asked for this explicitly on 2026-08-28: a prompt gets
-  copied into another agent, and picking it out of terminal scrollback is worse
-  than opening a file. Markdown is fine.
-- **Write it for an agent with no context.** Gizmo has not read this
-  conversation. State the branch and commit, what changed, what you are trying
-  to learn, and what to report back.
-- **Give exact commands.** CLI runs inside the container as
-  `docker compose exec -T app npm run <script> -- <args>`.
-- **Tests are not in the production image.** The runner stage copies `src`,
-  `scripts`, `migrations`, `config` and `docs`, not `tests`, so
-  `docker compose exec -T app npm test` fails. Have Gizmo run `npm test` from
-  the source checkout on the host (it did for the 2026-09-26 deploy: 39 of 39).
-- **Fritter Board shares this database.** It lives in the `board` schema as
-  role `fritter_board`, runs as `fritter-board-app-1` from `/srv/fritter-board`,
-  and reads only the `published` views (migration 046). Dropping or renaming a
-  column there breaks the board. See the board repo's README.
-- **The postgres image is pinned by digest; upgrading it is a reindex.** A
-  C-library change under the database misorders text indexes, and this cluster
-  can't warn about it (`datcollversion` is NULL, from its musl start). June 11's
-  switch to the Debian image corrupted `raw_items`' unique index. A new image
-  means: pull, `REINDEX` every collation-dependent index, run `amcheck`. The
-  nightly backup also runs `amcheck` and fails the service on corruption
-  (`docs/decisions.md`, both 2026-09-27 entries).
-- **The database is backed up nightly** (10:30 UTC, clear of the pipeline).
-  It goes encrypted to John's Google Drive, keeping 7 daily, 4 weekly and 6
-  monthly copies. The script is in `docs/gizmo-backups-prompt.md`. A failed
-  `fritter-backup.service` means either the backup failed or an index is
-  corrupt, and the journal says which. A restore needs the rclone crypt
-  passphrases, which John keeps in his password manager.
-- **Always include the network reconnect.** The app service declares only
-  `internal`, and `seedbox_default` is attached by hand, so every
-  `docker compose up -d --build` drops Caddy's route and the site 502s until
-  `docker network connect seedbox_default fritter-post-app-1` runs. This is the
-  single most common way a deploy goes wrong.
-- **Say what must not happen.** Read-only investigations should say so: no
-  `collect`/`preprocess`/`write`/`publish`, no config edits. Findings come back
-  here and the repo change is made on the branch, so the repo and the box do not
-  drift.
-- **Ask for raw evidence and a workspace path.** Gizmo preserves command output
-  and checksums it; take the raw files over the summary when a number matters.
-  It will send individual files if asked.
+  in chat. Put it in `docs/gizmo/` as `gizmo-<topic>-prompt.md`.
+- **Write it for an agent with no context.** State the branch and commit, what
+  changed, what you're trying to learn, and what to report back.
+- **Give exact commands**: `docker compose exec -T app npm run <script> -- <args>`.
+- **Tests aren't in the production image.** Have Gizmo run `npm test` from the
+  source checkout on the host.
+- **Always include the network reconnect** after a rebuild:
+  `docker network connect seedbox_default fritter-post-app-1`. This is the most
+  common way a deploy goes wrong.
+- **Include `npm run migrate`** when the change carries a migration.
+- **Say what must not happen.** A read-only investigation says so: no
+  `collect` / `preprocess` / `write` / `publish`, and no config edits. Findings
+  come back here and the change is made on the branch, so the repo and the box
+  don't drift.
+- **Ask for raw evidence and a workspace path.** Gizmo keeps command output and
+  checksums it. When a number matters, take the raw files over the summary.
+- **Fritter Board shares the database** (`board` schema, role `fritter_board`,
+  `/srv/fritter-board`). It reads only the `published` views.
+- **The postgres image is pinned by digest; upgrading it means a reindex.** The
+  nightly backup runs `amcheck`. See `docs/operations.md`.
 
-**Verify its claims, and expect it to verify yours.** Gizmo has caught a real
-error here (a thread story carries `item_type='thread'`, which a fixture got
-wrong) and has also reported a query of ours as defective when it was correct —
-check before accepting either. Its aggregate statistics can be the wrong test
-for a targeted change: a mean over 469 rows cannot see an effect confined to the
-100 local ones, and reading that as "not proven" is a mistake this project has
-already made once.
+**Verify Gizmo's claims, and expect it to verify yours.** It has caught real
+errors here and has also reported correct queries as defective. Its aggregate
+statistics can be the wrong test for a targeted change: a mean over 469 rows
+can't see an effect confined to the 100 local ones.
 
-**Measuring a change on the box.** Two shapes, and they are not
-interchangeable:
-
-- An **LLM-judgment change** (a prompt, the bio) needs a noise control, because
-  the scorer at temperature 0.1 differs run to run. Score the same input three
-  times: the existing run, a re-run on the *old* code, and a run on the new one.
-  Noise is old-vs-old; signal is new-vs-old. Check the stored `system_prompt`
-  hash in `generation_logs` to prove the prompts actually differed — a stale
-  container otherwise produces a confident, meaningless result.
+**Measuring a change on the box.**
+- An **LLM-judgment change** (a prompt, the bio) needs a noise control. Score
+  the same input three times: the existing run, a re-run on the old code, and a
+  run on the new code. Check the `system_prompt` hash in `generation_logs` to
+  prove the prompts differed.
 - A **deterministic change** (a formula, a count) needs no control. Re-run the
-  one stage over the same input at both commits and diff. The editor tie-break
-  is the only LLM in that path, so some rank churn is still expected and is not
-  the change.
-
-**A fresh paper is:** `npm run pipeline`. It runs collect → preprocess →
-prefilter → grouping → grouping-pass1 (which runs the thread pass and assembles
-the pile) → editor → fetch-text → write → publish, threading each stage's run id
-into the next and stopping if a gate says to.
-
-Running the stages by hand is still supported and is what an investigation
-wants: every stage defaults to its latest completed upstream run, the tail three
-included, so the commands can be run bare and in order. What that loses is the
-gates — a hand-run `write` followed by a hand-run `publish` will publish an
-edition of holes without comment, which is the failure the runner exists to
-prevent.
+  one stage over the same input at both commits and diff.
 
 ---
 
 ## Out of scope for V1
 
-These are documented so they don't get built by accident:
+Documented so these don't get built by accident:
 
 - Interactive AI inside the paper (RAG modal, chat-with-this-article, etc.)
 - Search across the archive
 - Calendar/tag navigation of the archive
 - Read-later integration
 - Reaction buttons or any engagement metric
-- Public/multi-user support — this is for one reader
-- Independent reporting from primary sources (Federal Register, court
-  filings, city council agendas) — the paper is an aggregator/synthesizer
+- Public/multi-user support. This is for one reader.
+- Independent reporting from primary sources (Federal Register, court filings,
+  city council agendas). The paper is an aggregator and synthesizer.
 - Authentication beyond what's needed for the comment field
 
-If you find yourself reaching for any of these, stop and surface it for
+If you find yourself reaching for any of these, stop and raise it for
 discussion first.
-
----
-
-## Pointers
-
-- `docs/concept.md` — vision, principles, pipeline architecture
-- `docs/decisions.md` — why specific choices were made (append-only)
-- `docs/open-items.md` — known defects and deferred work, with the evidence
-- `docs/bio.md` — the reader; read by prefilter, grouping-pass-1, editor, writers
-- `docs/voice.md` — the standing memo; read verbatim into every writer prompt
-- `config/sources.yaml` — current feed list
-- `config/models.yaml` — per-stage model, provider, budget, stream config

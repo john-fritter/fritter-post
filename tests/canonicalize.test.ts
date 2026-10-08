@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { canonicalizeUrl, unwrapRedirect } from "../src/pipeline/preprocessor/canonicalize.js";
+import { canonicalizeUrl, unwrapRedirect } from "../src/pipeline/preprocess/canonicalize.js";
 
 // URL canonicalization is the preprocessor's dedup key and, through it, the URL
 // the fetcher goes to and the host the cooldown is learned against. A wrapper

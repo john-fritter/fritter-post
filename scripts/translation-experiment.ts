@@ -33,7 +33,7 @@ import {
   detectLanguageCode,
   isEnglish,
   type BatchLLMCallFn,
-} from "../src/pipeline/preprocessor/translation.js";
+} from "../src/pipeline/preprocess/translation.js";
 
 const DEFAULT_LIMIT = 40;
 const REPORT_BODY_CHARS = 400;
@@ -146,7 +146,7 @@ async function main() {
     process.exit(1);
   }
 
-  const prodConfig = loadModelConfig().preprocessor.translation;
+  const prodConfig = loadModelConfig().preprocess.translation;
   const sample = await loadSample(runId, limit);
   console.log(
     `[translation-experiment] preprocessor run #${sample.runId}: ${sample.eligible} non-English ` +

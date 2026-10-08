@@ -7,7 +7,7 @@
  * of the paper's date, so it judges against the editions that existed that
  * morning. That writes rerun_runs / rerun_assessments / generation_logs rows,
  * which nothing in production reads (the pile records the run it used). Then
- * src/pipeline/rerun/preview.ts re-ranks the day twice from the stored pass-1
+ * src/pipeline/novelty/preview.ts re-ranks the day twice from the stored pass-1
  * scores and threads:
  *
  *   before  the old check's withholds, no reductions -- the day as it ran,
@@ -27,16 +27,16 @@ import { writeFileSync } from "node:fs";
 import { getPool } from "../src/db/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { englishTitle } from "../src/lib/text.js";
-import { parseGroupingDigest } from "../src/pipeline/editor-pass-1/index.js";
-import { runRerunCheck } from "../src/pipeline/rerun/index.js";
-import type { NoveltyGrade } from "../src/pipeline/rerun/prompt.js";
-import { effectOf, type NoveltyEffect, type PieceTier } from "../src/pipeline/rerun/select.js";
+import { parseGroupingDigest } from "../src/pipeline/score/index.js";
+import { runNovelty } from "../src/pipeline/novelty/index.js";
+import type { NoveltyGrade } from "../src/pipeline/novelty/prompt.js";
+import { effectOf, type NoveltyEffect, type PieceTier } from "../src/pipeline/novelty/select.js";
 import {
   previewRanking,
   type PreviewRow,
   type PreviewStory,
   type PreviewThread,
-} from "../src/pipeline/rerun/preview.js";
+} from "../src/pipeline/novelty/preview.js";
 
 const TOP = 30;
 
@@ -100,10 +100,10 @@ async function main() {
   );
   const config = loadModelConfig();
   const previewCfg = {
-    pileTarget: config.grouping.pile_target,
-    sourceWeight: config.editor.source_weight,
-    featureCount: config.editor.tiers.feature,
-    standardCount: config.editor.tiers.standard,
+    pileTarget: config.cluster.pile_target,
+    sourceWeight: config.rank.source_weight,
+    featureCount: config.rank.tiers.feature,
+    standardCount: config.rank.tiers.standard,
   };
   const pool = getPool();
 
@@ -111,8 +111,8 @@ async function main() {
     "# Novelty preview",
     "",
     `Papers ${papers.join(", ")}. Grades from the rerun check as of each paper's date; ` +
-      `penalties minor -${config.rerun.grades.minor.penalty} (max ${config.rerun.grades.minor.max_tier ?? "none"}), ` +
-      `routine -${config.rerun.grades.routine.penalty} (max ${config.rerun.grades.routine.max_tier ?? "none"}).`,
+      `penalties minor -${config.novelty.grades.minor.penalty} (max ${config.novelty.grades.minor.max_tier ?? "none"}), ` +
+      `routine -${config.novelty.grades.routine.penalty} (max ${config.novelty.grades.routine.max_tier ?? "none"}).`,
     "",
     "**before** = the day re-ranked with the old check's withholds and no reductions; " +
       "**after** = the new grades applied. Both omit the editor's LLM tie-break and the " +
@@ -174,7 +174,7 @@ async function main() {
     let newRunId = reuse.get(paperId);
     if (newRunId === undefined) {
       console.log(`[novelty-preview] paper #${paperId} (${m.published_on}): grading pass-1 run #${m.pass1}`);
-      const r = await runRerunCheck({ groupingPass1RunId: m.pass1, asOf: m.published_on });
+      const r = await runNovelty({ groupingPass1RunId: m.pass1, asOf: m.published_on });
       newRunId = r.rerunRunId!;
     }
     const { rows: assessments } = await pool.query<Assessment>(
@@ -185,7 +185,7 @@ async function main() {
     );
     const byKey = new Map(assessments.map((a) => [a.row_key, a]));
     const effects = new Map<string, NoveltyEffect>(
-      assessments.map((a) => [a.row_key, effectOf(a.grade, config.rerun.grades)]),
+      assessments.map((a) => [a.row_key, effectOf(a.grade, config.novelty.grades)]),
     );
     const oldEffects = new Map<string, NoveltyEffect>(
       [...oldWithheld].map((k) => [k, { withhold: true, penalty: 0, maxTier: null }]),
