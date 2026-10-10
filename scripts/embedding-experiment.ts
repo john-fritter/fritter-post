@@ -44,6 +44,7 @@ import {
   detectLanguageCode,
   isEnglish,
 } from "../src/pipeline/preprocess/translation.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 const DEFAULT_BODY_CAP = 2000;
 const DEFAULT_MAX_PAIRS = 60;
@@ -98,7 +99,7 @@ function parseArgs(argv: string[]) {
       });
     } else if (arg === "--body-cap" && i + 1 < args.length) {
       bodyCaps.push(parseInt(args[++i]!, 10));
-    } else if (arg === "--grouping-run-id" && i + 1 < args.length) {
+    } else if (arg === "--cluster-run" && i + 1 < args.length) {
       groupingRunId = parseInt(args[++i]!, 10);
     } else if (arg === "--max-pairs" && i + 1 < args.length) {
       maxPairs = parseInt(args[++i]!, 10);
@@ -534,7 +535,7 @@ async function main() {
     listProvider,
     probeProvider,
     extraCandidates,
-  } = parseArgs(process.argv);
+  } = parseArgs(withRenamedFlags(process.argv));
 
   if (probeProvider) {
     await probeModels(probeProvider as LLMProvider, extraCandidates);
@@ -593,7 +594,7 @@ async function main() {
   if (pairs.xlangSame.length === 0) {
     console.error(
       "\nNo same-event cross-language pairs in this run — nothing to measure. " +
-        "Pick a run whose clusters mix languages (--grouping-run-id).",
+        "Pick a run whose clusters mix languages (--cluster-run).",
     );
     process.exit(1);
   }

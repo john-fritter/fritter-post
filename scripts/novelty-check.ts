@@ -2,18 +2,19 @@ import "dotenv/config";
 import { runNovelty } from "../src/pipeline/novelty/index.js";
 import { getPool } from "../src/db/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 // Runs the rerun check on its own, for measurement. It writes rerun_runs and
 // rerun_assessments (plus the generation_logs every call writes) and nothing else:
 // no pile, no thread run, no paper. `--as-of` makes an old grouping-pass-1 run
 // judge against the papers that existed on its day rather than those made since.
 //
-//   npm run novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD
+//   npm run novelty-check -- --score-run <n> --as-of YYYY-MM-DD
 //
 // Model comparison: the same run judged by another model, with every other
 // setting production's. rerun_runs.model_used records which.
 //
-//   npm run novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD \
+//   npm run novelty-check -- --score-run <n> --as-of YYYY-MM-DD \
 //     --model <id> [--provider nanogpt] [--reasoning-effort none|low|omit] [--max-tokens <n>]
 
 function parseArgs(argv: string[]) {
@@ -22,7 +23,7 @@ function parseArgs(argv: string[]) {
   let asOf: string | undefined;
   const flags: Record<string, string> = {};
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--grouping-pass1-run" && i + 1 < args.length) {
+    if (args[i] === "--score-run" && i + 1 < args.length) {
       groupingPass1RunId = parseInt(args[++i]!, 10);
     } else if (args[i] === "--as-of" && i + 1 < args.length) {
       asOf = args[++i];
@@ -34,9 +35,9 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const { groupingPass1RunId, asOf, overrides } = parseArgs(process.argv);
+  const { groupingPass1RunId, asOf, overrides } = parseArgs(withRenamedFlags(process.argv));
   if (groupingPass1RunId === undefined || !Number.isFinite(groupingPass1RunId)) {
-    console.error("Usage: npm run novelty-check -- --grouping-pass1-run <n> [--as-of YYYY-MM-DD]");
+    console.error("Usage: npm run novelty-check -- --score-run <n> [--as-of YYYY-MM-DD]");
     process.exit(1);
   }
   if (asOf !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {

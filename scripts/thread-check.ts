@@ -5,6 +5,7 @@ import { getPool } from "../src/db/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 import { loadThreadCandidates, runThread } from "../src/pipeline/thread/index.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 // Runs the thread pass on its own, for model comparison, and exports what every
 // thread run over the same grouping-pass-1 runs produced.
@@ -13,13 +14,13 @@ import { loadThreadCandidates, runThread } from "../src/pipeline/thread/index.js
 // nothing else — no pile, no editor run. The pile keeps the thread run it was
 // assembled with, so a test run here changes no paper.
 //
-//   npm run thread-check -- --pass1-runs 55,56 [--model <id>] [--provider nanogpt]
+//   npm run thread-check -- --score-runs 55,56 [--model <id>] [--provider nanogpt]
 //     [--reasoning-effort <level|omit>] [--max-tokens <n>] [--timeout-ms <n>]
 //
 // Export: every thread run over those pass-1 runs, member titles resolved, as
 // markdown. --blind labels the runs by letter and writes the key separately.
 //
-//   npm run thread-check -- --export --pass1-runs 55,56 --out /tmp/threads.md [--blind]
+//   npm run thread-check -- --export --score-runs 55,56 --out /tmp/threads.md [--blind]
 
 function parseArgs(argv: string[]): Record<string, string> {
   const args = argv.slice(2);
@@ -131,12 +132,12 @@ async function exportRuns(pass1Runs: number[], out: string, blind: boolean): Pro
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
-  const pass1Runs = parseIds(flags["pass1-runs"]);
+  const flags = parseArgs(withRenamedFlags(process.argv));
+  const pass1Runs = parseIds(flags["score-runs"]);
   if (flags["help"] || pass1Runs.length === 0) {
     console.error(
-      "Usage: npm run thread-check -- --pass1-runs <a,b,…> [model override flags]\n" +
-        "       npm run thread-check -- --export --pass1-runs <a,b,…> --out <file.md> [--blind]",
+      "Usage: npm run thread-check -- --score-runs <a,b,…> [model override flags]\n" +
+        "       npm run thread-check -- --export --score-runs <a,b,…> --out <file.md> [--blind]",
     );
     process.exit(flags["help"] ? 0 : 1);
   }
@@ -146,7 +147,7 @@ async function main() {
     process.exit(0);
   }
 
-  const { export: _e, out: _o, blind: _b, "pass1-runs": _p, ...modelFlags } = flags;
+  const { export: _e, out: _o, blind: _b, "score-runs": _p, ...modelFlags } = flags;
   const overrides = overridesFromFlags(modelFlags);
   for (const pass1 of pass1Runs) {
     const s = await runThread({ groupingPass1RunId: pass1, overrides });

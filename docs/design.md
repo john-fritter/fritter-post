@@ -604,21 +604,22 @@ without changing the board at the same time.
 
 The stages were renamed on 2026-10-08 so each has one name that says what it
 does. Older `decisions.md` entries, open items and Gizmo reports use the old
-names. **Database tables and columns, and the `--…-run` CLI flags that name
-them, have not been renamed yet**, so this map is also how to read the schema.
+names. **Database tables and columns have not been renamed**, so this map is
+also how to read the schema. The CLI flags that name a stage's run follow the
+stage, `--<stage>-run`, and the old spellings still work (`src/lib/cli-flags.ts`).
 
-| stage | formerly | tables | run-id flag |
+| stage | formerly | tables | run-id flag (old spelling) |
 |---|---|---|---|
-| collect | collector | `collector_runs`, `raw_items` | |
-| preprocess | preprocessor | `preprocessor_runs`, `preprocessed_items` | `--preprocessor-run-id` |
+| collect | collector | `collector_runs`, `raw_items` | `--collect-run` (`--collector-run-id`) |
+| preprocess | preprocessor | `preprocessor_runs`, `preprocessed_items` | `--preprocess-run` (`--preprocessor-run-id`) |
 | screen | prefilter | `prefilter_runs`, `prefilter_results` | |
-| cluster | grouping | `grouping_runs`, `item_embeddings` | `--grouping-run-id` |
-| score | grouping-pass-1, editor-pass-1, `editor_pass_1` | `grouping_pass1_runs`, `grouping_pass1_results` | `--grouping-pass1-run` |
-| novelty | rerun, the rerun check | `rerun_runs`, `rerun_assessments` | |
+| cluster | grouping | `grouping_runs`, `item_embeddings` | `--cluster-run` (`--grouping-run-id`) |
+| score | grouping-pass-1, editor-pass-1, `editor_pass_1` | `grouping_pass1_runs`, `grouping_pass1_results` | `--score-run`, `--score-runs` (`--grouping-pass1-run`, `--pass1-runs`) |
+| novelty | rerun, the rerun check | `rerun_runs`, `rerun_assessments` | `--novelty-runs` (`--rerun-runs`) |
 | thread | (unchanged) | `thread_runs`, `threads`, `thread_members` | |
-| rank | editor | `editor_piles`, `editor_pile_items`, `editor_runs`, `editor_stories` | `--pile-id`, `--editor-run` |
+| rank | editor | `editor_piles`, `editor_pile_items`, `editor_runs`, `editor_stories` | `--rank-run` (`--editor-run`), `--pile-id` |
 | fetch | fetch-text (lived in `writers/`) | `article_texts` | |
-| write | writers | `writer_runs`, `writer_pieces` | `--writer-run` |
+| write | writers | `writer_runs`, `writer_pieces` | `--write-run` (`--writer-run`) |
 | publish | publisher | `papers`, `paper_pieces`, `paper_sources` | |
 | continuity | lineage, the lineage pass | `paper_piece_lineage` | |
 

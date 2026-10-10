@@ -3,9 +3,9 @@
  *
  * Usage:
  *   npm run publish
- *   npm run publish -- --writer-run 47
- *   npm run publish -- --writer-run 47 --date 2026-08-27
- *   npm run publish -- --writer-run 47 --force
+ *   npm run publish -- --write-run 47
+ *   npm run publish -- --write-run 47 --date 2026-08-27
+ *   npm run publish -- --write-run 47 --force
  *
  * --date overrides the edition date, which otherwise comes from the writer
  * run's own start time in the reader's timezone. Re-publishing a date replaces
@@ -19,6 +19,7 @@
 
 import "dotenv/config";
 import { runPublish } from "../src/pipeline/publish/index.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -40,11 +41,11 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
-  // No --writer-run means the latest completed one, as in the middle stages.
-  const writerRunId = flags["writer-run"] ? parseInt(flags["writer-run"], 10) : undefined;
+  const flags = parseArgs(withRenamedFlags(process.argv));
+  // No --write-run means the latest completed one, as in the middle stages.
+  const writerRunId = flags["write-run"] ? parseInt(flags["write-run"], 10) : undefined;
   if (writerRunId !== undefined && Number.isNaN(writerRunId)) {
-    console.error("--writer-run must be a number");
+    console.error("--write-run must be a number");
     process.exit(1);
   }
   if (flags["date"] && !/^\d{4}-\d{2}-\d{2}$/.test(flags["date"])) {

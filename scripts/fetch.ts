@@ -3,9 +3,9 @@
  *
  * Usage:
  *   npm run fetch
- *   npm run fetch -- --editor-run 112
- *   npm run fetch -- --editor-run 112 --dry-run
- *   npm run fetch -- --editor-run 112 --limit 20
+ *   npm run fetch -- --rank-run 112
+ *   npm run fetch -- --rank-run 112 --dry-run
+ *   npm run fetch -- --rank-run 112 --limit 20
  *
  * --dry-run plans and prints the worklist without making a single request.
  * --limit caps the number of URLs requested, for a first cautious run.
@@ -13,6 +13,7 @@
 
 import "dotenv/config";
 import { runFetch } from "../src/pipeline/fetch/index.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -34,12 +35,12 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
-  // No --editor-run means the latest completed one, which is what every stage
+  const flags = parseArgs(withRenamedFlags(process.argv));
+  // No --rank-run means the latest completed one, which is what every stage
   // in the middle of the pipeline has always done with its own upstream.
-  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+  const editorRunId = flags["rank-run"] ? parseInt(flags["rank-run"], 10) : undefined;
   if (editorRunId !== undefined && Number.isNaN(editorRunId)) {
-    console.error("--editor-run must be a number");
+    console.error("--rank-run must be a number");
     process.exit(1);
   }
 

@@ -180,7 +180,7 @@ export async function runPublish(options: RunPublisherOptions): Promise<PaperSum
           `(${(short.ratio * 100).toFixed(0)}%, floor ${(floor * 100).toFixed(0)}%).\n` +
           `If this is a second run today, cross-run dedup has already given the earlier ` +
           `run today's news and this one saw only the hours since — the existing paper is ` +
-          `the better one.\nTo replace it anyway: npm run publish -- --writer-run ` +
+          `the better one.\nTo replace it anyway: npm run publish -- --write-run ` +
           `${writerRunId} --force`,
       );
     }
@@ -302,7 +302,7 @@ export async function runPublish(options: RunPublisherOptions): Promise<PaperSum
     console.warn(
       `[publisher] ${piecesUnsourced} published piece(s) resolved to zero sources — ` +
         `the reader cannot follow those to anyone's reporting. ` +
-        `Diagnose with: npm run inspect -- materials --editor-run ${editorRunId}`,
+        `Diagnose with: npm run inspect -- materials --rank-run ${editorRunId}`,
     );
   }
 

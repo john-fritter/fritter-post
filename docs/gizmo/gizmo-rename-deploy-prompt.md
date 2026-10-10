@@ -20,8 +20,10 @@ and with renamed keys.
 
 `collect`, `preprocess`, `write`, `publish`, `pipeline` and `inspect` keep
 their names. The runner's stages are now `collect, preprocess, screen, cluster,
-score, rank, fetch, write, publish`. **Tables, columns and `--…-run` flags are
-unchanged** (`grouping_runs`, `editor_stories`, `--editor-run`, …).
+score, rank, fetch, write, publish`. **Tables and columns are unchanged**
+(`grouping_runs`, `editor_stories`, …). Run-id flags are now `--<stage>-run`
+(`--rank-run`, `--write-run`, …), and the old ones (`--editor-run`,
+`--writer-run`, …) still work.
 `docs/design.md` §6 has the full map.
 
 **Migration 048 is data only.** It rewrites old stage names to the new ones in

@@ -3,12 +3,12 @@
  *
  * Usage:
  *   npm run write
- *   npm run write -- --editor-run 112
- *   npm run write -- --editor-run 112 --tier feature --limit 3
+ *   npm run write -- --rank-run 112
+ *   npm run write -- --rank-run 112 --tier feature --limit 3
  *   npm run write -- --repair 3
  *
  * Model comparison (writes a writer run and nothing else; never publish it):
- *   npm run write -- --editor-run 112 --ranks 1-6,20,40 \
+ *   npm run write -- --rank-run 112 --ranks 1-6,20,40 \
  *     --model <id> [--provider nanogpt] [--reasoning-effort low|omit] [--max-tokens 16000]
  *
  * --reasoning-effort omit sends no reasoning_effort at all, for a model that
@@ -20,6 +20,7 @@
 import "dotenv/config";
 import { runWrite, repairWriterRun } from "../src/pipeline/write/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -54,7 +55,7 @@ function parseRanks(spec: string): number[] {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
+  const flags = parseArgs(withRenamedFlags(process.argv));
 
   // Repair re-writes only the failed pieces of an existing run, in place: a
   // paper is one run, and filling three holes should not cost 150 calls.
@@ -64,10 +65,10 @@ async function main() {
     process.exit(0);
   }
 
-  // No --editor-run means the latest completed one, as in the middle stages.
-  const editorRunId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+  // No --rank-run means the latest completed one, as in the middle stages.
+  const editorRunId = flags["rank-run"] ? parseInt(flags["rank-run"], 10) : undefined;
   if (editorRunId !== undefined && Number.isNaN(editorRunId)) {
-    console.error("--editor-run must be a number");
+    console.error("--rank-run must be a number");
     process.exit(1);
   }
 

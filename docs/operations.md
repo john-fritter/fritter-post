@@ -104,7 +104,7 @@ instead:
 docker compose exec -T app npm run pipeline -- --from <stage>   # inherits the last run's ids
 docker compose exec -T app npm run pipeline -- --from write --dry-run
 docker compose exec -T app npm run write -- --repair <writer-run-id>
-docker compose exec -T app npm run publish -- --writer-run <n>
+docker compose exec -T app npm run publish -- --write-run <n>
 ```
 
 The stages are: `collect`, `preprocess`, `screen`, `cluster`, `score`, `rank`,

@@ -13,7 +13,7 @@
  *   npm run inspect -- screen
  *   npm run inspect -- screen --id 1
  *   npm run inspect -- rank --id 112
- *   npm run inspect -- materials --editor-run 112
+ *   npm run inspect -- materials --rank-run 112
  */
 
 import "dotenv/config";
@@ -24,6 +24,7 @@ import {
   formatMaterialsReport,
 } from "../src/pipeline/write/materials-report.js";
 import { buildEditorRunPackets, loadFetchedTexts } from "../src/pipeline/write/packets.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 interface RawItemRow {
   id: string;
@@ -228,7 +229,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { command: given, flags } = parseArgs(process.argv);
+  const { command: given, flags } = parseArgs(withRenamedFlags(process.argv));
   // The stages were renamed on 2026-10-08; the old subcommands still answer, so
   // older notes and Gizmo prompts keep working.
   const command = given !== undefined ? (RENAMED_COMMANDS[given] ?? given) : given;
@@ -738,9 +739,9 @@ async function main() {
       // Uses the shared pool from src/db rather than this script's, since the
       // resolver is stage code — both are closed by the process exit below.
       case "materials": {
-        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        const runId = flags["rank-run"] ? parseInt(flags["rank-run"], 10) : undefined;
         if (runId === undefined || Number.isNaN(runId)) {
-          console.log("Usage: npm run inspect -- materials --editor-run <n> [--sources <n>]");
+          console.log("Usage: npm run inspect -- materials --rank-run <n> [--sources <n>]");
           break;
         }
         const stories = await loadEditorRunMaterials(runId);
@@ -1110,9 +1111,9 @@ async function main() {
       }
 
       case "packet": {
-        const runId = flags["editor-run"] ? parseInt(flags["editor-run"], 10) : undefined;
+        const runId = flags["rank-run"] ? parseInt(flags["rank-run"], 10) : undefined;
         if (runId === undefined || Number.isNaN(runId)) {
-          console.log("Usage: npm run inspect -- packet --editor-run <n> [--rank <n>]");
+          console.log("Usage: npm run inspect -- packet --rank-run <n> [--rank <n>]");
           break;
         }
         const packets = await buildEditorRunPackets(runId);
@@ -1648,7 +1649,7 @@ Commands:
   screen --id <n>          Show detail and per-item cut/news/opinion verdicts with reasons
   rank                     List recent rank (editor) runs
   rank --id <n>            Show ranked/tiered list with resolved titles and fail-safe flags
-  materials --editor-run <n>
+  materials --rank-run <n>
                            Writer materials audit: per-tier and per-source body
                            text available under each story, and the fetch scope
   timing                   Per-stage durations for the latest run of each stage,
@@ -1661,8 +1662,8 @@ Commands:
                            (default 14 days): what a writer ends up with per
                            outlet, why we did not ask, and which sources have
                            never produced a usable article
-  packet --editor-run <n>  Writer packet sizes for every story of an editor run
-  packet --editor-run <n> --rank <n>
+  packet --rank-run <n>    Writer packet sizes for every story of a rank run
+  packet --rank-run <n> --rank <n>
                            Print the full assembled prompt for one story
   write                    List recent writer runs
   write --id <n>           Show every written piece; add --full for bodies
@@ -1677,7 +1678,7 @@ Options:
   --source <name>          Filter by source name (exact match)
   --limit <n>              Max rows returned (default varies by command)
   --id <n>                 Run id for detail view
-  --editor-run <n>         Editor run id (materials)
+  --rank-run <n>           Rank run id (materials, packet); --editor-run still works
   --sources <n>            Rows in the per-source table (materials, default 40)
   --rank <n>               Story rank (packet)
   --full                   Print piece bodies (write --id)
