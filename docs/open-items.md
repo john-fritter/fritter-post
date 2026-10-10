@@ -342,7 +342,7 @@ never been near a bad run has not been tested, only unused.
 paper up around 06:17. The variance is the score stage tracking the day's row
 count. The timer has not been installed and no unattended run has happened.
 
-### 9. `--collector-run-id` on the preprocessor is provenance, not a filter
+### 9. `--collect-run` on the preprocessor is provenance, not a filter
 
 The preprocessor selects `raw_items` by a fixed `fetched_at` window and stores
 the collector run id without ever filtering on it, so collect → preprocess is

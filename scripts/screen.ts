@@ -3,7 +3,7 @@
  *
  * Usage:
  *   npm run screen
- *   npm run screen -- --preprocessor-run-id 3
+ *   npm run screen -- --preprocess-run 3
  *   npm run screen -- --model glm-5.1
  */
 
@@ -11,6 +11,7 @@ import "dotenv/config";
 import { runScreen } from "../src/pipeline/screen/index.js";
 import { overridesFromFlags } from "../src/config/overrides.js";
 import { loadModelConfig } from "../src/config/models.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -32,14 +33,14 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
+  const flags = parseArgs(withRenamedFlags(process.argv));
 
-  const preprocessorRunId = flags["preprocessor-run-id"]
-    ? parseInt(flags["preprocessor-run-id"], 10)
+  const preprocessorRunId = flags["preprocess-run"]
+    ? parseInt(flags["preprocess-run"], 10)
     : undefined;
 
   if (preprocessorRunId !== undefined && isNaN(preprocessorRunId)) {
-    console.error("--preprocessor-run-id must be a number");
+    console.error("--preprocess-run must be a number");
     process.exit(1);
   }
 

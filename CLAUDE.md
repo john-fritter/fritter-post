@@ -61,9 +61,12 @@ collect → preprocess → screen → cluster → score [→ novelty → thread 
 | continuity | the "previously" marker | `continuity/` | `publish.continuity` | lineage |
 
 The runner (`runner/`) has nine stages: novelty, thread and the pile run inside
-`score`, and continuity inside `publish`. **Tables and `--…-run` flags still
-carry the old names** (`grouping_runs`, `editor_stories`, `--editor-run`, …);
-`docs/design.md` §6 maps them. "Lineage" now means provenance only.
+`score`, and continuity inside `publish`. **Tables and columns still carry the
+old names** (`grouping_runs`, `editor_stories`, `grouping_run_id`, …);
+`docs/design.md` §6 maps them. Run-id flags are `--<stage>-run`
+(`--rank-run`, `--cluster-run`, …), and the old spellings (`--editor-run`,
+`--grouping-run-id`, …) still work via `src/lib/cli-flags.ts`. "Lineage" now
+means provenance only.
 
 ## Repo layout
 
@@ -241,14 +244,14 @@ Run with `npm run <script>`. In production, prefix with
 **Stages by hand.** Each one defaults to its latest completed upstream run.
 Hand runs skip the gates.
 - `collect [-- --source <name>]`, `preprocess`, `screen`
-- `cluster [-- --preprocessor-run-id <n>]`
-- `score [-- --grouping-run-id <n>]`: also runs novelty and thread, and
+- `cluster [-- --preprocess-run <n>]`
+- `score [-- --cluster-run <n>]`: also runs novelty and thread, and
   assembles the pile
 - `rank [-- --pile-id <n>]`
-- `fetch -- --editor-run <n> [--dry-run] [--limit <n>]`
-- `write -- --editor-run <n> [--tier <t>] [--limit <n>] [--ranks 1-6,20]`
+- `fetch -- --rank-run <n> [--dry-run] [--limit <n>]`
+- `write -- --rank-run <n> [--tier <t>] [--limit <n>] [--ranks 1-6,20]`
 - `write -- --repair <writer-run-id>`: re-write only the failed pieces, in place
-- `publish -- --writer-run <n> [--date YYYY-MM-DD] [--force]`
+- `publish -- --write-run <n> [--date YYYY-MM-DD] [--force]`
 
 **Inspection** (`inspect -- <command>`; the old names still work)
 - `count`, `list [--source <name>] [--limit <n>]`
@@ -261,8 +264,8 @@ Hand runs skip the gates.
 - `pipeline [--id <n>]`: how each daily run ended, with gate verdicts and
   metrics. Start here when you need to know why the paper is short.
 - `timing`: per-stage durations and the time spent between stages.
-- `materials --editor-run <n>`: body text behind each story, feed vs fetched.
-- `packet --editor-run <n> [--rank <n>]`: packet sizes, headline-only counts,
+- `materials --rank-run <n>`: body text behind each story, feed vs fetched.
+- `packet --rank-run <n> [--rank <n>]`: packet sizes, headline-only counts,
   tier swaps, why sources were left out; `--rank` prints the full prompt.
 - `fetch [--days <n>]`: per-outlet fetch outcomes and the hosts in cooldown.
 - There is no `inspect cluster` or `inspect score` yet. Query `grouping_runs`
@@ -283,14 +286,14 @@ preprocessor run.
   provider really serves (`/v1/models` lists chat models only).
 - `writer-bakeoff-export -- --runs <a,b> --out <dir> [--blind]`: read every
   piece against its packet before opening the key.
-- `novelty-check -- --grouping-pass1-run <n> --as-of YYYY-MM-DD`: the novelty
+- `novelty-check -- --score-run <n> --as-of YYYY-MM-DD`: the novelty
   judge alone, as of a date.
 - `novelty-preview -- --papers 43-52 --out <file.md>`: the front pages with and
   without the grades. This is how `novelty.grades` is calibrated.
 - `continuity-check -- (--last <n> | --papers <a,b>) --out <file.md>`: replay
   the "previously" judge and diff it against the printed links.
-- `thread-check -- --pass1-runs <a,b> [--export --out <file.md> [--blind]]`
-- `translation-experiment -- --preprocessor-run-id <n> --limit <n> --model <p>:<id> --out <file.md>`
+- `thread-check -- --score-runs <a,b> [--export --out <file.md> [--blind]]`
+- `translation-experiment -- --preprocess-run <n> --limit <n> --model <p>:<id> --out <file.md>`
 
 ---
 

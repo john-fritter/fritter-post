@@ -22,10 +22,11 @@ Entry format:
 
 ## Index
 
-Newest first, 148 entries. Entries before 2026-10-08 use the stage names of
+Newest first, 149 entries. Entries before 2026-10-08 use the stage names of
 their time (prefilter, grouping, grouping-pass-1, editor, rerun, lineage); the
 map is in `design.md` §6.
 
+- 2026-10-10 — [Run-id flags follow the stage names; tables stay as they are](#2026-10-10--run-id-flags-follow-the-stage-names-tables-stay-as-they-are)
 - 2026-10-08 — [Stages renamed for what they do; docs split into concept, design and operations](#2026-10-08--stages-renamed-for-what-they-do-docs-split-into-concept-design-and-operations)
 - 2026-10-03 — [Novelty preview: the grades hold on papers #43–53, penalties unchanged](#2026-10-03--novelty-preview-the-grades-hold-on-papers-4353-penalties-unchanged)
 - 2026-10-03 — [The rerun check grades novelty; minor updates and routine news are reduced, not dropped](#2026-10-03--the-rerun-check-grades-novelty-minor-updates-and-routine-news-are-reduced-not-dropped)
@@ -174,6 +175,33 @@ map is in `design.md` §6.
 - 2026-05-26 — [Longer Reads as both source category and section](#2026-05-26--longer-reads-as-both-source-category-and-section)
 - 2026-05-26 — [Stack: TypeScript + Next.js, reuse Postgres](#2026-05-26--stack-typescript--nextjs-reuse-postgres)
 - 2026-05-26 — [LLM client: OpenAI SDK + thin internal wrapper](#2026-05-26--llm-client-openai-sdk--thin-internal-wrapper)
+
+---
+
+## 2026-10-10 — Run-id flags follow the stage names; tables stay as they are
+
+**Decision:** Every flag that names a stage's run is now `--<stage>-run`.
+`--rank-run` was `--editor-run`, `--cluster-run` was `--grouping-run-id`,
+`--score-run` / `--score-runs` were `--grouping-pass1-run` / `--pass1-runs`,
+`--write-run` was `--writer-run`, `--preprocess-run` was
+`--preprocessor-run-id`, `--collect-run` was `--collector-run-id`, and
+`--novelty-runs` was `--rerun-runs`. `--pile-id` is unchanged, because "pile"
+is still the word. The old spellings keep working: `src/lib/cli-flags.ts`
+rewrites argv before each script parses it, so the scripts read only the new
+names.
+
+**Context:** After the 2026-10-08 rename, these flags were the last old names
+anyone typing a command would meet. Renaming the tables and columns too was
+sized at 15 tables, 9 run-id columns, ~290 SQL references and ~300 TypeScript
+identifiers. The SQL strings are the part that matters, because nothing checks
+them before runtime: typecheck can't see inside a string and no test touches a
+database.
+
+**Rationale:** Flags are what people see when they are shown the commands, and
+aliases make renaming them free for Gizmo and for old notes. Table names only
+show up for someone reading SQL, and `design.md` §6 maps them. The table rename
+is deferred until the schema changes for another reason, so it can ride along
+with a migration that will be validated on a restored copy anyway.
 
 ---
 
