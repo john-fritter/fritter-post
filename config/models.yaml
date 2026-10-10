@@ -898,3 +898,62 @@ publish:
       timeout_ms: 120000
       retry_max_attempts: 5
       retry_base_ms: 2000
+
+# List prices, for the paper's price (the boxed figure on the front page and the
+# /price page). Not what the paper costs to run: the models are reached through a
+# flat-rate NanoGPT subscription, so this is what the same tokens would cost at
+# each model's published API price. The publisher multiplies every call's
+# logged tokens by these and freezes the result with the paper (paper_costs),
+# so changing a price here reprices the next paper, not the archive. To reprice
+# old papers on purpose: `npm run price -- --all`.
+#
+# THE RULE: the model maker's own list price, from its own API price page,
+# standard tier -- no cached-input rate, no off-peak or batch discount. Where the
+# maker does not sell the model through its own API, OpenRouter's listing. Not
+# OpenRouter's headline figure, which is its cheapest provider: Qwen3.6 35B
+# showed $0.05/$0.70 there, from one host, against $0.10-$0.25 in for the rest.
+#
+# `name` is how the page's model table names the model. `ids` lists every model
+# ID that is billed at this price, exactly as generation_logs records it, each
+# with the label the page shows beside the step that called it. A model with calls and no entry is
+# shown unpriced rather than free, and tests/paper-price.test.ts fails if a
+# model the pipeline calls has no entry.
+pricing:
+  models:
+    - name: GLM-5.2
+      maker: Z.ai
+      ids:
+        zai-org/glm-5.2: GLM-5.2
+        zai-org/glm-5.2:thinking: GLM-5.2 (thinking)
+      input_per_mtok: 1.40
+      output_per_mtok: 4.40
+      source: https://docs.z.ai/guides/overview/pricing
+      as_of: "2026-10-10"
+    - name: DeepSeek V4.1 Flash
+      maker: DeepSeek
+      ids:
+        deepseek/deepseek-v4.1-flash: DeepSeek V4.1 Flash
+      # The standard rate. DeepSeek halves it off-peak, and the 06:00 Pacific
+      # run falls off-peak, but the rule is the list price.
+      input_per_mtok: 0.30
+      output_per_mtok: 1.20
+      source: https://api-docs.deepseek.com/quick_start/pricing
+      as_of: "2026-10-10"
+    - name: Qwen3.6 35B
+      maker: Alibaba
+      ids:
+        Qwen/Qwen3.6-35B-A3B: Qwen3.6 35B
+      input_per_mtok: 0.248
+      output_per_mtok: 1.485
+      source: https://www.alibabacloud.com/help/en/model-studio/model-pricing
+      as_of: "2026-10-10"
+    - name: Qwen3 Embedding 8B
+      maker: Alibaba, via OpenRouter
+      ids:
+        qwen/qwen3-embedding-8b: Qwen3 Embedding 8B
+      # An embedding model reads and writes nothing back, so it has no output
+      # price. OpenRouter is also who actually serves it here.
+      input_per_mtok: 0.01
+      output_per_mtok: 0
+      source: https://openrouter.ai/qwen/qwen3-embedding-8b
+      as_of: "2026-10-10"

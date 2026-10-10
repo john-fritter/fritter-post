@@ -229,3 +229,121 @@ export async function loadPaperRefs(paperId: number): Promise<string[]> {
   );
   return rows.map((r) => r.ref);
 }
+
+// --- the price -------------------------------------------------------------
+
+/**
+ * The paper's price in dollars, or null when it has none: a paper published
+ * before prices were recorded, or one whose pricing failed. The masthead shows
+ * no price box rather than a wrong one.
+ */
+export async function loadPaperPriceTotal(paperId: number): Promise<number | null> {
+  const { rows } = await getPool().query<{ n: string; total: string | null }>(
+    `SELECT COUNT(*)::text AS n, SUM(cost_usd)::text AS total
+       FROM paper_costs WHERE paper_id = $1`,
+    [paperId],
+  );
+  const r = rows[0];
+  if (!r || r.n === "0") return null;
+  return Number(r.total ?? 0);
+}
+
+export interface PaperStepRow {
+  step: string;
+  startedAt: Date | null;
+  durationMs: number | null;
+  itemsOut: number | null;
+  sources: number | null;
+}
+
+export interface PaperCostRow {
+  step: string;
+  model: string;
+  calls: number;
+  failedCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  modelMs: number;
+  /** Null when the model had no list price: unpriced, not free. */
+  modelLabel: string | null;
+  modelName: string | null;
+  maker: string | null;
+  inputPerMtok: number | null;
+  outputPerMtok: number | null;
+  priceSource: string | null;
+  priceAsOf: string | null;
+  costUsd: number | null;
+}
+
+export interface PaperPrice {
+  steps: PaperStepRow[];
+  costs: PaperCostRow[];
+  /** Pieces by tier, for "12 features, 38 standard, 84 briefs". */
+  tiers: Record<PaperTier, number>;
+}
+
+/** Everything the /price page shows. Null when the paper has no price. */
+export async function loadPaperPrice(paperId: number): Promise<PaperPrice | null> {
+  const pool = getPool();
+  const { rows: costRows } = await pool.query<{
+    step: string; model: string; calls: number; failed_calls: number;
+    input_tokens: string; output_tokens: string; model_ms: string;
+    model_label: string | null; model_name: string | null; maker: string | null;
+    input_per_mtok: string | null; output_per_mtok: string | null;
+    price_source: string | null; price_as_of: string | null; cost_usd: string | null;
+  }>(
+    `SELECT step, model, calls, failed_calls, input_tokens::text, output_tokens::text,
+            model_ms::text, model_label, model_name, maker, input_per_mtok::text,
+            output_per_mtok::text, price_source,
+            to_char(price_as_of, 'YYYY-MM-DD') AS price_as_of, cost_usd::text
+       FROM paper_costs WHERE paper_id = $1
+      ORDER BY step, model`,
+    [paperId],
+  );
+  if (costRows.length === 0) return null;
+
+  const { rows: stepRows } = await pool.query<{
+    step: string; started_at: Date | null; duration_ms: string | null;
+    items_out: number | null; sources: number | null;
+  }>(
+    `SELECT step, started_at, duration_ms::text, items_out, sources
+       FROM paper_steps WHERE paper_id = $1 ORDER BY seq`,
+    [paperId],
+  );
+
+  const { rows: tierRows } = await pool.query<{ tier: PaperTier; n: string }>(
+    "SELECT tier, COUNT(*)::text AS n FROM paper_pieces WHERE paper_id = $1 GROUP BY tier",
+    [paperId],
+  );
+  const tiers: Record<PaperTier, number> = { feature: 0, standard: 0, brief: 0 };
+  for (const t of tierRows) tiers[t.tier] = Number(t.n);
+
+  const num = (v: string | null): number | null => (v === null ? null : Number(v));
+  return {
+    steps: stepRows.map((s) => ({
+      step: s.step,
+      startedAt: s.started_at,
+      durationMs: num(s.duration_ms),
+      itemsOut: s.items_out,
+      sources: s.sources,
+    })),
+    costs: costRows.map((c) => ({
+      step: c.step,
+      model: c.model,
+      calls: c.calls,
+      failedCalls: c.failed_calls,
+      inputTokens: Number(c.input_tokens),
+      outputTokens: Number(c.output_tokens),
+      modelMs: Number(c.model_ms),
+      modelLabel: c.model_label,
+      modelName: c.model_name,
+      maker: c.maker,
+      inputPerMtok: num(c.input_per_mtok),
+      outputPerMtok: num(c.output_per_mtok),
+      priceSource: c.price_source,
+      priceAsOf: c.price_as_of,
+      costUsd: num(c.cost_usd),
+    })),
+    tiers,
+  };
+}

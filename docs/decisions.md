@@ -22,10 +22,11 @@ Entry format:
 
 ## Index
 
-Newest first, 149 entries. Entries before 2026-10-08 use the stage names of
+Newest first, 150 entries. Entries before 2026-10-08 use the stage names of
 their time (prefilter, grouping, grouping-pass-1, editor, rerun, lineage); the
 map is in `design.md` §6.
 
+- 2026-10-10 — [The paper has a price: its model calls at list prices, frozen at publish](#2026-10-10--the-paper-has-a-price-its-model-calls-at-list-prices-frozen-at-publish)
 - 2026-10-10 — [Run-id flags follow the stage names; tables stay as they are](#2026-10-10--run-id-flags-follow-the-stage-names-tables-stay-as-they-are)
 - 2026-10-08 — [Stages renamed for what they do; docs split into concept, design and operations](#2026-10-08--stages-renamed-for-what-they-do-docs-split-into-concept-design-and-operations)
 - 2026-10-03 — [Novelty preview: the grades hold on papers #43–53, penalties unchanged](#2026-10-03--novelty-preview-the-grades-hold-on-papers-4353-penalties-unchanged)
@@ -177,6 +178,52 @@ map is in `design.md` §6.
 - 2026-05-26 — [LLM client: OpenAI SDK + thin internal wrapper](#2026-05-26--llm-client-openai-sdk--thin-internal-wrapper)
 
 ---
+
+## 2026-10-10 — The paper has a price: its model calls at list prices, frozen at publish
+**Decision:** Every paper carries a price, boxed in the masthead's top corner
+the way a newspaper prints one, and the box links to `/price`, a page that
+breaks it down by step and by model and explains, for someone who has never
+seen the pipeline, how the paper is made. The price is the paper's logged
+tokens times each model's list price per million tokens (`pricing` in
+`models.yaml`), computed at the end of publish and frozen in two new tables,
+`paper_steps` and `paper_costs` (migration 049). The first paragraph of the page
+is the reader's own wording: the price is what the words read and written by
+the models would cost at API prices, not what the paper costs to run, which is
+a flat-rate subscription.
+
+**Context:** The reader asked for it, and asked that it be public-friendly and
+an estimate from official prices. There was no cost anywhere in the system:
+`generation_logs` records tokens and durations per call but no provider and no
+price, and nothing linked a call to a paper except the run ids. Prices as of
+2026-10-10, per million tokens in/out: GLM-5.2 $1.40/$4.40 (Z.ai), DeepSeek
+V4.1 Flash $0.30/$1.20 (DeepSeek, standard rate), Qwen3.6-35B-A3B
+$0.248/$1.485 (Alibaba Cloud Model Studio, read by the reader from the page),
+Qwen3 Embedding 8B $0.01 in (OpenRouter, which also serves it here). The first
+three came from trackers quoting the makers' pages, because those pages are
+unreachable from the build session; the Gizmo deploy task confirms them on the
+box.
+
+**Rationale:**
+- *The maker's list price, standard tier.* One rule the page can state in a
+  sentence. Off-peak pricing was considered and declined: DeepSeek halves its
+  rate off-peak and the 06:00 Pacific run is off-peak, but a price that depends
+  on the hour is harder to explain and moves for reasons that are not the
+  paper. OpenRouter's headline figure was rejected for the fallback: for
+  Qwen3.6 35B it showed $0.05/$0.70, the cheapest of ten hosts, where the rest
+  ran $0.10–$0.25 in.
+- *Lineage, not date.* Filtering `generation_logs` by day would count an
+  aborted morning's calls and a re-run's twice. The run tables already name
+  each other, and each call carries the run id of the run it served.
+- *Frozen, like the rest of the paper* (2026-08-28, "The publisher is a stage,
+  not a query"). A price cut next month must not reprice the archive, and the
+  reading view must not read `generation_logs`, which holds every prompt in
+  full. `npm run price -- --all` is the deliberate path for a repricing.
+- *Unpriced is NULL, not zero*, and a test fails if a called model has no
+  entry, because a quietly free model is a quietly wrong price.
+- *It never fails the paper*, by the graceful-degradation rule: a pricing error
+  warns and the masthead shows no box.
+- *Not a dashboard.* One page per edition, today's only: no history, no trend,
+  no chart across days. It is a colophon that happens to have numbers in it.
 
 ## 2026-10-10 — Run-id flags follow the stage names; tables stay as they are
 

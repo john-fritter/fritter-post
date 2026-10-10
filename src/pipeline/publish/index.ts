@@ -25,6 +25,8 @@ import { getPool } from "../../db/index.js";
 import { latestWriterRunId, resolveRunId } from "../../db/latest.js";
 import { loadModelConfig } from "../../config/models.js";
 import { buildContinuity } from "../continuity/index.js";
+import { recordPaperPrice } from "./price-record.js";
+import { formatUsd } from "./price.js";
 import { loadEditorRunMaterials, type StoryMaterials } from "../write/materials.js";
 import {
   buildIndex,
@@ -58,6 +60,8 @@ export interface PaperSummary {
   lineageLinked: number;
   /** Pieces in the paper this one replaced, or null if it replaced nothing. */
   replacedPieceCount: number | null;
+  /** The paper's price at list prices, or null if it could not be computed. */
+  priceUsd: number | null;
 }
 
 interface WriterPieceRow {
@@ -287,6 +291,30 @@ export async function runPublish(options: RunPublisherOptions): Promise<PaperSum
     );
   }
 
+  // The price, last, so it counts continuity's calls. Like continuity it never
+  // fails a paper: a paper with no price shows no price box, and
+  // `npm run price -- --paper <id>` fills it in afterwards.
+  let priceUsd: number | null = null;
+  try {
+    const price = await recordPaperPrice(paperId, { publishEnd: new Date() });
+    priceUsd = price.totalUsd;
+    console.log(
+      `[publisher] price: ${formatUsd(price.totalUsd)} at list prices over ${price.calls} model call(s)`,
+    );
+    if (price.unpricedModels.length > 0) {
+      console.warn(
+        `[publisher] price: no list price for ${price.unpricedModels.join(", ")}; their calls ` +
+          `are not in the total. Add them to \`pricing\` in config/models.yaml, then ` +
+          `npm run price -- --paper ${paperId}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[publisher] price could not be computed, paper published without one: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   console.log(
     `[publisher] paper #${paperId} for ${publishedOn}${replaced ? " (replaced)" : ""}: ` +
       `${storyCount} stories, ${pieces.length} pieces, ${sourceTotal} source links, ` +
@@ -311,5 +339,6 @@ export async function runPublish(options: RunPublisherOptions): Promise<PaperSum
     pieceCount: pieces.length, sourceCount: sourceTotal, wordCount: wordTotal,
     piecesSkipped, piecesUnsourced, replaced, lineageLinked,
     replacedPieceCount: replaced ? existingPieceCount : null,
+    priceUsd,
   };
 }

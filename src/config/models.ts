@@ -399,6 +399,22 @@ const PipelineConfigSchema = z.object({
   gates: PipelineGatesConfigSchema,
 });
 
+// List prices for the paper's price. See the comment on `pricing` in models.yaml.
+const PriceEntrySchema = z.object({
+  name: z.string().min(1),
+  maker: z.string().min(1),
+  // Model ID as generation_logs records it -> the name the /price page shows.
+  ids: z.record(z.string().min(1), z.string().min(1)),
+  input_per_mtok: z.number().nonnegative(),
+  output_per_mtok: z.number().nonnegative(),
+  source: z.string().url(),
+  as_of: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "as_of must be YYYY-MM-DD"),
+});
+
+const PricingConfigSchema = z.object({
+  models: z.array(PriceEntrySchema),
+});
+
 const ModelsConfigSchema = z.object({
   pipeline: PipelineConfigSchema,
   preprocess: PreprocessConfigSchema,
@@ -412,6 +428,7 @@ const ModelsConfigSchema = z.object({
   fetch: FetchConfigSchema,
   write: WriteStageConfigSchema,
   publish: PublishConfigSchema,
+  pricing: PricingConfigSchema,
 });
 
 export type TranslationConfig = z.infer<typeof TranslationConfigSchema>;
@@ -436,6 +453,8 @@ export type ClusterDescribeConfig = z.infer<typeof ClusterDescribeConfigSchema>;
 export type ClusterStageConfig = z.infer<typeof ClusterStageConfigSchema>;
 export type ContinuityConfig = z.infer<typeof ContinuityConfigSchema>;
 export type PublishConfig = z.infer<typeof PublishConfigSchema>;
+export type PriceEntry = z.infer<typeof PriceEntrySchema>;
+export type PricingConfig = z.infer<typeof PricingConfigSchema>;
 export type PipelineGatesConfig = z.infer<typeof PipelineGatesConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;

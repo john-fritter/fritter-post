@@ -73,7 +73,7 @@ means provenance only.
 ```
 config/          models.yaml (per-stage everything, in pipeline order), sources.yaml
 docs/            concept, design, operations, decisions, open-items, bio, voice; gizmo/ task files
-migrations/      numbered SQL (001–048; next is 049; 025 is used twice, harmlessly)
+migrations/      numbered SQL (001–049; next is 050; 025 is used twice, harmlessly)
 scripts/         one CLI per stage, inspect, pipeline, experiments, test runner
 src/pipeline/    one directory per stage, plus runner/
 src/llm/         callLLM (logging, streaming) and callWithBackoff
@@ -169,6 +169,10 @@ entry in `decisions.md` says which.
 - **publish**: It refuses to replace a paper with a much smaller one
   (`--force` is deliberate). Source rows carry copies, not just FKs. No
   third-party text.
+- **price**: List prices, not what is paid, and the page says so. Calls are
+  found by lineage, never by date. Frozen at publish; it never fails a paper.
+  Unpriced is NULL, never zero. A new model or a new `stage:` label needs a
+  `pricing` entry or a `LOG_STAGE_STEP` line, and the test says which.
 - **continuity**: It fails **closed**. A YES names something both texts say.
   Lookback is in editions. The marker is text, never a link. It never fails a
   paper.
@@ -251,7 +255,10 @@ Hand runs skip the gates.
 - `fetch -- --rank-run <n> [--dry-run] [--limit <n>]`
 - `write -- --rank-run <n> [--tier <t>] [--limit <n>] [--ranks 1-6,20]`
 - `write -- --repair <writer-run-id>`: re-write only the failed pieces, in place
-- `publish -- --write-run <n> [--date YYYY-MM-DD] [--force]`
+- `publish -- --write-run <n> [--date YYYY-MM-DD] [--force]`: also prices the
+  paper
+- `price [-- --paper <n> | --all]`: price a paper published before prices
+  were recorded, or reprice on purpose after `pricing` changes
 
 **Inspection** (`inspect -- <command>`; the old names still work)
 - `count`, `list [--source <name>] [--limit <n>]`
