@@ -4,13 +4,14 @@
  *
  * Usage:
  *   npm run cluster
- *   npm run cluster -- --preprocessor-run-id 3
+ *   npm run cluster -- --preprocess-run 3
  *   npm run cluster -- --model alibaba/qwen3.6-27b:thinking
  */
 
 import "dotenv/config";
 import { runCluster } from "../src/pipeline/cluster/index.js";
 import { loadModelConfig } from "../src/config/models.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -32,14 +33,14 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
+  const flags = parseArgs(withRenamedFlags(process.argv));
 
-  const preprocessorRunId = flags["preprocessor-run-id"]
-    ? parseInt(flags["preprocessor-run-id"], 10)
+  const preprocessorRunId = flags["preprocess-run"]
+    ? parseInt(flags["preprocess-run"], 10)
     : undefined;
 
   if (preprocessorRunId !== undefined && isNaN(preprocessorRunId)) {
-    console.error("--preprocessor-run-id must be a number");
+    console.error("--preprocess-run must be a number");
     process.exit(1);
   }
 

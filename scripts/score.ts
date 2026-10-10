@@ -5,6 +5,7 @@ import { runThread } from "../src/pipeline/thread/index.js";
 import { runNovelty } from "../src/pipeline/novelty/index.js";
 import { loadModelConfig } from "../src/config/models.js";
 import { overridesFromFlags, type ModelOverrides } from "../src/config/overrides.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -12,7 +13,7 @@ function parseArgs(argv: string[]) {
   const flags: Record<string, string> = {};
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--grouping-run-id" && i + 1 < args.length) {
+    if (args[i] === "--cluster-run" && i + 1 < args.length) {
       groupingRunId = parseInt(args[++i]!, 10);
     } else if (args[i]!.startsWith("--") && i + 1 < args.length) {
       flags[args[i]!.slice(2)] = args[++i]!;
@@ -27,7 +28,7 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const { groupingRunId, overrides } = parseArgs(process.argv);
+  const { groupingRunId, overrides } = parseArgs(withRenamedFlags(process.argv));
 
   console.log("[score] starting...");
   const run = await runScore({ groupingRunId, overrides });

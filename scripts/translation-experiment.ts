@@ -16,7 +16,7 @@
  *   tsx scripts/translation-experiment.ts \
  *     --model nanogpt:Qwen/Qwen3.6-35B-A3B \
  *     --model nanogpt:<candidate> \
- *     [--preprocessor-run-id <n>] [--limit 40] [--out <path>]
+ *     [--preprocess-run <n>] [--limit 40] [--out <path>]
  *
  * Put the production model first: re-running it is the noise control, since
  * two runs of one model at temperature 0.1 already differ.
@@ -34,6 +34,7 @@ import {
   isEnglish,
   type BatchLLMCallFn,
 } from "../src/pipeline/preprocess/translation.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 const DEFAULT_LIMIT = 40;
 const REPORT_BODY_CHARS = 400;
@@ -60,7 +61,7 @@ function parseArgs(argv: string[]) {
         throw new Error(`--model must be <provider>:<model-id>, got "${raw}"`);
       }
       models.push({ provider, model: raw.slice(sep + 1) });
-    } else if (arg === "--preprocessor-run-id" && i + 1 < args.length) {
+    } else if (arg === "--preprocess-run" && i + 1 < args.length) {
       runId = parseInt(args[++i]!, 10);
     } else if (arg === "--limit" && i + 1 < args.length) {
       limit = parseInt(args[++i]!, 10);
@@ -137,11 +138,11 @@ function clip(text: string | null | undefined): string {
 }
 
 async function main() {
-  const { models, runId, limit, out } = parseArgs(process.argv);
+  const { models, runId, limit, out } = parseArgs(withRenamedFlags(process.argv));
   if (models.length === 0) {
     console.error(
       "Usage: tsx scripts/translation-experiment.ts --model <provider>:<id> [--model …] " +
-        "[--preprocessor-run-id <n>] [--limit <n>] [--out <path>]",
+        "[--preprocess-run <n>] [--limit <n>] [--out <path>]",
     );
     process.exit(1);
   }

@@ -15,9 +15,9 @@
  *   after   the new grades: reruns withheld, minor and routine reduced
  *
  *   npm run novelty-preview -- --papers 43-52 --out preview.md
- *   npm run novelty-preview -- --papers 43,44 --rerun-runs 43:120,44:121 --out p.md
+ *   npm run novelty-preview -- --papers 43,44 --novelty-runs 43:120,44:121 --out p.md
  *
- * `--rerun-runs paper:run,…` re-renders from rerun runs already made instead of
+ * `--novelty-runs paper:run,…` re-renders from rerun runs already made instead of
  * grading again (the grades are the expensive, non-deterministic part).
  * Writes `<out>` and `<out>.tsv` (one row per graded candidate).
  */
@@ -37,6 +37,7 @@ import {
   type PreviewStory,
   type PreviewThread,
 } from "../src/pipeline/novelty/preview.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 const TOP = 30;
 
@@ -84,16 +85,16 @@ interface Assessment {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
+  const flags = parseArgs(withRenamedFlags(process.argv));
   if (!flags["papers"] || !flags["out"]) {
     console.error(
-      "Usage: npm run novelty-preview -- --papers <a-b|a,b,…> --out <file.md> [--rerun-runs paper:run,…]",
+      "Usage: npm run novelty-preview -- --papers <a-b|a,b,…> --out <file.md> [--novelty-runs paper:run,…]",
     );
     process.exit(1);
   }
   const papers = parsePaperList(flags["papers"]);
   const reuse = new Map<number, number>(
-    (flags["rerun-runs"] ?? "")
+    (flags["novelty-runs"] ?? "")
       .split(",")
       .filter((s) => s.includes(":"))
       .map((s) => s.split(":").map(Number) as [number, number]),

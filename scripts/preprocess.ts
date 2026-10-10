@@ -3,11 +3,12 @@
  *
  * Usage:
  *   npm run preprocess
- *   npm run preprocess -- --collector-run-id 3
+ *   npm run preprocess -- --collect-run 3
  */
 
 import "dotenv/config";
 import { runPreprocess } from "../src/pipeline/preprocess/index.js";
+import { withRenamedFlags } from "../src/lib/cli-flags.js";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -29,14 +30,14 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
-  const flags = parseArgs(process.argv);
+  const flags = parseArgs(withRenamedFlags(process.argv));
 
-  const collectorRunId = flags["collector-run-id"]
-    ? parseInt(flags["collector-run-id"], 10)
+  const collectorRunId = flags["collect-run"]
+    ? parseInt(flags["collect-run"], 10)
     : undefined;
 
   if (collectorRunId !== undefined && isNaN(collectorRunId)) {
-    console.error("--collector-run-id must be a number");
+    console.error("--collect-run must be a number");
     process.exit(1);
   }
 
