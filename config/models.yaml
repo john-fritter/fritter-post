@@ -928,7 +928,7 @@ pricing:
       input_per_mtok: 1.40
       output_per_mtok: 4.40
       source: https://docs.z.ai/guides/overview/pricing
-      as_of: "2026-10-10"
+      as_of: "2026-10-11"
     - name: DeepSeek V4.1 Flash
       maker: DeepSeek
       ids:
@@ -938,15 +938,15 @@ pricing:
       input_per_mtok: 0.30
       output_per_mtok: 1.20
       source: https://api-docs.deepseek.com/quick_start/pricing
-      as_of: "2026-10-10"
+      as_of: "2026-10-11"
     - name: Qwen3.6 35B
       maker: Alibaba
       ids:
         Qwen/Qwen3.6-35B-A3B: Qwen3.6 35B
-      input_per_mtok: 0.248
-      output_per_mtok: 1.485
+      input_per_mtok: 0.375
+      output_per_mtok: 2.25
       source: https://www.alibabacloud.com/help/en/model-studio/model-pricing
-      as_of: "2026-10-10"
+      as_of: "2026-10-11"
     - name: Qwen3 Embedding 8B
       maker: Alibaba, via OpenRouter
       ids:
@@ -956,4 +956,4 @@ pricing:
       input_per_mtok: 0.01
       output_per_mtok: 0
       source: https://openrouter.ai/qwen/qwen3-embedding-8b
-      as_of: "2026-10-10"
+      as_of: "2026-10-11"
