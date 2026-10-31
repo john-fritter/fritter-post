@@ -164,7 +164,8 @@ entry in `decisions.md` says which.
   `endsMidSentence` and `isHeadlineEcho` are judged on the *stripped* body.
   Sidebars are never batched. Every repaired piece is an individual call.
   Parsing is forgiving and production is not retried: a missing headline costs
-  the headline, and the last labelled draft wins. Pieces are persisted as each
+  the headline, the last labelled draft wins, and nothing before the last
+  `</think>` is the piece. Pieces are persisted as each
   call returns; a failed call is a `failed` row, not an exception.
 - **publish**: It refuses to replace a paper with a much smaller one
   (`--force` is deliberate). Source rows carry copies, not just FKs. No

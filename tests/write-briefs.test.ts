@@ -515,6 +515,86 @@ function testWordCount() {
   assert.equal(countWords(""), 0);
 }
 
+// **Reasoning in the content channel is not the piece** (open item 4d). Writer
+// run 126's rank 2 came back as the model's drafting monologue, closed by
+// `</think>` with the real `HEADLINE:` on the same line, then the piece. The
+// parser took the opening sentence as the headline and published all of it.
+// This is that output, cut to its shape: the opening lines verbatim, the
+// drafting elided, and the first two paragraphs of the real piece.
+const RUN_126_RANK_2 = `Israeli election officials reject Netanyahu's claim that Arab parties stole the vote
+
+Hmm, "stole the vote" — Likud accused Arab-led parties of "stealing" the election. Fine.
+
+Body:
+
+Final results from Tuesday's Knesset election, published early Friday, put Prime Minister Benjamin Netanyahu's bloc at 53 seats and the opposition bloc led by Gadi Eisenkot at 48.
+
+Draft:
+
+"Prime Minister Benjamin Netanyahu and his Likud party allege that Israel's Arab-led parties stole Tuesday's election with foreign money.
+
+That's about 430 words. Let me count and refine.
+
+Let me write final.</think>HEADLINE: Israeli election officials reject Netanyahu's claim that Arab parties stole the vote
+
+Prime Minister Benjamin Netanyahu and his Likud party are alleging that Israel's Arab-led parties stole Tuesday's election with foreign money, a claim the officials asked to examine it have largely dismissed.
+
+The final count, published early Friday, confirmed that Netanyahu's bloc won 53 of the Knesset's 120 seats.`;
+
+function testReasoningBeforeTheCloseTagIsDropped() {
+  const parsed = parseWriterOutput(RUN_126_RANK_2);
+  assert.equal(
+    parsed!.headline,
+    "Israeli election officials reject Netanyahu's claim that Arab parties stole the vote",
+  );
+  assert.ok(parsed!.body.startsWith("Prime Minister Benjamin Netanyahu and his Likud party are alleging"));
+  assert.ok(parsed!.body.endsWith("won 53 of the Knesset's 120 seats."));
+  for (const leak of ["Hmm", "Draft:", "Body:", "Let me", "</think>", "HEADLINE"]) {
+    assert.ok(!parsed!.body.includes(leak), `reasoning leaked: ${leak}`);
+  }
+}
+
+function testAnOpeningThinkBlockIsDropped() {
+  const parsed = parseWriterOutput(
+    "<think>\nThe sources say the council voted 4-3.\n</think>\n\nHEADLINE: Redmond bans fireworks\n\nThe council voted 4-3 to ban them.",
+  );
+  assert.equal(parsed!.headline, "Redmond bans fireworks");
+  assert.equal(parsed!.body, "The council voted 4-3 to ban them.");
+}
+
+function testReasoningWithNoAnswerIsAFailedPiece() {
+  // Reasoning and nothing after it: the call wrote no piece, so --repair re-asks it.
+  assert.equal(parseWriterOutput("HEADLINE: A draft\n\nA draft body.\n\nLet me rethink.</think>\n\n"), null);
+}
+
+function testAPieceThatMentionsThinkingIsUntouched() {
+  const text =
+    "HEADLINE: Researchers think the drought will ease\n\nScientists think rain will return by spring, the agency said. Few <think> tags appear in newspapers.";
+  const parsed = parseWriterOutput(text);
+  assert.equal(parsed!.headline, "Researchers think the drought will ease");
+  assert.ok(parsed!.body.startsWith("Scientists think rain will return"));
+}
+
+function testABatchWithReasoningKeepsOnlyTheAnswer() {
+  // Reasoning that drafts its own ref lines must not supply the briefs.
+  const out = [
+    "Let me draft. S1;;Draft headline;;A draft brief that should not publish.",
+    "S2;;Draft two;;Also a draft.</think>S1;;Redmond bans fireworks;;The council voted 4-3 to ban them.",
+    "S2;;North Korea fires missiles;;Three fell into the sea, South Korea said.",
+  ].join("\n");
+  const parsed = parseBriefBatchOutput(out, ["S1", "S2"]);
+  assert.equal(parsed.size, 2);
+  assert.equal(parsed.get("S1")!.headline, "Redmond bans fireworks");
+  assert.equal(parsed.get("S1")!.body, "The council voted 4-3 to ban them.");
+  assert.equal(parsed.get("S2")!.body, "Three fell into the sea, South Korea said.");
+}
+
+function testABatchOfOnlyReasoningReturnsNothing() {
+  // Every ref missing, so the straggler re-ask asks again rather than printing drafts.
+  const parsed = parseBriefBatchOutput("S1;;Draft;;A draft brief.\nThat will do.</think>", ["S1"]);
+  assert.equal(parsed.size, 0);
+}
+
 testBatchPromptCarriesEveryBriefAndItsRef();
 testTheBriefBatchSaysWhatToDoWithTooMuchMaterial();
 testTheLineBatchKeepsItsOwnGuidance();
@@ -557,4 +637,10 @@ testARevisionWithNoBodyFallsBackToTheDraftBefore();
 testTheRescanOnlyLooksInsideTheBody();
 testAThematicBreakInsideAPieceSurvives();
 testWordCount();
+testReasoningBeforeTheCloseTagIsDropped();
+testAnOpeningThinkBlockIsDropped();
+testReasoningWithNoAnswerIsAFailedPiece();
+testAPieceThatMentionsThinkingIsUntouched();
+testABatchWithReasoningKeepsOnlyTheAnswer();
+testABatchOfOnlyReasoningReturnsNothing();
 console.log("writer briefs tests passed");

@@ -22,10 +22,11 @@ Entry format:
 
 ## Index
 
-Newest first, 150 entries. Entries before 2026-10-08 use the stage names of
+Newest first, 151 entries. Entries before 2026-10-08 use the stage names of
 their time (prefilter, grouping, grouping-pass-1, editor, rerun, lineage); the
 map is in `design.md` §6.
 
+- 2026-10-31 — [The writer parsers read only what follows the last `</think>`](#2026-10-31--the-writer-parsers-read-only-what-follows-the-last-think)
 - 2026-10-31 — [Writers, round 4: the Flash 1017 snapshot loses to production at every level, and "xhigh" printed its reasoning](#2026-10-31--writers-round-4-the-flash-1017-snapshot-loses-to-production-at-every-level-and-xhigh-printed-its-reasoning)
 - 2026-10-10 — [Run-id flags follow the stage names; tables stay as they are](#2026-10-10--run-id-flags-follow-the-stage-names-tables-stay-as-they-are)
 - 2026-10-08 — [Stages renamed for what they do; docs split into concept, design and operations](#2026-10-08--stages-renamed-for-what-they-do-docs-split-into-concept-design-and-operations)
@@ -176,6 +177,35 @@ map is in `design.md` §6.
 - 2026-05-26 — [Longer Reads as both source category and section](#2026-05-26--longer-reads-as-both-source-category-and-section)
 - 2026-05-26 — [Stack: TypeScript + Next.js, reuse Postgres](#2026-05-26--stack-typescript--nextjs-reuse-postgres)
 - 2026-05-26 — [LLM client: OpenAI SDK + thin internal wrapper](#2026-05-26--llm-client-openai-sdk--thin-internal-wrapper)
+
+---
+
+## 2026-10-31 — The writer parsers read only what follows the last `</think>`
+
+**Decision:** `parseWriterOutput` and `parseBriefBatchOutput` now discard
+everything up to and including the last `</think>` in a writer's output
+(`afterReasoning` in `write/prompt.ts`). If nothing follows the tag, the call
+wrote no piece. The individual piece fails as unparseable, and a batch reports
+its refs missing, so `--repair` and the straggler re-ask ask again.
+
+**Context:** Round 4's writer at "xhigh" (writer run 126) returned rank 2's lead
+feature with its drafting monologue in `content`, closed by `</think>` with the
+real `HEADLINE:` on the same line. The first line was a short sentence, so the
+unlabelled branch took it as the headline. The restart scan in `lastDraft`
+is strict and anchored at line start, so it never saw the mid-line label. The
+whole 1,256 words were stored as an `ok` piece. Production does not run that
+setting, but a provider can put reasoning in `content` for any model.
+
+**Rationale:** The tag is a hard boundary because no published piece contains
+it, so cutting at it cannot truncate real prose. That makes it unlike the
+refusal phrases in open item 4, which need an evidence-driven list. Widening the
+strict restart matcher to mid-line labels was rejected: it would fire on prose
+that quotes the word, and it would still leave the reasoning in place whenever
+the model did not re-label. An opening `<think>` with no close is left alone.
+None has been seen, and cutting at it would discard a piece on a guess. The
+tests use run 126's output, cut to its shape. They fail on the old parser and
+pass on the new one, alongside a batch that drafts its own `ref;;` lines inside
+the reasoning, and prose that merely says "think".
 
 ---
 

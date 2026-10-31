@@ -403,6 +403,8 @@ output is `ref;;headline;;body` and is parsed forgivingly. Specifically:
 - A missing headline costs the headline, not the piece.
 - A one-line batch is split back apart on its refs.
 - When a writer revises in the stream, the last labelled draft wins.
+- Reasoning that arrives in the text is cut: only what follows the last
+  `</think>` is read, and nothing after it is a failed piece.
 
 Each piece is written to the database as its call returns. A consecutive-failure
 breaker stops the stage on an outage, and `--repair` re-asks only the failed

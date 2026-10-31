@@ -526,6 +526,33 @@ export function buildBriefBatchUserPrompt(
   return parts.join("\n");
 }
 
+/**
+ * What the writer said after it stopped thinking: the text after the last
+ * `</think>`, or the whole text when there is none.
+ *
+ * **Reasoning that arrives in the content channel is not the piece.** In the
+ * round-4 bake-off (writer run 126, the Flash 1017 snapshot at "xhigh"), rank 2's
+ * lead feature came back as "Hmm, … Draft: … Let me write
+ * final.</think>HEADLINE: …" followed by the real piece. The provider had put
+ * the model's reasoning in `content`, closed by the tag. `parseWriterOutput` took
+ * the first short line as the headline, and its restart scan never fired because
+ * `HEADLINE:` sat mid-line after the tag. So 1,256 words of drafting were stored
+ * as an `ok` piece (open item 4d, decisions.md 2026-10-31).
+ *
+ * The tag is a hard boundary because nothing a writer publishes contains it.
+ * If nothing follows it, the call produced reasoning and no piece, so the result
+ * is empty: the individual parser fails the piece, and the batch parser reports
+ * every ref missing. Both are re-asked, by `--repair` and the straggler re-ask.
+ * An opening `<think>` with no close is left alone. We have never seen one, and
+ * cutting at it would discard a piece on a guess.
+ */
+export function afterReasoning(text: string): string {
+  const tag = /<\/think>/gi;
+  let end = -1;
+  for (let m = tag.exec(text); m !== null; m = tag.exec(text)) end = m.index + m[0].length;
+  return end === -1 ? text : text.slice(end);
+}
+
 export interface ParsedBrief {
   ref: string;
   /** Null for a section line: one sentence is its own pointer, not a headline. */
@@ -550,6 +577,8 @@ export function parseBriefBatchOutput(
 ): Map<string, ParsedBrief> {
   const valid = new Set(validRefs.map((r) => r.toUpperCase()));
   const out = new Map<string, ParsedBrief>();
+  // Reasoning may draft `ref;;…` lines of its own; only the answer counts.
+  text = afterReasoning(text);
 
   // **A batch that answers on one line is still a batch.** The contract says
   // "one output line per brief" and also "plain prose on one line, no line
@@ -690,7 +719,7 @@ export interface ParsedWriterOutput {
  * undetectable and still publishes whole; the label is the only signal there is.
  */
 export function parseWriterOutput(text: string): ParsedWriterOutput | null {
-  const lines = text
+  const lines = afterReasoning(text)
     .split(/\r?\n/)
     // Code fences and preamble scaffolding are not content.
     .filter((line) => !/^\s*```/.test(line));
