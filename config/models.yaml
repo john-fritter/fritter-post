@@ -664,6 +664,9 @@ write:
   # through 32,000 tokens and wrote nothing. GLM 5.3 matched it only at "xhigh",
   # at six times the time. Prose did not decide any round; attribution did: who
   # said what.
+  # Round 4 (2026-10-31) kept this id over its 1017 snapshot: at "high" the
+  # snapshot was no better than production's run-to-run noise, and at "xhigh"
+  # it printed its reasoning as the rank-2 lead.
   model: deepseek/deepseek-v4.1-flash
   provider: nanogpt
   # Higher than every other stage. The judgment stages want repeatability; this

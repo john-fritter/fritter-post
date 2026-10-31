@@ -106,6 +106,32 @@ writers gate counts it. Keep it to a small, evidence-driven phrase list with a
 test for the cut and the near-miss prose that must survive (a quoted official
 saying "I can't"), which is the junk filter's rule applied here.
 
+### 4d. Reasoning in the content channel publishes as the piece
+
+In the round-4 writer bake-off (writer run 126, the Flash 1017 snapshot at
+"xhigh"), rank 2's lead feature came back with the model's drafting monologue in
+`content`. It opened "Hmm, "stole the vote" — …", went through "Draft:" and
+"Let me count and refine", and ended "Let me write final.`</think>`HEADLINE:
+Israeli election officials reject …", followed by the real piece. It was stored
+as an `ok` piece of 1,256 words (`docs/decisions.md`, 2026-10-31).
+
+`parseWriterOutput` missed it in two steps. The first line was a short sentence,
+so the unlabelled branch took it as the headline. Then `lastDraft`'s restart scan
+uses the strict matcher, which is anchored at line start, and here `HEADLINE:`
+sat mid-line after `</think>`. So the last draft was never found, and everything
+above it published.
+
+Production does not run that setting, and no production-model piece in four
+bake-offs has done this. But a provider can put reasoning in `content` for any
+model, and nothing downstream would catch it.
+
+**Fix:** in the writer parsers (individual and batch), treat the last `</think>`
+in the output as a hard boundary and parse only what follows it. If nothing
+follows, the piece fails, so `--repair` re-asks it. The marker never appears in
+newspaper prose, so this needs no evidence threshold, but it does need a test:
+this exact output, a batch line with the same shape, and a body that merely
+mentions "think".
+
 ### 4b. The novelty grades are live and need watching
 
 Deployed 2026-10-03 (`docs/decisions.md`). What the preview over papers #43–53

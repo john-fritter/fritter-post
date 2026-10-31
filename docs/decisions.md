@@ -22,10 +22,11 @@ Entry format:
 
 ## Index
 
-Newest first, 149 entries. Entries before 2026-10-08 use the stage names of
+Newest first, 150 entries. Entries before 2026-10-08 use the stage names of
 their time (prefilter, grouping, grouping-pass-1, editor, rerun, lineage); the
 map is in `design.md` §6.
 
+- 2026-10-31 — [Writers, round 4: the Flash 1017 snapshot loses to production at every level, and "xhigh" printed its reasoning](#2026-10-31--writers-round-4-the-flash-1017-snapshot-loses-to-production-at-every-level-and-xhigh-printed-its-reasoning)
 - 2026-10-10 — [Run-id flags follow the stage names; tables stay as they are](#2026-10-10--run-id-flags-follow-the-stage-names-tables-stay-as-they-are)
 - 2026-10-08 — [Stages renamed for what they do; docs split into concept, design and operations](#2026-10-08--stages-renamed-for-what-they-do-docs-split-into-concept-design-and-operations)
 - 2026-10-03 — [Novelty preview: the grades hold on papers #43–53, penalties unchanged](#2026-10-03--novelty-preview-the-grades-hold-on-papers-4353-penalties-unchanged)
@@ -175,6 +176,74 @@ map is in `design.md` §6.
 - 2026-05-26 — [Longer Reads as both source category and section](#2026-05-26--longer-reads-as-both-source-category-and-section)
 - 2026-05-26 — [Stack: TypeScript + Next.js, reuse Postgres](#2026-05-26--stack-typescript--nextjs-reuse-postgres)
 - 2026-05-26 — [LLM client: OpenAI SDK + thin internal wrapper](#2026-05-26--llm-client-openai-sdk--thin-internal-wrapper)
+
+---
+
+## 2026-10-31 — Writers, round 4: the Flash 1017 snapshot loses to production at every level, and "xhigh" printed its reasoning
+
+**Decision:** The writers stay on `deepseek/deepseek-v4.1-flash` at "high". The
+October 17 snapshot, `deepseek/deepseek-v4.1-flash-1017:thinking`, is not adopted
+at "high", "xhigh" or "max".
+
+**The test.** The reader proposed moving the writers to the snapshot at "xhigh".
+NanoGPT lists only `none, low, high, max` for it, but accepts "xhigh" and rejects
+a nonsense value, so a "max" run was added to show what "xhigh" means. Five
+writer runs (124–128) covered the same 33 pieces of rank run 181 (paper #80,
+2026-10-30, a fresh day). The pieces were 7 features, 11 standards and 15 briefs,
+including four thread sections, multilingual packets and a headline-only story
+moved down a tier. Production ran first and last as the noise control. The export
+was blind, and every piece was read against its packet before `key.md` was opened
+(task: `docs/gizmo/gizmo-writer-1017-prompt.md`).
+
+| writer | model | effort | unsupported fact, frame or attribution | near-misses | rule slips | out tok | wall s |
+|---|---|---|---|---|---|---|---|
+| A | production | high | 0 | 6 | 2 | 62,526 | 87 |
+| D | production (repeat) | high | 1 (minor) | 5 | 1 | 60,001 | 105 |
+| C | 1017 snapshot | high | 1 | 5 | 2 | 33,605 | 100 |
+| E | 1017 snapshot | max | 1 | 6 | 4 | 44,855 | 160 |
+| B | 1017 snapshot | xhigh | 2 **+ a reasoning dump at rank 2** | 5 | 4 | 43,783 | 146 |
+
+No run had a failed call, a provider error or a call over 16k output tokens.
+
+**The noise control held, and it won.** The blind ranking was A > D > C ≈ E >> B.
+The two production runs placed first and second, one minor error apart, so the
+run-to-run noise is about one piece. The snapshot's best showing, at "high", is
+inside that noise and not better. It added unsourced South China Sea background
+to a packet whose note said to stay inside the source. It also credited Binance
+with the Verge's "four times the previous record", and gave both TRM and
+Chainalysis TRM's "high confidence". Its one real gain was efficiency: about
+half production's output tokens. At 4.5 times the per-token price (0.10 / 0.60
+against 0.022 / 0.192 USD per million), that buys nothing.
+
+**At "xhigh" the reasoning was published.** Rank 2's lead feature, on Israel's
+election, came back with its drafting monologue in the content channel: "Hmm, …
+Draft: … Let me count and refine … Let me write final.`</think>`HEADLINE: …", and
+then the piece. That is 1,256 words stored as an `ok` piece. The parser then
+missed the real draft (open item 4d). The rest of the run had two more errors:
+a seat count taken from outside the packet, and "Russian monitoring channels"
+for Ukrainian ones, under a headline that asserted an unconfirmed refinery
+strike. This is round 3's result again. Then the previous Flash at "xhigh" lost
+the same slot, the rank-2 lead, to 32,000 tokens of reasoning with no text.
+
+**"xhigh" behaves like "max", not "high"**: 43,783 output tokens against
+44,855 at "max" and 33,605 at "high", and 146 s against 160 s and 100 s. With one
+run each, that cannot say whether NanoGPT aliases it to "max" or passes it
+through. Either way, it is not a level the catalogue documents. "Max" turned claims into facts in a way the
+others did not: "Backdoors have been found" from a headline-only Mastodon link,
+"being treated as attempted treason" from "attempted treason is in the air", and
+"&Truth automates formal verification" for a startup joining the race.
+
+**Separately, the current id is labelled a beta.** NanoGPT's catalogue describes
+`deepseek/deepseek-v4.1-flash` as "a rate-limited beta … intended for testing
+rather than production use", and the 1017 snapshot carries no such note. The
+writers have run on it daily without a capacity failure since 2026-09-23, so this
+is not a reason to switch to a model that writes no better. It is the reason the
+snapshot at "high" is the fallback if the beta id is withdrawn or starts
+throttling: of the candidates, it was closest to production.
+
+**Limits.** One day, one rank run, one reader of the sources. Gizmo's report
+mentioned the 1,256-word piece by run label, which identified writer B before the
+key. A, C, D and E were read blind.
 
 ---
 

@@ -351,7 +351,8 @@ Turns packets into the paper's own prose.
 The writer model was chosen over GLM 5.2 and 5.3 in three blind bake-offs
 judged on attribution: who said what, and whether an analyst's view stays the
 analyst's. Flash at `high` put one unsupported claim in 96 pieces
-(decisions.md, 2026-09-23 and 2026-09-25).
+(decisions.md, 2026-09-23 and 2026-09-25). A fourth round kept it over its own
+October 17 snapshot (2026-10-31).
 
 **Materials** (`materials.ts`) walks a ranked story down to its articles:
 thread → members → cluster digest → preprocessed items. It returns text
