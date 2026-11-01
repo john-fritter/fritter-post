@@ -195,13 +195,15 @@ a flat-rate subscription.
 an estimate from official prices. There was no cost anywhere in the system:
 `generation_logs` records tokens and durations per call but no provider and no
 price, and nothing linked a call to a paper except the run ids. Prices as of
-2026-10-10, per million tokens in/out: GLM-5.2 $1.40/$4.40 (Z.ai), DeepSeek
-V4.1 Flash $0.30/$1.20 (DeepSeek, standard rate), Qwen3.6-35B-A3B
-$0.248/$1.485 (Alibaba Cloud Model Studio, read by the reader from the page),
-Qwen3 Embedding 8B $0.01 in (OpenRouter, which also serves it here). The first
-three came from trackers quoting the makers' pages, because those pages are
-unreachable from the build session; the Gizmo deploy task confirms them on the
-box.
+2026-10-11, per million tokens in/out, each confirmed by Gizmo against the
+maker's own page (the pages are unreachable from the build session): GLM-5.2
+$1.40/$4.40 (Z.ai), DeepSeek V4.1 Flash $0.30/$1.20 (DeepSeek, standard rate),
+Qwen3.6-35B-A3B $0.375/$2.25 (Alibaba Cloud Model Studio), Qwen3 Embedding 8B
+$0.01 in (OpenRouter, which also serves it here). Alibaba's page also shows
+$0.248/$1.485 for the Qwen model, which the reader read off it first; the two
+are likely different regions or prompt-length tiers, and which one the rule
+means was not settled. The confirmed figure stands. Translation is about 5% of
+the price, so the choice moves it by roughly 15 cents.
 
 **Rationale:**
 - *The maker's list price, standard tier.* One rule the page can state in a
