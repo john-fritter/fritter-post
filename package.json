@@ -23,6 +23,7 @@
     "fetch": "tsx scripts/fetch.ts",
     "write": "tsx scripts/write.ts",
     "publish": "tsx scripts/publish.ts",
+    "price": "tsx scripts/price.ts",
     "probe-source": "tsx scripts/probe-source.ts",
     "embedding-experiment": "tsx scripts/embedding-experiment.ts",
     "translation-experiment": "tsx scripts/translation-experiment.ts",

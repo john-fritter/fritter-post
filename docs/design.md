@@ -411,9 +411,10 @@ pieces. The runner does that automatically (§3).
 
 Freezes a writer run into the day's paper, with source links.
 
-- **Tables:** `papers`, `paper_pieces`, `paper_sources`
+- **Tables:** `papers`, `paper_pieces`, `paper_sources`, `paper_steps`,
+  `paper_costs`
 - **Model:** none
-- **Config:** `publish`
+- **Config:** `publish`, `pricing`
 - **Code:** `src/pipeline/publish/`
 
 This is a stage and not a view because a paper is an artifact. Re-running
@@ -430,6 +431,44 @@ does.
   deliberate path around it.
 - Two kinds of hole are counted separately: `pieces_skipped` (the writer
   failed) and `pieces_unsourced` (lineage would not resolve).
+
+#### The price
+
+Last of all, after continuity, the publisher prices the paper: every model call
+it took, at list prices (`price-record.ts`, pure parts in `price.ts`). The total
+is the boxed price in the masthead, and `/price` breaks it down.
+
+- **It is an estimate, and says so.** The models run on a flat-rate NanoGPT
+  subscription. The price is what the same tokens would cost at each model
+  maker's published API price, standard tier, no cached-input or off-peak rate;
+  OpenRouter's listing where the maker sells no API of its own, and never
+  OpenRouter's headline figure, which is its cheapest host. The list is
+  `pricing` in `models.yaml`, keyed by the model ID as `generation_logs` records
+  it.
+- **Calls are found by lineage, not by date.** The paper names its writer and
+  editor runs; the editor run's pile names the score, novelty, thread and
+  cluster runs; cluster names its preprocess run, and the screen run is the one
+  `getClusteringItems` would have read. Each is the `stage_run_id` its calls were
+  logged under (continuity logs under the paper id). A call that went into a run
+  the paper did not use, such as an aborted write run, is not counted.
+- **Failed calls count**, at whatever tokens the provider reported for them. A
+  call with no reported usage counts as zero, and `calls_without_usage` says how
+  many.
+- **Frozen with the paper.** `paper_steps` (per step: time, what it produced) and
+  `paper_costs` (per step and model: calls, tokens, the price used, the cost)
+  cascade from `papers`, so a re-publish rewrites them. A changed price list
+  reprices the next paper, not the archive; `npm run price -- --all` reprices on
+  purpose.
+- **Step times come from the runner** (`pipeline_stage_runs`) when the paper was
+  made by one, because it times score with novelty and thread and publish with
+  continuity. A paper made by hand falls back to the run tables, and fetch, which
+  has no run table, is then untimed.
+- **Unpriced is not free.** A model with calls and no price entry is stored with
+  a NULL cost and named on the page. `tests/paper-price.test.ts` fails if a model
+  the pipeline calls has no entry, or if a stage logs under a label the price
+  cannot place.
+- **It never fails a paper.** A pricing error is a warning; the paper publishes
+  with no price box, and `npm run price -- --paper <id>` fills it in.
 
 ### 2.12 continuity
 
@@ -564,11 +603,18 @@ Server components read only the `paper_*` tables.
   reporting.** It appears only on an article's source list.
 - **"Discuss on the board"** links to Fritter Board (`BOARD_URL`). The paper
   shows no counts.
+- **The price** sits in the masthead's corner, boxed like a newspaper's, and is
+  uncoloured: it links to the paper's page about itself, not out. `/price`
+  explains how the paper is made, in plain step names ("Clean up", "Group",
+  "Read") that belong to that page only, and is two columns on a wide screen.
+  It reads `paper_steps` and `paper_costs`, never `generation_logs`, and never
+  `config/` (the app bundle cannot), so everything it shows was frozen at
+  publish.
 
 ### 4.6 The database
 
 There is one Postgres with pgvector, inside the compose stack. Migrations are
-numbered SQL in `migrations/` (`npm run migrate`), and the next one is 049.
+numbered SQL in `migrations/` (`npm run migrate`), and the next one is 050.
 
 **Fritter Board shares the database and reads only the `published` schema**
 (migration 046): the views `published.articles` and

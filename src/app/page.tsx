@@ -14,7 +14,13 @@ import {
   formatEditionDate,
   WORDS_PER_MINUTE,
 } from "@/pipeline/publish/assemble";
-import { loadLatestPaper, loadPaperPieces, type PaperPieceRow } from "@/pipeline/publish/read";
+import {
+  loadLatestPaper,
+  loadPaperPieces,
+  loadPaperPriceTotal,
+  type PaperPieceRow,
+} from "@/pipeline/publish/read";
+import { formatUsd } from "@/pipeline/publish/price";
 
 // The paper changes once a day, but it is the database that says when — so the
 // page is rendered per request rather than cached against a build.
@@ -59,6 +65,10 @@ export default async function HomePage({
   }
 
   const pieces = await loadPaperPieces(paper.id);
+  // The price must never cost the reader the paper: between a deploy and its
+  // migration the table is not there yet, and a paper without a price is a
+  // whole paper.
+  const price = await loadPaperPriceTotal(paper.id).catch(() => null);
   const rows = buildIndex(pieces);
   const minutes = Math.round(paper.wordCount / WORDS_PER_MINUTE);
   const threadCount = rows.filter((r) => r.kind === "thread").length;
@@ -66,7 +76,15 @@ export default async function HomePage({
   return (
     <main className="app">
       <header className="masthead">
-        <p className="kicker">{formatEditionDate(paper.publishedOn)}</p>
+        <div className="mast-top">
+          <p className="kicker">{formatEditionDate(paper.publishedOn)}</p>
+          {price !== null ? (
+            <Link className="ear" href="/price">
+              <span className="ear-l">Price</span>
+              <span className="ear-p">{formatUsd(price)}</span>
+            </Link>
+          ) : null}
+        </div>
         <h1 className="flag">The Fritter Post</h1>
         <p className="folio">
           {rows.length} stories
